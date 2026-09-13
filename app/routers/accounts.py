@@ -17,7 +17,17 @@ def trade_accounts_overview() -> list[dict[str, Any]]:
     and live connection status — powers the Trade Accounts overview."""
     out: list[dict[str, Any]] = []
     s = config.view()                                # read-only: /api/status asks every 15 s per dashboard
-    balances = {int(a.get("account_id") or 0): a.get("cash") for a in (state.pnl().get("accounts") or []) if a.get("account_id")}
+    pnl_rows = state.pnl().get("accounts") or []
+
+    def balance_for(account_id: int, spec: str) -> Any:
+        """Broker account ids are not a cross-broker namespace. Match the P&L
+        row to the account spec too, and fail closed if the pair is ambiguous."""
+        if not account_id or not spec:
+            return None
+        matches = [a.get("cash") for a in pnl_rows
+                   if int(a.get("account_id") or 0) == account_id and str(a.get("spec") or "") == spec]
+        return matches[0] if len(matches) == 1 else None
+
     for idx, t in enumerate(s.get("token_accounts") or []):
         tname = t.get("name") or f"account {idx + 1}"
         env = t.get("environment") or "demo"
@@ -27,21 +37,24 @@ def trade_accounts_overview() -> list[dict[str, Any]]:
             accts = [{"spec": t.get("account_spec", ""), "id": t.get("account_id", 0),
                       "enabled": True, "qty_multiplier": t.get("qty_multiplier", 1)}]
         for a in accts:
+            spec = str(a.get("spec") or a.get("account_spec") or "")
+            account_id = int(a.get("id") or a.get("account_id") or 0)
+            balance = balance_for(account_id, spec)
             out.append({
                 "token_idx": idx, "lid": t.get("lid") or "", "token_name": tname, "environment": env,
                 "broker": broker.broker_of(t),
                 "token_enabled": bool(t.get("enabled")), "connected": tconn,
                 "agent_id": int(t.get("agent_id") or 0),
-                "spec": a.get("spec") or a.get("account_spec") or "",
-                "id": a.get("id") or a.get("account_id") or 0,
+                "spec": spec,
+                "id": account_id,
                 "enabled": bool(a.get("enabled", True)),
                 "qty_multiplier": float(a.get("qty_multiplier", t.get("qty_multiplier", 1)) or 1),
                 "risk": dict(a.get("risk") or {}),
-                "locked": risk.lock_of(context.get_area(), a.get("spec") or a.get("account_spec") or "", settings=s),
+                "locked": risk.lock_of(context.get_area(), spec, settings=s),
                 # the broker's balance from the P&L tick and its coarse size tier (50K …): the
                 # copy drawer sizes followers by it — a tier says nothing exact
-                "balance": balances.get(int(a.get("id") or a.get("account_id") or 0)),
-                "tier": sizing.size_tier(balances.get(int(a.get("id") or a.get("account_id") or 0))),
+                "balance": balance,
+                "tier": sizing.size_tier(balance),
             })
     return out
 

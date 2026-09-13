@@ -1050,7 +1050,14 @@ class GroupRunner:
                 lock = self.locks.setdefault(f["spec"], asyncio.Lock())
                 async with lock:
                     actual = await self._broker_net(ex, cid)
-                    have = self.follower_pos.get(key, 0) if actual is None else actual
+                    if actual is None:
+                        # Cached mirror memory is not broker truth. If this read is
+                        # unavailable the follower may already be flat; sending its
+                        # remembered offset would open the opposite position.
+                        self.follower_pos.pop(key, None)
+                        note(f, cid, "position unreadable before close — no close sent")
+                        continue
+                    have = actual
                     if not have:
                         self.follower_pos[key] = 0
                         continue

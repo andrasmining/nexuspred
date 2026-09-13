@@ -130,24 +130,32 @@ def copy_record(publisher_area_id: int, group: dict[str, Any], *, detail: bool =
     gid = str(group.get("id") or "")
 
     def build() -> dict[str, Any]:
-        spec = str((group.get("leader") or {}).get("spec") or "")
+        leader = group.get("leader") or {}
+        spec = str(leader.get("spec") or "")
         trades = db.list_journal_trades(publisher_area_id, accounts=[spec]) if spec else []
         out = summarize_trades(trades, _zone(publisher_area_id), detail=detail)
         out.update({"basis": "leader" if spec else "none", "accounts_n": 1 if spec else 0, "signals": None, "signals_30d": None, "latency": None,
-                    "size": _leader_size(publisher_area_id, int((group.get("leader") or {}).get("account_id") or 0)),
+                    "size": _leader_size(publisher_area_id, int(leader.get("account_id") or 0), spec),
                     "computed_at": datetime.now(timezone.utc).isoformat()})
         return out
     rec = _cached("copy-detail" if detail else "copy", publisher_area_id, gid, build)
     return rec if detail else compact(rec)
 
 
-def _leader_size(area_id: int, account_id: int) -> Optional[int]:
-    """The leader account's coarse size (50K …) from the P&L tick — the record's
-    figures as a share of it; never the balance itself."""
+def _leader_size(area_id: int, account_id: int, spec: str) -> Optional[int]:
+    """The leader account's coarse size (50K …) from the P&L tick.
+
+    Broker account ids are broker-local, so a bare numeric id is not sufficient
+    identity.  Bind the balance to the intended account spec and fail closed if
+    the P&L snapshot is ambiguous instead of publishing percentages against an
+    unrelated account's size.
+    """
     from . import sizing, state
-    if not account_id:
+    if not account_id or not spec:
         return None
-    bal = next((a.get("cash") for a in (state.pnl(area_id).get("accounts") or []) if int(a.get("account_id") or 0) == account_id), None)
+    matches = [a.get("cash") for a in (state.pnl(area_id).get("accounts") or [])
+               if int(a.get("account_id") or 0) == account_id and str(a.get("spec") or "") == spec]
+    bal = matches[0] if len(matches) == 1 else None
     tier = sizing.size_tier(bal)
     return int(tier["size"]) if tier and tier.get("exact") else None      # a live account's drifting balance is no basis for a percentage
 
