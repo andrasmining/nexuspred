@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import config, context, copy, db, history, marketplace, payments, state
+from .. import web, config, context, copy, db, history, marketplace, payments, state
 from ..web import require_role
 from .accounts import trade_accounts_overview
 
@@ -151,7 +151,8 @@ async def api_group_remove_subscriber(group_id: str, sub_id: int, request: Reque
 
 @router.post("/groups")
 async def api_create_group(request: Request) -> dict[str, Any]:
-    require_role(request, "user")
+    user = require_role(request, "user")
+    web.check_quota(context.get_area(), user, "groups")                          # alpha.99
     body = await request.json()
     groups = copy.load_groups()
     if len(groups) >= 50:

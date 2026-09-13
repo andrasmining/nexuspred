@@ -14,7 +14,7 @@ from app.db import execution as ledger
 from app.db import entitlements as grants
 from app.execution import local, service
 from app.execution.contracts import AccountTarget, ClosePosition, ExecutionError, ManualOrder, Outcome
-from app.platform.workspaces import Actor, WorkspaceAccessDenied, WorkspaceId, current_actor
+from app.commercial.workspaces import Actor, WorkspaceAccessDenied, WorkspaceId, current_actor
 from tests.conftest import login_as
 from tests.helpers import FakeExecutor
 from tests.test_alpha76 import ticket  # noqa: F401

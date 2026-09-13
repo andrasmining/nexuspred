@@ -10,6 +10,9 @@ from typing import Any
 LANGS = ("en", "de")
 
 DE = {
+    'Acknowledged': 'Bestätigt',
+    'Already acknowledged': 'Bereits bestätigt',
+    'This acknowledge link is not valid any more.': 'Dieser Bestätigungslink ist nicht mehr gültig.',
     'Unsubscribed': 'Abgemeldet',
     'Link not valid': 'Link ungültig',
     'You will no longer receive these messages. Change it any time under Settings → Account.': 'Du erhältst diese Nachrichten nicht mehr. Ändere das jederzeit unter Einstellungen → Konto.',
@@ -173,6 +176,9 @@ ALERT_DE = {
     "⏸️ **Subscription paused** — {message}": "⏸️ **Abo pausiert** — {message}",
     "Subscription paused": "Abo pausiert",
     "📣 **{publisher}** — {title}: {body}": "📣 **{publisher}** — {title}: {body}",
+    "⏳ **Token expiring** — login `{account}` expires in {minutes} min and the refresh failed{detail}. Sign in again under Settings → Broker Accounts.": "⏳ **Token läuft ab** — Login `{account}` läuft in {minutes} min ab und die Erneuerung ist gescheitert{detail}. Unter Einstellungen → Broker-Konten neu anmelden.",
+    "Token expiring: {account}": "Token läuft ab: {account}",
+    "Fluxbridge: token expiring ({account})": "Fluxbridge: Token läuft ab ({account})",
 }
 
 

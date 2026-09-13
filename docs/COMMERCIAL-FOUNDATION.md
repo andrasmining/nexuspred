@@ -15,9 +15,9 @@ The new entitlement is **not a workspace-wide trading suspension**.
 
 | Module | Responsibility |
 |---|---|
-| `app/platform/workspaces.py` | Explicit actor/workspace identity and membership authorization. `WorkspaceId` is the existing `area_id`, not a second identity. |
-| `app/platform/entitlements.py` | Commercial permission snapshot, separate from user roles and risk configuration. |
-| `app/platform/commercial_policy.py` | Pure risk-direction policy; never authenticates a caller or bypasses broker risk locks. |
+| `app/commercial/workspaces.py` | Explicit actor/workspace identity and membership authorization. `WorkspaceId` is the existing `area_id`, not a second identity. |
+| `app/commercial/entitlements.py` | Commercial permission snapshot, separate from user roles and risk configuration. |
+| `app/commercial/commercial_policy.py` | Pure risk-direction policy; never authenticates a caller or bypasses broker risk locks. |
 | `app/execution/contracts.py` | Versioned, serializable manual intent, account target, close command, result, errors and the `ExecutionService` port. No HTTP or broker dependencies. |
 | `app/execution/service.py` | In-process implementation: authorize, claim identity, evaluate policy, resolve target, persist dispatch, call existing adapter, record outcome. |
 | `app/execution/local.py` | Existing account lookup and close/flatten implementation, including the existing signal locks and tracking cleanup. |
@@ -26,7 +26,7 @@ The new entitlement is **not a workspace-wide trading suspension**.
 | HTTP routers | Request parsing, rate limiting, response compatibility and domain-error to HTTP translation. |
 
 Existing platform roles (`user`, `broadcaster`, `admin`), feature flags, MFA,
-read-only support mode and broker risk guards are not replaced. The facade
+support controls and broker risk guards are not replaced. The facade
 rechecks workspace membership before execution; a global administrator does not
 automatically acquire execution rights in another workspace. New command-status
 reads likewise require membership; delegated support access to this new endpoint
@@ -179,11 +179,33 @@ should be evidence-driven:
    reconciliation before new exposure. Database technology alone does not solve
    duplicate execution or split-brain ownership.
 
-Upstream alpha.95/96 mailer, backup and readiness changes are preserved.
+Upstream alpha.95-99 operations changes are preserved.
 Configuring and validating those operations features, release governance,
 broker conformance testing, customer legal
 agreements, official Discord integration and production support remain separate
 launch requirements. This branch neither provisions them nor changes production.
+
+## Upstream integration
+
+The branch integrates upstream alpha.99
+(`cf74f38b0a6185ec6d266eabe7b09b0d317400bd`). All notification, announcement,
+escalation and settings-history initializers coexist with the foundation tables.
+Pending database restore runs before database initialization and ledger recovery.
+
+Alpha.99 introduced `app/platform.py`. The foundation's new package was moved to
+`app/commercial/` so it cannot shadow that upstream module; only foundation
+imports changed. Upstream operations configuration, Telegram, canary, broadcasts
+and their existing imports are preserved without wrappers or duplicate state.
+
+Assisted support may grant configuration-write access under upstream policy.
+That grant does not create workspace membership for the execution facade:
+delegated manual orders, close/flatten and command-status access remain outside
+this slice. The workspace owner retains those operations. No cross-workspace
+execution bypass was added to resolve the merge.
+
+Regression cases cover repeated initialization, either missing schema family,
+retained rows, SQLite integrity and module/package coexistence. Existing
+foundation tests retain their assertions after the import-path change.
 
 ## Validation
 

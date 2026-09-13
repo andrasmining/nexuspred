@@ -9,7 +9,7 @@ from fastapi.responses import PlainTextResponse
 from .. import automations, config, context, db, exposure, metrics, security, state
 from ..execution import service
 from ..execution.contracts import AccountTarget, ClosePosition, ExecutionError, ManualOrder
-from ..platform.workspaces import WorkspaceAccessDenied, current_actor
+from ..commercial.workspaces import WorkspaceAccessDenied, current_actor
 from .execution_errors import http_error
 
 router = APIRouter()

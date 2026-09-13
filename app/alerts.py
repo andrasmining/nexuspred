@@ -81,12 +81,47 @@ def _inbox(kind: str, severity: str, title: str, message: str, url: str) -> None
     state.publish("notification", {"kind": kind, "severity": severity, "title": push.strip_markdown(title), "url": url})
 
 
+async def _send_telegram(title: str, message: str, *, settings: dict[str, Any] | None = None) -> None:
+    """alpha.99: the workspace's linked Telegram chat (own switch and threshold)."""
+    from . import telegram
+    s = settings if settings is not None else config.load_settings()
+    if not s.get("alert_telegram_enabled") or not telegram.configured() or not _allowed("telegram", s):
+        return
+    area = context.get_area()
+    if not telegram.chat_for(area):
+        return
+    try:
+        await telegram.send_area(area, f"*{push.strip_markdown(title)}*\n{push.strip_markdown(message)}")
+        _record("telegram", True, title)
+    except Exception as exc:  # noqa: BLE001
+        state.log_event("warn", f"Telegram alert failed: {exc}")
+        _record("telegram", False, title, str(exc))
+
+
+def _fire(coro: Any) -> None:
+    try:
+        asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        coro.close()
+
+
 def _begin(kind: str, severity: str, title: str, message: str, url: str = "/#/", *, settings: dict[str, Any] | None = None) -> bool:
     """Every alert starts here: inbox row, then the channel gate for the sends
     that follow. Returns False when the alert was folded into the trade digest
     (nothing more to send now)."""
     s = settings if settings is not None else config.load_settings()
+    if severity == "critical" and s.get("alert_escalation") and kind not in ("digest", "announcement", "test"):
+        from . import escalation
+        try:
+            esc = escalation.open_escalation(context.get_area(), kind, push.strip_markdown(title), push.strip_markdown(message), url)
+            message = f"{message}\nAcknowledge: {escalation.ack_url(esc['id'])}"
+        except Exception as exc:  # noqa: BLE001
+            state.log_event("warn", f"escalation not opened: {exc}")
     _inbox(kind, severity, title, message, url)
+    if s.get("alert_telegram_enabled") and kind not in DIGEST_KINDS or (s.get("alert_telegram_enabled") and not s.get("alert_digest_trades")):
+        ctx = contextvars.copy_context()
+        ctx.run(_gate.set, {"severity": severity, "kind": kind})
+        _fire(_telegram_in(ctx, title, message, s))
     if kind in DIGEST_KINDS and severity == "info" and s.get("alert_digest_trades"):
         buf = _digest.setdefault(context.get_area(), [])
         buf.append((time.time(), push.strip_markdown(title), message))
@@ -95,6 +130,23 @@ def _begin(kind: str, severity: str, title: str, message: str, url: str = "/#/",
         return False
     _gate.set({"severity": severity, "kind": kind})
     return True
+
+
+async def _telegram_in(ctx: contextvars.Context, title: str, message: str, s: dict[str, Any]) -> None:
+    await asyncio.create_task(_send_telegram(title, message, settings=s), context=ctx)
+
+
+async def token_expiring(account: str, minutes: int, error: str = "") -> None:
+    """alpha.99: a broker token that will lapse soon while its refresh keeps failing —
+    before the connection is lost, not after."""
+    s = config.load_settings()
+    tr = _tr(s)
+    detail = f" — {error}" if error else ""
+    message = tr("⏳ **Token expiring** — login `{account}` expires in {minutes} min and the refresh failed{detail}. Sign in again under Settings → Broker Accounts.",
+                 account=account, minutes=minutes, detail=detail)
+    _begin("token.expiring", "warn", tr("Token expiring: {account}", account=account), message, "/#/settings/accounts", settings=s)
+    await asyncio.gather(_send_discord(message), _send_email(tr("Fluxbridge: token expiring ({account})", account=account), message),
+                         _send_push(tr("Token expiring: {account}", account=account), message, url="/#/settings/accounts"))
 
 
 async def flush_digest(area_id: int, *, force: bool = False) -> bool:
@@ -680,6 +732,7 @@ def _register() -> None:
     ev.subscribe("signal.failed", lambda e: webhook_failed(e["webhook"], e["reason"], **({"settings": e["settings"]} if e.get("settings") is not None else {})))
     ev.subscribe("rollover.due", lambda e: contract_rollover(e["message"]))
     ev.subscribe("subscription.paused", lambda e: subscription_paused(e["title"], e["reason"]))
+    ev.subscribe("token.expiring", lambda e: token_expiring(e["account"], int(e.get("minutes") or 0), e.get("error", "")))
 
 
 _register()

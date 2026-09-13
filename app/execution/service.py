@@ -13,8 +13,8 @@ from typing import Any
 
 from .. import config, context, state
 from ..db import execution as ledger
-from ..platform import commercial_policy, entitlements, workspaces
-from ..platform.workspaces import Actor, WorkspaceAccessDenied
+from ..commercial import commercial_policy, entitlements, workspaces
+from ..commercial.workspaces import Actor, WorkspaceAccessDenied
 from ..tradovate import OrderOutcomeUnknown, TradovateError
 from . import local
 from .contracts import ClosePosition, ExecutionError, ExecutionResult, ExecutionService, ManualOrder, Outcome, RiskEffect, command_key

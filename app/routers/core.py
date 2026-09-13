@@ -259,7 +259,7 @@ async def api_flatten_all(request: Request) -> dict[str, Any]:
     on all trade accounts in the caller's area. Runs even if trading is paused."""
     from ..execution import service
     from ..execution.contracts import ExecutionError
-    from ..platform.workspaces import WorkspaceAccessDenied, current_actor
+    from ..commercial.workspaces import WorkspaceAccessDenied, current_actor
     from .execution_errors import http_error
 
     user = getattr(request.state, "user", None) or {}

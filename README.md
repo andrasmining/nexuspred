@@ -629,6 +629,21 @@ every N seconds carrying the deep-health result — the monitor reports when the
 - **What's new** after each update, **release mail** to everyone who wants it, and per-user **mail
   preferences** with one-click unsubscribe (Settings → Account).
 
+## Professional operations
+
+- **Escalation:** critical alerts stay open until acknowledged — push with a link at once, e-mail after
+  2 minutes, Telegram / SMS after 5 (Settings → Alerts, Twilio under Settings → Platform).
+- **Telegram:** bot token under Settings → Platform, chat linked per workspace with `/start <code>`.
+- **Latency watchdog, canary signal, token pre-warning:** admins hear about slow signals and event-loop
+  lag, a synthetic signal runs the whole path in the simulator every few minutes, and a broker token
+  that will lapse is announced half an hour ahead.
+- **Rollback:** every one-click update writes a snapshot first; Settings → Updates rolls the code (and
+  optionally the database) back.
+- **Settings history:** the last 30 versions per workspace, restorable (Settings → General).
+- **Assisted support:** a user grants 24 hours of write access; every change is logged under the admin.
+- **Quotas per role** (5/3/2, 25/10/5, unlimited), per-user overrides on the Users page.
+- **Monthly roles report** and **admin broadcasts** with banner.
+
 ## Alerts
 
 **Settings → Alerts** — three channels, each with its own on/off switch:
@@ -1081,7 +1096,8 @@ Every account has exactly one role; each role includes everything below it.
 | Trade own accounts, own webhooks, own copy groups (leader → own followers), automations, risk guard, journal, alerts, execution agents | ✓ | ✓ | ✓ |
 | Subscribe to marketplace signals, follow copy leaders, subscription journal | ✓ | ✓ | ✓ |
 | Publish webhooks and copy groups on the marketplace, manage subscribers | – | ✓ | ✓ |
-| Simulator, scenarios, settings export/import | – | ✓ | ✓ |
+| Simulator, scenarios | – | ✓ | ✓ |
+| Settings export/import (a User's file without sharing blocks) | ✓ | ✓ | ✓ |
 | Users & roles, invites, audit, payments config, news, updates, Discord listener, support view | – | – | ✓ |
 
 - **Migration:** every account that existed before the roles were introduced becomes an

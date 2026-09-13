@@ -1,0 +1,5 @@
+{% extends "auth_base.html" %}
+{% block title %}{{ t("Acknowledged") }} · Fluxbridge{% endblock %}
+{% block heading %}{% if ok %}{{ t("Acknowledged") }}{% elif already %}{{ t("Already acknowledged") }}{% else %}{{ t("Link not valid") }}{% endif %}{% endblock %}
+{% block subheading %}{% if ok or already %}{{ title }}{% else %}{{ t("This acknowledge link is not valid any more.") }}{% endif %}{% endblock %}
+{% block content %}<p class="auth-note"><a href="/">Fluxbridge</a></p>{% endblock %}

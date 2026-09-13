@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
 
-from ..platform.workspaces import Actor
+from ..commercial.workspaces import Actor
 
 MAX_MANUAL_QTY = 100
 ORDER_TYPES = ("Market", "Limit", "Stop", "StopLimit")

@@ -12,6 +12,7 @@ import { enablePush, disablePush, currentSubscription, unsupportedReason, isIOS,
 import { openDrawer, closeDrawer } from "../components/drawer.js";
 import { copyText } from "../ui.js";
 import { t, LANGUAGES } from "../i18n.js";
+import { telegramCard, escalationsCard, historyCard, supportGrantCard, rollbackCard } from "../components/ops.js";
 
 const lead = () => t("Changes are saved per page — only this page's settings are sent.");
 
@@ -50,7 +51,7 @@ export const general = {
         ] },
       ],
     });
-    root.append(pageHead(t("General & Trading"), lead()), form.el);
+    root.append(pageHead(t("General & Trading"), lead()), form.el, historyCard());
     const unsub = store.subscribe("settings", (s) => { if (!form.isDirty()) form.setValues(s); });
     return () => unsub();
   },
@@ -101,7 +102,7 @@ export const updates = {
       ], after: h("div", null, status, h("div", { class: "form-actions" }, checkBtn, applyBtn, backupLink), hosting) },
       { title: t("Settings file"), hint: t("The workspace configuration as one JSON file: webhooks with routing, symbol map, trading rules, alert preferences, news-lock rules. No secrets travel (broker tokens, passwords, API keys). Use it as a configuration backup or to move a workspace to another bridge — the database backup above is the full copy."), after: settingsFilePanel() }],
     });
-    root.append(pageHead(t("Updates"), t("Version status of this bridge and the one-click updater (self-hosted installs).")), form.el);
+    root.append(pageHead(t("Updates"), t("Version status of this bridge and the one-click updater (self-hosted installs).")), form.el, rollbackCard());
     const unsubs = [
       store.subscribe("settings", (s) => { if (!form.isDirty()) form.setValues(s); }),
       store.subscribe("update", (u) => {
@@ -418,6 +419,12 @@ export const alerts = {
           { name: "alert_digest_trades", type: "switch", label: t("Bundle trade alerts"), hint: t("Signal executed / position opened / added / closed are collected and sent as one message every N minutes instead of one each.") },
           { name: "alert_digest_minutes", type: "number", label: t("Digest every (minutes)"), min: 1, max: 240, step: 1, placeholder: "15", width: "160px" },
         ] },
+        { title: t("Telegram and escalation"), hint: t("Telegram gets the alerts at or above its threshold once a chat is linked below. Escalation keeps a critical alert alive until it is acknowledged: push at once, e-mail after 2 minutes, Telegram and SMS after 5."), fields: [
+          { name: "alert_telegram_enabled", type: "switch", label: t("Telegram alerts enabled") },
+          { name: "alert_min_severity_telegram", type: "select", label: t("Telegram: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_escalation", type: "switch", label: t("Escalate critical alerts until acknowledged") },
+          { name: "alert_sms_to", type: "text", label: t("SMS number for the last step"), placeholder: "+41 79 …", hint: t("E.164 format. Needs the Twilio sender the admin sets under Settings → Platform."), width: "220px" },
+        ], after: h("div", null, telegramCard(), escalationsCard()) },
         { title: t("External watchdog"), hint: t("The bridge pings a URL you monitor elsewhere (healthchecks.io, Uptime Kuma push monitor, cronitor …). That service alerts you when the pings stop — the one failure the bridge cannot report itself: process gone, host asleep, network down."), fields: [
           { name: "heartbeat_url", type: "text", label: t("Heartbeat URL"), placeholder: "https://hc-ping.com/…", hint: t("Empty = off. Called with a plain GET; anything below HTTP 400 counts as delivered.") },
           { name: "heartbeat_interval", type: "number", label: t("Ping interval (seconds)"), min: 30, max: 3600, step: 10, placeholder: "60", width: "200px", hint: t("30–3600 s. Set the monitor's grace period to about twice this.") },
@@ -427,7 +434,7 @@ export const alerts = {
     const health = channelHealthPanel();
     root.append(pageHead(t("Alerts"), t("Notify a Discord channel, an email address and/or your phone when something happens. ") + lead()), health.el, form.el);
     const unsub = store.subscribe("settings", (s) => { if (!form.isDirty()) form.setValues(s); });
-    return () => { unsub(); health.cleanup(); if (accountsPanel.cleanup) accountsPanel.cleanup(); root.querySelectorAll("[data-heartbeat]").forEach((p) => p.cleanup && p.cleanup()); };
+    return () => { unsub(); health.cleanup(); if (accountsPanel.cleanup) accountsPanel.cleanup(); root.querySelectorAll("[data-heartbeat]").forEach((p) => p.cleanup && p.cleanup()); root.querySelectorAll(".card").forEach((c) => c.cleanup && c.cleanup()); };
   },
 };
 
@@ -624,6 +631,7 @@ export const account = {
       h("div", { class: "grid grid-2" },
         card({ title: t("Two-factor authentication") }, mfaBody),
         card({ title: t("E-mail preferences") }, prefsBody),
+        supportGrantCard(),
         card({ title: t("Your account") },
           h("dl", { class: "kv" }, h("dt", null, t("Email")), h("dd", null, me.email || "—"), h("dt", null, t("Role")), h("dd", null, me.is_admin ? t("Administrator") : t("User")),
             h("dt", null, t("Discord Signals")), h("dd", null, (me.features || {}).discord_signals === false ? t("not enabled") : t("enabled"))),

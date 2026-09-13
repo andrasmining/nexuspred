@@ -11,7 +11,7 @@ from app import config, context, db, signals
 from app.db import execution as ledger
 from app.db import entitlements as grants
 from app.execution.contracts import AccountTarget, ExecutionError, Outcome, RiskEffect
-from app.platform import commercial_policy, entitlements
+from app.commercial import commercial_policy, entitlements
 from tests.test_execution_foundation import command
 
 
