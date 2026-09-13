@@ -37,6 +37,7 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     results = await asyncio.gather(*(place_for(ex) for ex in executors), return_exceptions=True)
 
     acct_state, orders, summary, contract = _collect_entries(executors, results, tag=tag, label="Entry", fallback_contract=target, qty_key="qty")
+    failed = [ex.name for ex, result in zip(executors, results) if isinstance(result, Exception)]
 
     if acct_state:
         key = _trade_key(webhook["id"], root)
@@ -48,10 +49,15 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
             }
 
     state.log_event(
-        "info", f"{tag}[{webhook.get('name', '?')}] {action.upper()} {contract} on "
+        "error" if failed else "info",
+        f"{tag}[{webhook.get('name', '?')}] {action.upper()} {contract} on "
         f"{len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}"
+        + (f"; failed: {', '.join(failed)}" if failed else ""),
     )
     if acct_state and not tag:
         events.emit("trade.executed", webhook=webhook.get("name", "?"), action=action, contract=contract, accounts=list(acct_state), settings=s)
-    return {"status": "ok", "action": action, "contract": contract,
-            "accounts": summary, "orders": orders, "simulated": tag != ""}
+    out = {"status": "error" if failed else "ok", "action": action, "contract": contract,
+           "accounts": summary, "orders": orders, "simulated": tag != ""}
+    if failed:
+        out["failed"] = failed
+    return out
