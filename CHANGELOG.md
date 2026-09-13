@@ -4,6 +4,28 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.98
+Package 4 of the operations roadmap: the Broadcaster's business.
+- **Announcements to subscribers.** A Broadcaster writes to the subscribers of one listing or of all
+  ("No trading today", "Rollover to March"): every subscriber's inbox and push, plus e-mail for those
+  who keep *broadcaster announcements* on, at most three a day, audited. `GET/POST /api/announcements`.
+- **Cockpit.** One page for the business (Cockpit in the navigation, Broadcaster and Admin): subscribers
+  per status, monthly revenue from the Stripe records, new subscribers per week, and per listing the
+  tier, signals of the last 30 days, error rate, latency p50/p95 and net P&L 30 d.
+  `GET /api/broadcaster/cockpit`.
+- **Application with data.** *Become a Broadcaster* asks for strategy, instruments, experience and a
+  link; the admin reviews the request next to the requester's track record (trades, verified share,
+  win rate, profit factor, drawdown, days active) and approves as permanent or as a 30/90/180-day
+  trial. `GET /api/users/{id}/application`, `POST /api/users/{id}/role` with `days`.
+- **Trial Broadcasters.** Three days before a trial ends the admins get a summary (subscribers,
+  paused, listings) and can extend with one click; a lapsed trial falls back to User through the usual
+  demotion, and the user is told.
+- **Tiers.** Bronze / Silver / Gold on the marketplace card and as a filter, from facts only: days
+  published, broker-verified trades, days of history, subscribers, fan-out error rate.
+- **Weekly report.** Monday morning in the workspace's timezone: net P&L, trades, hit rate, fees, best
+  and worst session, open risks; Broadcasters add subscriber development and revenue, admins the
+  platform numbers. Sent to everyone who keeps *weekly report* on.
+
 ## 5.0.0-alpha.97
 Package 3 of the operations roadmap: everyone sees what concerns them.
 - **Notification inbox.** Every alert is a row per workspace — read or unread, with its severity and a

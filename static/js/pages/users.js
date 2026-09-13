@@ -1,6 +1,7 @@
 /* Settings → Users (admin): invites, accounts & feature grants, password resets, audit log. */
 import { h, card, tag, toast, confirmDialog, copyText, pageHead, fmtDateTime } from "../ui.js";
 import { icon } from "../icons.js";
+import { openDrawer, closeDrawer } from "../components/drawer.js";
 import { api } from "../api.js";
 import { store } from "../store.js";
 import { dataTable } from "../components/table.js";
@@ -13,7 +14,7 @@ const ACTION_LABEL = {
   flatten_all: t("Flatten all"), subscribe: t("Subscribed"), unsubscribe: t("Unsubscribed"),
   webhook_share: t("Marketplace publish"), subscriber_remove: t("Subscriber removed"),
   mail_config: t("Platform mailer"), backup_config: t("Backup settings"), backup_run: t("Backup run"), backup_download: t("Backup downloaded"), backup_delete: t("Backup deleted"),
-  heartbeat_config: t("Heartbeat"), incident: t("Incident"),
+  heartbeat_config: t("Heartbeat"), incident: t("Incident"), announce: t("Announcement"),
   login_ok: t("Signed in"), login_failed: t("Failed sign-in"), login_blocked: t("Rate limited"),
   agent_pairing_code: t("Agent pairing code"), agent_bundle: t("Agent download (preconfigured)"), agent_paired: t("Agent paired"), agent_pair_failed: t("Agent pairing failed"), agent_revoke: t("Agent revoked"),
 };
@@ -64,6 +65,46 @@ export default {
       } }, t("Revoke")) },
     ] });
 
+    // ---- alpha.98: the application next to the requester's track record; trial or permanent
+    const trialSelect = (value = "30") => h("select", { class: "input-sm" }, [["0", t("Permanent")], ["30", t("30-day trial")], ["90", t("90-day trial")], ["180", t("180-day trial")]].map(([v, l]) => h("option", { value: v, selected: v === value }, l)));
+    const rec = (r) => !r || !r.trades ? h("div", { class: "muted" }, t("No journal trades — nothing to verify yet.")) : h("dl", { class: "kv" },
+      h("dt", null, t("Trades")), h("dd", null, `${r.trades} · ${r.verified ? t("broker-verified") : t("{p}% verified", { p: Math.round((r.verified_share || 0) * 100) })}`),
+      h("dt", null, t("Win rate")), h("dd", null, `${Math.round((r.win_rate || 0) * 100)} %`),
+      h("dt", null, t("Profit factor")), h("dd", null, r.profit_factor == null ? "—" : Number(r.profit_factor).toFixed(2)),
+      h("dt", null, t("Net P&L")), h("dd", null, Number(r.net_pnl || 0).toFixed(2)),
+      h("dt", null, t("Max drawdown")), h("dd", null, Number(r.max_drawdown || 0).toFixed(2)),
+      h("dt", null, t("Days active")), h("dd", null, String(r.days_active || 0)));
+    async function openApplication(u) {
+      let a;
+      try { a = await api.get(`/api/users/${u.id}/application`); } catch (e) { toast(e.message, "error"); return; }
+      const days = trialSelect("30");
+      const note = a.note || {};
+      const approve = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
+        try { await api.post(`/api/users/${u.id}/role`, { role: "broadcaster", days: Number(days.value) }); closeDrawer(); toast(t("{email} is now a {role}", { email: u.email, role: t("Broadcaster") }), "success"); loadUsers(); loadAudit(); } catch (e) { toast(e.message, "error"); }
+      } }, icon("check"), t("Approve"));
+      const decline = h("button", { type: "button", class: "btn btn-ghost", onClick: async () => {
+        try { await api.post(`/api/users/${u.id}/role`, { role: "user" }); closeDrawer(); toast(t("Request declined"), "warn"); loadUsers(); } catch (e) { toast(e.message, "error"); }
+      } }, t("Decline"));
+      openDrawer({ title: t("Broadcaster request: {email}", { email: u.email }), width: "560px",
+        body: h("div", null,
+          h("p", { class: "muted", style: "margin-top:0" }, t("Requested {when} · member since {since} · {n} subscription(s)", { when: fmtDateTime(a.requested_at), since: fmtDateTime(a.member_since), n: a.subscriptions })),
+          h("h3", { style: "font-size:14px" }, t("Application")),
+          h("dl", { class: "kv" }, h("dt", null, t("Strategy")), h("dd", null, note.strategy || "—"), h("dt", null, t("Instruments")), h("dd", null, note.instruments || "—"),
+            h("dt", null, t("Experience")), h("dd", null, note.experience || "—"), h("dt", null, t("Link")), h("dd", null, note.link ? h("a", { href: note.link, target: "_blank", rel: "noopener noreferrer" }, note.link) : "—")),
+          h("h3", { style: "font-size:14px" }, t("Track record (journal)")), rec(a.record),
+          h("div", { class: "field", style: "margin-top:12px" }, h("label", null, t("Approve as")), days, h("div", { class: "field-hint" }, t("A trial ends by itself: three days before, you get a summary and can extend it here.")))),
+        foot: h("div", { style: "display:flex;gap:8px" }, approve, decline) });
+    }
+    function openTrial(u) {
+      const days = trialSelect("30");
+      const save = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
+        try { const r = await api.post(`/api/users/${u.id}/role`, { role: "broadcaster", days: Number(days.value) }); closeDrawer(); toast(r.expires_at ? t("Trial extended until {date}", { date: r.expires_at.slice(0, 10) }) : t("Broadcaster role made permanent"), "success"); loadUsers(); loadAudit(); } catch (e) { toast(e.message, "error"); }
+      } }, icon("check"), t("Save"));
+      openDrawer({ title: t("Trial of {email}", { email: u.email }), width: "460px",
+        body: h("div", null, h("p", { class: "muted", style: "margin-top:0" }, t("Currently until {date}.", { date: u.role_expires_at.slice(0, 10) })), h("div", { class: "field" }, h("label", null, t("From today")), days)),
+        foot: save });
+    }
+
     // ---- users
     const resetLink = linkBox(t("Password-reset link"));
     const users = dataTable({ empty: t("No users"), columns: [
@@ -81,9 +122,8 @@ export default {
           } },
           [["user", t("User")], ["broadcaster", t("Broadcaster")], ["admin", t("Admin")]].map(([v, l]) => h("option", { value: v, selected: v === role }, l)));
         return h("span", { style: "display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap" }, sel,
-          u.role_request ? h("button", { type: "button", class: "btn btn-primary btn-sm", title: t("Requested {when}", { when: fmtDateTime(u.role_requested_at) }), onClick: async () => {
-            try { await api.post(`/api/users/${u.id}/role`, { role: u.role_request }); toast(t("{email} is now a {role}", { email: u.email, role: ROLE_LABEL[u.role_request] }), "success"); loadUsers(); loadAudit(); } catch (err) { toast(err.message, "error"); }
-          } }, icon("check"), t("Approve {role}", { role: ROLE_LABEL[u.role_request] })) : null);
+          u.role_request ? h("button", { type: "button", class: "btn btn-primary btn-sm", title: t("Requested {when}", { when: fmtDateTime(u.role_requested_at) }), onClick: () => openApplication(u) }, icon("check"), t("Review {role} request", { role: ROLE_LABEL[u.role_request] })) : null,
+          role === "broadcaster" && u.role_expires_at ? h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Trial Broadcaster — click to extend or make permanent"), onClick: () => openTrial(u) }, icon("clock"), t("until {date}", { date: u.role_expires_at.slice(0, 10) })) : null);
       } },
       { label: t("Discord Signals"), render: (u) => h("input", { type: "checkbox", class: "switch", checked: (u.features || {}).discord_signals === true, title: t("Grant the Discord listener module"), onChange: async (e) => {
         try { await api.post(`/api/users/${u.id}/features`, { feature: "discord_signals", enabled: e.target.checked }); toast(t("Discord Signals {state} for {email}", { state: e.target.checked ? t("enabled") : t("disabled"), email: u.email }), "success"); loadAudit(); }

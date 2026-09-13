@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, auth, automations, backups, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, readiness, releases, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
+from . import alerts, auth, automations, backups, broadcaster, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, readiness, releases, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
 from .discord_signals.routes import router as discord_router
 from .routers import ROUTERS
 from . import web
@@ -92,7 +92,8 @@ async def _startup() -> None:
                       asyncio.create_task(readiness.lag_loop(), name="loop-lag-sampler"),
                       asyncio.create_task(readiness.readiness_loop(), name="readiness-loop"),
                       asyncio.create_task(readiness.heartbeat_loop(), name="platform-heartbeat-loop"),
-                      asyncio.create_task(alerts.digest_loop(), name="alert-digest-loop")]
+                      asyncio.create_task(alerts.digest_loop(), name="alert-digest-loop"),
+                      asyncio.create_task(broadcaster.loop(), name="broadcaster-loop")]
     try:
         n = releases.mail_release()                 # alpha.97: release notes once per version
         if n:

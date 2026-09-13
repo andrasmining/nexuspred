@@ -117,3 +117,9 @@ dialog.dlg::backdrop { background: rgba(0, 0, 0, .55); backdrop-filter: blur(2px
 .kv dd { margin: 0; word-break: break-word; }
 
 .whatsnew { padding-left: 18px; font-size: 14px; line-height: 1.5; } .whatsnew li { margin-bottom: 10px; }
+
+/* alpha.98: broadcaster tiers */
+.tag.tier-badge { font-weight: 700; letter-spacing: .03em; border-color: transparent; }
+.tag.tier-badge.bronze { background: color-mix(in srgb, #b87333 22%, transparent); color: #c9843f; }
+.tag.tier-badge.silver { background: color-mix(in srgb, #9aa5b1 25%, transparent); color: #aeb8c4; }
+.tag.tier-badge.gold { background: color-mix(in srgb, #d4a017 25%, transparent); color: #e0b13a; }

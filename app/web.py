@@ -144,6 +144,8 @@ ROUTE_POLICY: list[tuple[tuple[str, ...] | None, str, str]] = [
     (None, "/api/backups", "admin"),
     (None, "/api/platform/", "admin"),
     (None, "/api/incidents", "admin"),
+    (None, "/api/broadcaster/", "broadcaster"),
+    (None, "/api/announcements", "broadcaster"),
     (("PUT", "POST", "DELETE"), "/api/webhooks", "user"),           # own webhooks: every role (sharing / subscribers: see the exact rules)
     (None, "/api/simulator", "broadcaster"),
     (None, "/api/simulate", "broadcaster"),

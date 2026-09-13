@@ -2,6 +2,8 @@
 self-service password change, admin-issued password resets."""
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -42,7 +44,10 @@ async def api_role_request(request: Request) -> dict[str, Any]:
     wanted = str(body.get("role") or "broadcaster")
     if wanted != "broadcaster" or web.has_role(user, "broadcaster"):
         raise HTTPException(status_code=400, detail="Only the Broadcaster role can be requested")
-    db.request_role(user["id"], "broadcaster")
+    note = {k: str(body.get(k) or "").strip()[:500] for k in ("strategy", "instruments", "experience", "link")}   # alpha.98: the application
+    if note["link"] and not note["link"].startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="The link must start with http:// or https://")
+    db.request_role(user["id"], "broadcaster", note)
     db.log_action(user["id"], user["email"], "role_request", user["email"], "broadcaster")
     state.log_event("info", f"{user['email']} asked for the Broadcaster role — approve it under Settings → Users")
     with context.use_area(context.DEFAULT_AREA_ID):                       # the operator's workspace hears it too
@@ -59,6 +64,33 @@ async def api_role_request_withdraw(request: Request) -> dict[str, Any]:
     user = require_role(request, "user")
     db.clear_role_request(user["id"])
     return {"status": "withdrawn"}
+
+
+def _expiry(body: dict[str, Any]) -> str | None:
+    """``days`` in the body: >0 = a trial ending then, 0 = permanent (clears), absent = keep."""
+    if "days" not in body:
+        return None
+    try:
+        days = int(body.get("days") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="days must be a number")
+    if days <= 0:
+        return ""
+    if days > 365:
+        raise HTTPException(status_code=400, detail="a trial is at most 365 days")
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
+
+
+@router.get("/users/{user_id}/application")
+async def api_application(request: Request, user_id: int) -> dict[str, Any]:
+    """Admin: the Broadcaster application of a user next to their track record."""
+    from .. import broadcaster
+    require_admin(request)
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    return await asyncio.to_thread(broadcaster.application, target)
 
 
 @router.post("/users/{user_id}/role")
@@ -81,13 +113,17 @@ async def api_set_role(request: Request, user_id: int) -> dict[str, Any]:
     before = web.role_of(target)
     if before == role:
         db.clear_role_request(user_id)
-        return {"user_id": user_id, "role": role, "effects": {}}
+        exp = _expiry(body)
+        if exp is not None and role == "broadcaster":                    # alpha.98: extend / end a trial
+            db.set_role(user_id, role, expires_at=exp)
+            db.log_action(admin["id"], admin["email"], "role_set", target["email"], f"broadcaster trial {'until ' + exp[:10] if exp else 'made permanent'}")
+        return {"user_id": user_id, "role": role, "effects": {}, "expires_at": db.get_user(user_id).get("role_expires_at", "")}
     effects: dict[str, int] = {}
     if web.ROLE_RANK[before] >= web.ROLE_RANK["broadcaster"] and web.ROLE_RANK[role] < web.ROLE_RANK["broadcaster"]:
         area = db.user_primary_area(user_id)
         if area:
             effects = await roles.demote_publisher(area)
-    db.set_role(user_id, role)
+    db.set_role(user_id, role, expires_at=_expiry(body))
     if mailer.can_send(context.get_area()):
         lang = mailer.lang_for_user(user_id)
         mailer.send_template(target["email"], "role_changed", {**mailer.role_ctx(role, lang, admin["email"]), "url": base_url(request) + "/"},
@@ -95,7 +131,7 @@ async def api_set_role(request: Request, user_id: int) -> dict[str, Any]:
     db.log_action(admin["id"], admin["email"], "role_set", target["email"], f"{before} → {role}"
                   + (f" ({effects['listings']} listings unpublished, {effects['groups']} groups disabled)" if effects else ""))
     state.log_event("info", f"Role of {target['email']} set to {role} by {admin['email']}")
-    return {"user_id": user_id, "role": role, "effects": effects}
+    return {"user_id": user_id, "role": role, "effects": effects, "expires_at": db.get_user(user_id).get("role_expires_at", "")}
 
 
 @router.post("/users/{user_id}/support")

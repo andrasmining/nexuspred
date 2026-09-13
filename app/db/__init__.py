@@ -38,7 +38,7 @@ from .core import (  # noqa: F401
     set_db_file,
 )
 from .users import (
-    ROLES, set_role, request_role, clear_role_request, count_admins,  # noqa: F401
+    ROLES, set_role, request_role, clear_role_request, count_admins, expiring_roles,  # noqa: F401
     hash_password,
     verify_password,
     _row_to_user,
@@ -94,6 +94,9 @@ from .areas import (  # noqa: F401
 from .mail import (  # noqa: F401
     outbox_add, outbox_attachment_in_use, outbox_due, outbox_get, outbox_sent, outbox_failed, outbox_retry, outbox_list, outbox_counts, outbox_prune,
     record_delivery, delivery_status, recent_deliveries, prune_deliveries,
+)
+from .announcements import (  # noqa: F401
+    add_announcement, list_announcements, announcements_today, publisher_subscribers,
 )
 from .notifications import (  # noqa: F401
     add_notification, list_notifications, unread_count, mark_read, prune_notifications,

@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import alerts, context, copy, db, marketplace, payments, state, track_record
+from .. import alerts, broadcaster, context, copy, db, marketplace, payments, state, track_record
 
 router = APIRouter(prefix="/api", tags=["marketplace"])
 
@@ -62,6 +62,8 @@ async def api_marketplace(request: Request) -> list[dict[str, Any]]:
         it["subscriber_count"] = counts[pa].get(key, 0)
         it["subscription"] = mine.get((pa, key))
         it["record"] = _record(pa, it)
+        it["tier"] = broadcaster.tier_of(it["record"], it["subscriber_count"], it.get("published_at"),
+                                         broadcaster.error_rate(pa, key) if it["kind"] == "webhook" else None)     # alpha.98
     return items
 
 

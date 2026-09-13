@@ -15,6 +15,7 @@ export const NAV = [
   { group: t("Routing"), items: [
     { path: "/webhooks", label: t("Webhooks"), icon: "webhook" },
     { path: "/marketplace", label: t("Marketplace"), icon: "store" },
+    { path: "/cockpit", label: t("Cockpit"), icon: "activity", gate: "publish" },
     { path: "/copy", label: t("Copy Trading"), icon: "share" },
     { path: "/subscriptions", label: t("Subscription journal"), icon: "activity" },
   ] },

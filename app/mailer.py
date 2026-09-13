@@ -251,6 +251,20 @@ TEMPLATES: dict[str, dict[str, dict[str, Any]]] = {
         "de": {"subject": "Fluxbridge {version}: was ist neu", "title": "Neu in {version}",
                "body": ["{notes}"], "button": "Fluxbridge öffnen", "foot": "Du erhältst diese Nachricht, weil Produkt-Updates in deinen Mail-Einstellungen eingeschaltet sind."},
     },
+    "announcement": {
+        "en": {"subject": "{publisher}: {title}", "title": "{title}",
+               "body": ["A message from {publisher} to the subscribers of {listing}:", "{body}"], "button": "Open subscriptions",
+               "foot": "You receive this because you subscribe to this publisher and keep broadcaster announcements on."},
+        "de": {"subject": "{publisher}: {title}", "title": "{title}",
+               "body": ["Eine Nachricht von {publisher} an die Abonnenten von {listing}:", "{body}"], "button": "Abos öffnen",
+               "foot": "Du erhältst diese Nachricht, weil du diesen Anbieter abonniert hast und Broadcaster-Ankündigungen eingeschaltet sind."},
+    },
+    "weekly": {
+        "en": {"subject": "Fluxbridge weekly report {week}", "title": "Your week {week}", "body": ["{lines}"], "button": "Open the journal",
+               "foot": "You receive this because the weekly report is on in your mail preferences."},
+        "de": {"subject": "Fluxbridge Wochenreport {week}", "title": "Deine Woche {week}", "body": ["{lines}"], "button": "Journal öffnen",
+               "foot": "Du erhältst diese Nachricht, weil der Wochenreport in deinen Mail-Einstellungen eingeschaltet ist."},
+    },
     "notice": {
         "en": {"subject": "Fluxbridge: {title}", "title": "{title}", "body": ["{message}"], "button": "{button}", "foot": ""},
         "de": {"subject": "Fluxbridge: {title}", "title": "{title}", "body": ["{message}"], "button": "{button}", "foot": ""},
@@ -289,7 +303,7 @@ def render(kind: str, lang: str, ctx: dict[str, Any]) -> tuple[str, str, str]:
     url = str(ctx.get("url") or "")
     unsub = str(ctx.get("unsubscribe_url") or "")
     e = _html.escape
-    ps = "".join(f'<p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#1f2933">{e(p)}</p>' for p in paras)
+    ps = "".join(f'<p style="margin:0 0 14px;font-size:15px;line-height:1.55;color:#1f2933">{"<br>".join(e(line) for line in p.split(chr(10)))}</p>' for p in paras)
     btn = (f'<p style="margin:22px 0 8px"><a href="{e(url)}" style="display:inline-block;background:#0d7c66;color:#ffffff;text-decoration:none;'
            f'font-weight:600;font-size:15px;padding:11px 20px;border-radius:6px">{e(button)}</a></p>'
            f'<p style="margin:0 0 14px;font-size:12px;color:#6b7785;word-break:break-all">{e(url)}</p>') if button else ""

@@ -483,6 +483,10 @@ def init() -> None:
                 c.execute("ALTER TABLE users ADD COLUMN role_request TEXT NOT NULL DEFAULT ''")
                 c.execute("ALTER TABLE users ADD COLUMN role_requested_at TEXT NOT NULL DEFAULT ''")
                 c.execute("UPDATE users SET role='admin', is_admin=1")
+            if "role_note" not in user_cols:
+                # alpha.98: the Broadcaster application (strategy, instruments, experience, link) and a trial expiry
+                c.execute("ALTER TABLE users ADD COLUMN role_note TEXT NOT NULL DEFAULT ''")
+                c.execute("ALTER TABLE users ADD COLUMN role_expires_at TEXT NOT NULL DEFAULT ''")
             if "totp_secret" not in user_cols:
                 # two-factor authentication (app/mfa.py): encrypted secret, enrolment
                 # state, replay counter, salt of the backup-code hashes
@@ -566,6 +570,8 @@ def init() -> None:
             _mail_schema(c)
             from .notifications import _schema as _notif_schema  # alpha.97: notification inbox
             _notif_schema(c)
+            from .announcements import _schema as _ann_schema    # alpha.98: broadcaster announcements
+            _ann_schema(c)
         _initialized = True
 
 

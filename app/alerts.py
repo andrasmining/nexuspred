@@ -615,6 +615,16 @@ async def publisher_event(publisher_area_id: int, kind: str, title: str, message
         _gate.set(None)
 
 
+async def subscriber_announcement(area_id: int, publisher: str, title: str, body: str, *, url: str = "/#/subscriptions") -> None:
+    """alpha.98: a Broadcaster's message to a subscriber — inbox + push (+ Discord), never a trade alert."""
+    with context.use_area(area_id):
+        s = config.load_settings()
+        message = _tr(s)("📣 **{publisher}** — {title}: {body}", publisher=publisher, title=title, body=body[:600])
+        _begin("announcement", "info", f"{publisher}: {title}", message, url, settings=s)
+        await asyncio.gather(_send_discord(message, settings=s), _send_push(f"{publisher}: {title}", body[:180], url=url, settings=s))
+        _gate.set(None)
+
+
 async def security_event(area_id: int, kind: str, title: str, message: str, *, url: str = "/#/settings/security") -> None:
     """alpha.97: a sign-in from a new address, a two-factor reset — the user's
     inbox and push, whatever the alert switches say."""

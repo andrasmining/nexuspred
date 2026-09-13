@@ -172,6 +172,7 @@ ALERT_DE = {
     "Subscription '{title}' switched off: {reason}": "Abo '{title}' ausgeschaltet: {reason}",
     "⏸️ **Subscription paused** — {message}": "⏸️ **Abo pausiert** — {message}",
     "Subscription paused": "Abo pausiert",
+    "📣 **{publisher}** — {title}: {body}": "📣 **{publisher}** — {title}: {body}",
 }
 
 
