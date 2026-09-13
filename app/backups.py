@@ -279,7 +279,7 @@ def rotate(rows: list[dict[str, Any]], cfg: Optional[dict[str, Any]] = None) -> 
         for r in [r for r in ordered if role in (r.get("roles") or ["daily"])][:n]:
             needed.add(r["name"])
     for r in ordered:
-        if r.get("pinned"):
+        if r.get("pinned") or r.get("offsite_pending"):
             needed.add(r["name"])
     kept = [r for r in ordered if r["name"] in needed]
     return kept, [r["name"] for r in ordered if r["name"] not in needed]
@@ -297,7 +297,7 @@ def _make_snapshot_sync(reason: str) -> dict[str, Any]:
     pr = probe(path)
     entry = {"name": name, "created_at": now.isoformat(), "size": path.stat().st_size, "sha256": _sha256(path),
              "verified": pr["verified"], "integrity": pr["integrity"], "mismatch": pr["mismatch"], "roles": _roles_for(now),
-             "reason": reason, "offsite": "", "offsite_error": ""}
+             "reason": reason, "offsite": "", "offsite_pending": "", "offsite_mail_ids": [], "offsite_error": ""}
     rows = _index()
     rows.append(entry)
     kept, drop = rotate(rows)
@@ -316,6 +316,50 @@ def _update_entry(name: str, **fields: Any) -> None:
         if r["name"] == name:
             r.update(fields)
     _save_index(rows)
+
+
+def reconcile_mail_offsite() -> list[tuple[str, str]]:
+    """Reconcile queued mail backups against durable outbox truth.
+
+    ``offsite`` means at least one remote copy was actually delivered. Queueing
+    alone is represented by ``offsite_pending``. Permanent failure of every
+    queued copy is surfaced through ``offsite_error``. The outbox row ids live
+    in the backup index, so reconciliation survives a process restart.
+    """
+    rows = _index()
+    changed = False
+    failures: list[tuple[str, str]] = []
+    for entry in rows:
+        raw_ids = entry.get("offsite_mail_ids") or []
+        try:
+            ids = [int(x) for x in raw_ids]
+        except (TypeError, ValueError):
+            ids = []
+        if not ids or entry.get("offsite"):
+            continue
+        outbox = [db.outbox_get(row_id) for row_id in ids]
+        sent = [r for r in outbox if r and r.get("status") == "sent"]
+        pending = [r for r in outbox if r and r.get("status") == "pending"]
+        if sent:
+            entry.update(offsite=f"mail:{len(sent)} delivered", offsite_pending="", offsite_mail_ids=[], offsite_error="")
+            changed = True
+            continue
+        if pending:
+            pending_text = f"mail:{len(pending)} pending"
+            if entry.get("offsite_pending") != pending_text:
+                entry["offsite_pending"] = pending_text
+                changed = True
+            continue
+        errors = [str(r.get("last_error") or "delivery failed") for r in outbox if r]
+        detail = "mail delivery failed for every admin"
+        if errors:
+            detail += ": " + "; ".join(errors)[:240]
+        entry.update(offsite_pending="", offsite_mail_ids=[], offsite_error=detail)
+        failures.append((str(entry.get("name") or "backup"), detail))
+        changed = True
+    if changed:
+        _save_index(rows)
+    return failures
 
 
 # ------------------------------------------------------------------ encryption
@@ -376,30 +420,36 @@ async def s3_put(cfg: dict[str, Any], key: str, data: bytes) -> str:
     return endpoint + url_path
 
 
-async def push_offsite(entry: dict[str, Any]) -> str:
-    """Encrypt and ship one snapshot per the config. Returns a short description."""
+async def push_offsite(entry: dict[str, Any]) -> tuple[str, list[int]]:
+    """Encrypt and ship one snapshot. Mail stays pending until outbox delivery is confirmed."""
     cfg = get_config()
     path = backup_dir() / entry["name"]
     if cfg["offsite"] == "off":
-        return ""
+        return "", []
     enc = path.with_suffix(".db.enc")
     await asyncio.to_thread(encrypt_file, path, enc)
     try:
         if cfg["offsite"] == "s3":
             data = await asyncio.to_thread(enc.read_bytes)
             url = await s3_put(cfg, f"{cfg['s3_prefix']}{enc.name}", data)
-            return f"s3:{url}"
+            return f"s3:{url}", []
         size_mb = enc.stat().st_size / (1 << 20)
         if size_mb > cfg["mail_max_mb"]:
             raise RuntimeError(f"{size_mb:.1f} MB exceeds the mail limit of {cfg['mail_max_mb']} MB — switch to S3")
         from . import alerts
+        newest = db.outbox_list(limit=1)
+        before_id = int(newest[0]["id"]) if newest else 0
         n = await alerts.notify_admins("backup", {"name": enc.name, "size": f"{size_mb:.1f} MB", "sha256": entry["sha256"][:16],
                                                   "url": (config.PUBLIC_URL or "") + "/#/settings/backups"}, attachment=str(enc))
         if not n:
             raise RuntimeError("no admin has a mail route (platform mailer off)")
-        return f"mail:{n} admin(s)"
+        ids = sorted(int(r["id"]) for r in db.outbox_list(limit=max(100, n * 4))
+                     if int(r["id"]) > before_id and r.get("kind") == "backup" and r.get("attachment") == str(enc))
+        if len(ids) != n:
+            raise RuntimeError("queued backup mail could not be bound to its durable outbox rows")
+        return "", ids
     finally:
-        if cfg["offsite"] != "mail":              # the mailer deletes the attachment after the send
+        if cfg["offsite"] != "mail":              # the mailer deletes a mail attachment after all deliveries settle
             try:
                 enc.unlink()
             except OSError:
@@ -433,18 +483,24 @@ async def run(reason: str = "scheduled") -> dict[str, Any]:
         if not entry["verified"]:
             await _alarm("backup not verified", f"{entry['name']}: integrity {entry['integrity']!r}, mismatch {entry['mismatch']}")
         try:
-            where = await push_offsite(entry)
-            _update_entry(entry["name"], offsite=where, offsite_error="")
-            entry["offsite"] = where
+            where, mail_ids = await push_offsite(entry)
+            if mail_ids:
+                pending = f"mail:{len(mail_ids)} pending"
+                fields = {"offsite": "", "offsite_pending": pending, "offsite_mail_ids": mail_ids, "offsite_error": ""}
+            else:
+                fields = {"offsite": where, "offsite_pending": "", "offsite_mail_ids": [], "offsite_error": ""}
+            _update_entry(entry["name"], **fields)
+            entry.update(fields)
         except Exception as exc:  # noqa: BLE001
             err = f"{type(exc).__name__}: {exc}"[:300]
-            _update_entry(entry["name"], offsite_error=err)
-            entry["offsite_error"] = err
+            _update_entry(entry["name"], offsite_pending="", offsite_mail_ids=[], offsite_error=err)
+            entry.update(offsite_pending="", offsite_mail_ids=[], offsite_error=err)
             await _alarm("off-site push failed", err)
         with context.use_area(context.DEFAULT_AREA_ID):
             state.log_event("info" if entry["verified"] else "warn",
                             f"Backup {entry['name']} written ({entry['size'] // 1024} KB, {'verified' if entry['verified'] else 'NOT verified'}"
-                            + (f", off-site {entry['offsite']}" if entry.get("offsite") else "") + ")")
+                            + (f", off-site {entry['offsite']}" if entry.get("offsite") else "")
+                            + (f", off-site {entry['offsite_pending']}" if entry.get("offsite_pending") else "") + ")")
         return entry
     finally:
         _running = False
@@ -488,6 +544,8 @@ def due(now: Optional[datetime] = None) -> bool:
 
 
 async def tick() -> Optional[dict[str, Any]]:
+    for name, detail in await asyncio.to_thread(reconcile_mail_offsite):
+        await _alarm("off-site mail failed", f"{name}: {detail}")
     now = datetime.now(timezone.utc)
     if not due(now):
         # stale check even when a run is not due (e.g. every run fails to write)
@@ -533,40 +591,115 @@ def path_of(name: str) -> Optional[Path]:
 
 
 RESTORE_FILE = "restore.pending"
+RESTORE_STATE_FILE = "restore.prepared"
 
 
 def schedule_restore(name: str) -> None:
-    """alpha.99: the next start copies this snapshot over the live database (the
-    live file is kept as fluxbridge.db.pre-rollback)."""
+    """The next start atomically restores this snapshot over the live database."""
     if not path_of(name):
         raise ValueError("no such backup")
+    state_file = Path(config.DATA_DIR) / RESTORE_STATE_FILE
+    try:
+        state_file.unlink()
+    except FileNotFoundError:
+        pass
+    stale_pre = Path(db.DB_FILE).with_suffix(".db.pre-rollback.pending")
+    try:
+        stale_pre.unlink()
+    except FileNotFoundError:
+        pass
     (Path(config.DATA_DIR) / RESTORE_FILE).write_text(name, encoding="utf-8")
 
 
+def _database_snapshot(src: Path, dst: Path) -> None:
+    """SQLite-consistent copy of ``src`` including committed WAL contents."""
+    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    target = sqlite3.connect(str(dst))
+    try:
+        with target:
+            source.backup(target)
+        integrity = str(target.execute("PRAGMA integrity_check").fetchone()[0])
+        if integrity != "ok":
+            raise sqlite3.DatabaseError(f"pre-rollback snapshot integrity check: {integrity}")
+    finally:
+        target.close()
+        source.close()
+
+
 def apply_pending_restore() -> Optional[str]:
-    """Called before the database is opened at startup."""
+    """Restore before the database is opened. Failures retain the marker and
+    enough pre-switch state for a retry; startup must fail closed on errors."""
     marker = Path(config.DATA_DIR) / RESTORE_FILE
     if not marker.exists():
         return None
     name = marker.read_text(encoding="utf-8").strip()
-    marker.unlink()
+    if "/" in name or "\\" in name or not name.startswith("fluxbridge-") or not name.endswith(".db"):
+        raise RuntimeError("pending restore marker is invalid")
     src = backup_dir() / name
-    if not src.exists():
-        log.error("pending restore: snapshot %s is gone", name)
-        return None
+    if not src.is_file():
+        raise FileNotFoundError(f"pending restore snapshot is gone: {name}")
+
     live = Path(db.DB_FILE)
+    live.parent.mkdir(parents=True, exist_ok=True)
     db.disconnect()
-    if live.exists():
-        shutil.copy2(live, live.with_suffix(".db.pre-rollback"))
-    for suffix in ("-wal", "-shm"):
+    tmp = live.with_suffix(".db.restoring")
+    pre = live.with_suffix(".db.pre-rollback")
+    pre_tmp = live.with_suffix(".db.pre-rollback.pending")
+    state_file = Path(config.DATA_DIR) / RESTORE_STATE_FILE
+    prepared = state_file.exists() and state_file.read_text(encoding="utf-8").strip() == name and (pre_tmp.exists() or pre.exists())
+
+    try:
         try:
-            (live.parent / (live.name + suffix)).unlink()
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        # Stage and validate the requested snapshot before touching live state.
+        shutil.copy2(src, tmp)
+        check = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        try:
+            integrity = str(check.execute("PRAGMA integrity_check").fetchone()[0])
+        finally:
+            check.close()
+        if integrity != "ok":
+            raise sqlite3.DatabaseError(f"restore snapshot integrity check: {integrity}")
+
+        # Preserve the current database through SQLite itself: copying only the
+        # main file can omit committed rows that still live in the WAL. A retry
+        # reuses this prepared image instead of snapshotting an already-switched DB.
+        if live.exists() and not prepared:
+            try:
+                pre_tmp.unlink()
+            except FileNotFoundError:
+                pass
+            _database_snapshot(live, pre_tmp)
+            state_file.write_text(name, encoding="utf-8")
+            prepared = True
+
+        # Publish the already validated restore in one rename. No database is
+        # opened between this and removal of sidecars belonging to the old inode.
+        os.replace(tmp, live)
+        for suffix in ("-wal", "-shm"):
+            sidecar = live.parent / (live.name + suffix)
+            try:
+                sidecar.unlink()
+            except FileNotFoundError:
+                pass
+        if pre_tmp.exists():
+            os.replace(pre_tmp, pre)
+        marker.unlink()
+        try:
+            state_file.unlink()
+        except FileNotFoundError:
+            pass
+    except Exception:
+        try:
+            tmp.unlink()
         except OSError:
             pass
-    tmp = live.with_suffix(".db.restoring")
-    shutil.copy2(src, tmp)
-    os.replace(tmp, live)                              # a new inode: a connection someone still holds never sees a half-written file
-    log.warning("database restored from %s (previous copy kept as %s)", name, live.with_suffix(".db.pre-rollback").name)
+        # The marker and prepared snapshot remain for a deterministic retry.
+        raise
+
+    log.warning("database restored from %s (previous copy kept as %s)", name, pre.name)
     return name
 
 
