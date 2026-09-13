@@ -6,8 +6,7 @@ from typing import Any
 
 from . import tradovate
 from .engine.common import _base_root
-from .journal import value_per_point
-from .tradovate import TradovateError
+from .journal import VALUE_PER_POINT, value_per_point
 
 CONCENTRATION_SHARE = 0.6            # one symbol holding more than this share of the notional is flagged
 
@@ -19,7 +18,7 @@ async def collect_positions() -> list[dict[str, Any]]:
     async def one(ex: Any) -> list[dict[str, Any]]:
         try:
             rows = await ex.positions()
-        except TradovateError:
+        except Exception:  # noqa: BLE001 - one login down (any broker) must not hide the others
             return []
         return [_tag(r, ex) for r in rows]
 
@@ -42,8 +41,8 @@ async def collect_positions() -> list[dict[str, Any]]:
             groups.setdefault(id(sess), (sess, []))[1].append(ex)
         else:
             singles.append(ex)
-    results = await asyncio.gather(*[per_login(s, exs) for s, exs in groups.values()], *(one(ex) for ex in singles))
-    return [p for chunk in results for p in chunk]
+    results = await asyncio.gather(*[per_login(s, exs) for s, exs in groups.values()], *(one(ex) for ex in singles), return_exceptions=True)
+    return [p for chunk in results if isinstance(chunk, list) for p in chunk]
 
 
 def _tag(row: dict[str, Any], ex: Any) -> dict[str, Any]:
@@ -78,17 +77,21 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not net:
             continue
         price = _num(r.get("netPrice"))
+        known = root.upper() in VALUE_PER_POINT
         vpp = value_per_point(root)
-        notional = abs(net) * price * vpp
+        notional = abs(net) * price * vpp if known else 0.0        # an unknown multiplier is reported, never guessed
         total += notional
         acct = str(r.get("account") or r.get("spec") or "")
         s = by_symbol.setdefault(root, {"root": root, "long": 0.0, "short": 0.0, "net": 0.0, "notional": 0.0, "accounts": 0,
-                                        "long_accounts": [], "short_accounts": [], "value_per_point": vpp, "contracts": []})
+                                        "long_accounts": [], "short_accounts": [], "value_per_point": vpp if known else None,
+                                        "value_per_point_known": known, "contracts": [], "_accts": set()})
         s["long" if net > 0 else "short"] += abs(net)
         s["net"] += net
         s["notional"] += notional
-        s["accounts"] += 1
-        (s["long_accounts"] if net > 0 else s["short_accounts"]).append(acct)
+        s["_accts"].add(acct)
+        side_list = s["long_accounts"] if net > 0 else s["short_accounts"]
+        if acct not in side_list:
+            side_list.append(acct)
         if symbol and symbol not in s["contracts"]:
             s["contracts"].append(symbol)
         a = by_account.setdefault(acct, {"account": acct, "environment": r.get("environment") or "", "contracts": 0.0, "notional": 0.0, "symbols": []})
@@ -97,18 +100,22 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if root not in a["symbols"]:
             a["symbols"].append(root)
     warnings: list[dict[str, Any]] = []
+    known_roots = sum(1 for s in by_symbol.values() if s["value_per_point_known"])
     for s in by_symbol.values():
-        s["share"] = round(s["notional"] / total, 4) if total else 0.0
-        s["notional"] = round(s["notional"], 2)
+        s["accounts"] = len(s.pop("_accts"))
+        s["share"] = round(s["notional"] / total, 4) if total and s["value_per_point_known"] else None if not s["value_per_point_known"] else 0.0
+        s["notional"] = round(s["notional"], 2) if s["value_per_point_known"] else None
         if s["long_accounts"] and s["short_accounts"]:
             warnings.append({"kind": "hedged", "root": s["root"],
                              "detail": f"long on {', '.join(s['long_accounts'])}, short on {', '.join(s['short_accounts'])}"})
-        if len(by_symbol) > 1 and s["share"] > CONCENTRATION_SHARE:
+        if not s["value_per_point_known"]:
+            warnings.append({"kind": "unknown_multiplier", "root": s["root"], "detail": "no contract multiplier on file — notional not counted"})
+        elif known_roots > 1 and (s["share"] or 0) > CONCENTRATION_SHARE:
             warnings.append({"kind": "concentration", "root": s["root"], "detail": f"{round(s['share'] * 100)}% of the notional"})
     for a in by_account.values():
         a["share"] = round(a["notional"] / total, 4) if total else 0.0
         a["notional"] = round(a["notional"], 2)
-    symbols = sorted(by_symbol.values(), key=lambda x: -x["notional"])
+    symbols = sorted(by_symbol.values(), key=lambda x: -(x["notional"] or 0))
     accounts = sorted(by_account.values(), key=lambda x: -x["notional"])
     return {"symbols": symbols, "accounts": accounts, "total_notional": round(total, 2),
             "contracts": round(sum(abs(_num(r.get("netPos"))) for r in rows), 2), "warnings": warnings}

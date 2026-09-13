@@ -687,8 +687,7 @@ async def test_wrong_passphrase_reaches_no_subscriber(live, monkeypatch):
     runs at the ingress, before the fan-out (subscribers execute trusted)."""
     config.save_settings({"webhook_passphrase": "pp"})
     forwarded: list[dict] = []
-    monkeypatch.setattr(signals, "forward_to_subscribers",
-                        lambda payload, webhook, publisher_area=None: forwarded.append(payload) or 0)
+    monkeypatch.setattr(signals, "forward_to_subscribers", lambda payload, webhook, *a, **kw: forwarded.append(payload) or 0)
     executed: list[dict] = []
 
     async def spy(payload, webhook, *, trusted=False, **kw):
@@ -712,8 +711,7 @@ async def test_wrong_passphrase_reaches_no_subscriber(live, monkeypatch):
 
 async def test_no_passphrase_configured_forwards_as_before(live, monkeypatch):
     forwarded: list[dict] = []
-    monkeypatch.setattr(signals, "forward_to_subscribers",
-                        lambda payload, webhook, publisher_area=None: forwarded.append(payload) or 0)
+    monkeypatch.setattr(signals, "forward_to_subscribers", lambda payload, webhook, *a, **kw: forwarded.append(payload) or 0)
 
     async def spy(payload, webhook, *, trusted=False):
         return {"status": "ok"}

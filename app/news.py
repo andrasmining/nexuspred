@@ -415,11 +415,11 @@ async def _tick_area(area_id: int, settings: Optional[dict[str, Any]] = None) ->
             with context.use_area(area_id):
                 state.log_event("warn", f"News lock: {w['title']} ({w['currency'] or 'manual'}) — no new entries until "
                                         f"{_local(w['lock_until'], area_id)}" + (" — flattening open positions" if s["action"] == "flatten" else ""))
-                if s["alert"]:
-                    try:
-                        await events.emit_async("news.lock", title=w["title"], currency=w["currency"], until=_local(w["lock_until"], area_id), flatten=s["action"] == "flatten")
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("news alert failed: %s", exc)
+                try:
+                    await events.emit_async("news.lock", title=w["title"], currency=w["currency"], until=_local(w["lock_until"], area_id),
+                                            flatten=s["action"] == "flatten", alert=bool(s["alert"]))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("news alert failed: %s", exc)
         if s["action"] == "flatten" and k not in _flattened and _flatten_tries.get(k, 0) < FLATTEN_TRIES:
             from . import signals
             with context.use_area(area_id):

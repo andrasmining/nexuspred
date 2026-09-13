@@ -140,6 +140,13 @@ async def validate_settings(updates: dict[str, Any]) -> None:
         if len(parts) != 2 or not all(x.isdigit() for x in parts) or not (0 <= int(parts[0]) < 24 and 0 <= int(parts[1]) < 60):
             raise HTTPException(status_code=400, detail="Journal import time must be HH:MM")
         updates["journal_import_time"] = f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+    if "symbol_map" in updates:
+        sm = updates.get("symbol_map")
+        if sm is None:
+            sm = {}
+        if not isinstance(sm, dict) or not all(isinstance(k, str) and isinstance(v, str) and 0 < len(k) <= 64 and len(v) <= 64 for k, v in sm.items()):
+            raise HTTPException(status_code=400, detail="symbol_map must map symbol names (text, at most 64 characters) to contracts")
+        updates["symbol_map"] = {k.strip(): v.strip() for k, v in sm.items() if k.strip()}
     if "alert_accounts" in updates:
         raw = updates.get("alert_accounts")
         if raw is None:

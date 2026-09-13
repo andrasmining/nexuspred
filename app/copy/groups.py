@@ -54,7 +54,9 @@ def load_groups(area_id: Optional[int] = None) -> list[dict[str, Any]]:
 
 
 def save_groups(groups: list[dict[str, Any]], area_id: Optional[int] = None) -> None:
+    from .. import track_record
     config.save_settings({"copy_groups": groups}, area_id=area_id)
+    track_record.invalidate(context.get_area() if area_id is None else area_id)
 
 
 def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts: list[dict[str, Any]]) -> None:
@@ -274,8 +276,10 @@ def following_status(area_id: int) -> list[dict[str, Any]]:
         r = _runners.get((sub["publisher_area_id"], gid)) if g else None
         st = r.status() if r else None
         mine = {str(a.get("spec")) for a in sub.get("accounts") or [] if isinstance(a, dict)}
+        from .. import marketplace
         out.append({"sub_id": sub["id"], "publisher_area_id": sub["publisher_area_id"], "group_id": gid,
-                    "enabled": sub["enabled"], "accounts": sub.get("accounts") or [], "created_at": sub["created_at"],
+                    "enabled": sub["enabled"], "status": sub.get("status", "active"), "accounts": sub.get("accounts") or [], "created_at": sub["created_at"],
+                    **(marketplace._price_view(sh) if g else {"paid": False, "price_cents": 0, "currency": "", "trial_days": 0}),
                     "published": g is not None, "title": (sh.get("title") or (g or {}).get("name") or "Copy group") if g else "(no longer published)",
                     "publisher_email": db.area_owner_email(sub["publisher_area_id"]) or "", "symbols": list((g or {}).get("symbols") or []),
                     "running": bool(st and st["running"]), "feed_ok": bool(st and st["feed_ok"]), "paused": bool(st and st["paused"]),
@@ -307,8 +311,8 @@ def external_followers(area_id: int, group_id: str, *, group: Optional[dict[str,
     (their logins, trading switch, risk locks, logs) and subscription id.
     ``group`` is the already loaded group (saves a settings read)."""
     out: list[dict[str, Any]] = []
-    published = sharing_of(group)["enabled"] if group is not None else find_published(area_id, group_id)[0] is not None
-    if not published:
+    sh = sharing_of(group) if group is not None else find_published(area_id, group_id)[1]
+    if not sh.get("enabled") or sh.get("paused"):       # the publisher's pause takes every marketplace follower out of the mirror
         return out                                   # unpublished: subscribers' accounts leave the mirror
     for sub in db.active_subscriptions(area_id, f"copy:{group_id}"):
         for a in sub.get("accounts") or []:

@@ -31,11 +31,12 @@ export default {
     }
     const saveBtn = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
       hint.textContent = t("Saving…"); hint.className = "save-hint";
+      saveBtn.disabled = true;
       try {
         const c = await api.put("/api/payments/config", { enabled: enabled.checked, stripe_secret_key: secret.input.value, stripe_webhook_secret: whsec.input.value,
           currency: currency.value, trial_days_default: Number(trial.value) || 0 });
         fill(c); hint.textContent = t("Saved."); hint.className = "save-hint ok"; toast(t("Payments settings saved"), "success"); loadRows();
-      } catch (e) { hint.textContent = e.message; hint.className = "save-hint err"; toast(e.message, "error"); }
+      } catch (e) { hint.textContent = e.message; hint.className = "save-hint err"; toast(e.message, "error"); } finally { saveBtn.disabled = false; }
     } }, icon("check"), t("Save"));
     function fill(c) {
       enabled.checked = !!c.enabled; secret.input.value = c.stripe_secret_key || ""; whsec.input.value = c.stripe_webhook_secret || "";
@@ -54,7 +55,8 @@ export default {
         { label: t("Updated"), render: (p) => fmtDateTime(p.updated_at) },
       ],
     });
-    const loadRows = () => api.get("/api/payments").then((l) => rows.update(l)).catch((e) => toast(e.message, "error"));
+    let alive = true;
+    const loadRows = () => api.get("/api/payments").then((l) => { if (alive) rows.update(l); }).catch((e) => { if (alive) toast(e.message, "error"); });
     root.append(
       pageHead(t("Payments"), t("Paid marketplace listings through Stripe Checkout. Money lands in the Stripe account connected here (yours, the operator's); settling with publishers happens outside the bridge. Publishers set a monthly price and an optional trial on their listing; a subscriber gets nothing until Stripe confirms the payment, and stops receiving when it lapses.")),
       card({ title: t("Stripe connection") },
@@ -71,8 +73,8 @@ export default {
         h("p", { class: "hint" }, t("Selling trading signals may be regulated where you and your subscribers live. Check the rules that apply to you before switching this on."))),
       card({ title: t("Payments"), actions: [h("button", { class: "btn btn-ghost btn-sm", onClick: loadRows }, icon("refresh"), t("Refresh"))] }, rows.el),
     );
-    api.get("/api/payments/config").then(fill).catch((e) => toast(e.message, "error"));
+    api.get("/api/payments/config").then((c) => { if (alive) fill(c); }).catch((e) => { if (alive) toast(e.message, "error"); });
     loadRows();
-    return () => {};
+    return () => { alive = false; };
   },
 };

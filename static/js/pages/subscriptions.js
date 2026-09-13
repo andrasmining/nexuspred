@@ -75,9 +75,11 @@ export default {
       } catch (e) { toast(e.message, "error"); }
     }
 
+    let alive = true;
     async function load() {
       try {
         const subs = await api.get("/api/subscriptions");
+        if (!alive) return;
         clear(list);
         status.textContent = "";
         if (!subs.length) {
@@ -85,6 +87,7 @@ export default {
           return;
         }
         const journals = await Promise.all(subs.map((s) => api.get(`/api/subscriptions/${s.id}/journal`).catch(() => null)));
+        if (!alive) return;
         subs.forEach((s, i) => {
           const j = journals[i];
           const isCopy = s.kind === "copy";
@@ -92,7 +95,7 @@ export default {
           const sig = j && j.signals;
           const manage = () => (isCopy ? openCopySubscriptionDrawer({ ...(s.copy || {}), subscription: s }, load) : openSubscriptionDrawer({ ...(s.webhook || {}), subscription: s }, load));
           list.append(h("div", { class: "card mk-card" },
-            h("div", { class: "mk-title" }, h("strong", null, view.title), isCopy ? tag("copy trading", "accent") : tag(STRATEGY_LABEL[view.strategy] || view.strategy || "—", view.strategy),
+            h("div", { class: "mk-title" }, h("strong", null, view.title), isCopy ? tag(t("copy trading"), "accent") : tag(STRATEGY_LABEL[view.strategy] || view.strategy || "—", view.strategy),
               s.status === "unpaid" ? tag(t("unpaid"), "off") : s.status === "pending" ? tag(t("awaiting approval"), "warn") : s.status === "paused" ? tag(t("paused by publisher"), "warn") : !s.active ? tag(t("inactive"), "warn") : tag(t("active"), "on")),
             h("div", { class: "mk-meta" }, icon("user"), view.publisher_email || "—", "·", icon("calendar"), t("since {when}", { when: fmtDateTime(s.created_at) }),
               "·", icon("users"), t("{n} account(s)", { n: (s.accounts || []).filter((a) => a.enabled !== false).length })),
@@ -116,13 +119,18 @@ export default {
     }
     root.append(
       pageHead(t("Subscription journal"), t("What each subscription did for you: the signals it delivered and how they ended, or the mirrored copy events, and your P&L on the routed accounts since you subscribed."), [
-        ((store.get("status") || {}).payments || {}).enabled ? h("button", { class: "btn btn-ghost", onClick: async () => {
-          try { const r = await api.post("/api/payments/portal"); window.location.href = r.url; } catch (e) { toast(e.message, "error"); }
+        ((store.get("status") || {}).payments || {}).enabled ? h("button", { class: "btn btn-ghost", onClick: async (e) => {
+          const btn = e.currentTarget; btn.disabled = true;
+          try {
+            const r = await api.post("/api/payments/portal");
+            if (!/^https:\/\/([a-z0-9-]+\.)*stripe\.com\//.test(r.url || "")) { toast(t("Stripe did not return a payment link"), "error"); return; }
+            window.location.href = r.url;
+          } catch (err) { toast(err.message, "error"); } finally { btn.disabled = false; }
         } }, icon("external"), t("Manage billing")) : null,
         h("button", { class: "btn", onClick: load }, icon("refresh"), t("Refresh")),
       ]),
       status, list, detail);
     load();
-    return () => {};
+    return () => { alive = false; };
   },
 };

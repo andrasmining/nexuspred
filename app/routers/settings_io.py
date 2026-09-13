@@ -109,8 +109,6 @@ async def _validate(doc: Any, area_id: int) -> dict[str, Any]:
         sm = incoming["symbol_map"]
         if not isinstance(sm, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in sm.items()):
             raise HTTPException(status_code=400, detail="symbol_map must map symbol names to contracts")
-    if "allowed_symbols" in incoming and not isinstance(incoming["allowed_symbols"], (list, str)):
-        raise HTTPException(status_code=400, detail="allowed_symbols must be a list")
     try:                                                  # the schema types and bounds every key (webhooks / news_lock were normalised above)
         incoming.update(settings_schema.coerce({k: v for k, v in incoming.items() if k not in ("webhooks", "news_lock", "automations")}, allow_protected=True))
     except ValueError as exc:

@@ -726,7 +726,7 @@ latency.
 
 ### Paid subscriptions (Stripe)
 
-Settings → Payments (admin) connects the **operator's** Stripe account: a secret (or
+Settings → Payments (the operator, i.e. the first admin) connects the **operator's** Stripe account: a secret (or
 restricted) key, the webhook signing secret, the currency and a default trial. With the
 switch on, a publisher can put a monthly price and a free trial on a listing (Sharing tab).
 A subscriber who subscribes to a paid listing is created as `unpaid` — nothing is forwarded
@@ -734,8 +734,10 @@ A subscriber who subscribes to a paid listing is created as `unpaid` — nothing
 (`POST /api/payments/webhook`, signature-verified, `checkout.session.completed`,
 `customer.subscription.created / updated / deleted`, `invoice.payment_failed`) flips the
 subscription to `active` (or `pending` when the publisher approves by hand) and back to
-`unpaid` when the Stripe subscription lapses, fails or is cancelled. *Manage billing* opens
-the Stripe customer portal. The admin switch off makes every listing free again. Money
+`unpaid` when the Stripe subscription lapses, fails, is refunded, disputed or cancelled;
+events are applied once and in order. Unsubscribing cancels the Stripe subscription; a trial
+is granted once per subscriber and listing; a listing that turns paid demotes subscribers
+without a paid record to `unpaid`. *Manage billing* opens the Stripe customer portal. The admin switch off makes every listing free again. Money
 lands in the operator's Stripe account; settling with publishers happens outside the
 bridge. Stripe is called over plain HTTPS (no SDK); secrets are encrypted at rest.
 Selling trading signals may be regulated where you and your subscribers live — check the

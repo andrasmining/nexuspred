@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from .. import automations, config, context, db, exposure, metrics, security, signals, state, tradovate
-from ..engine.common import _cancel_working
+from ..engine.common import _base_root, _close_contract
 from ..tradovate import OrderOutcomeUnknown, TradovateError
 
 router = APIRouter()
@@ -69,8 +69,9 @@ async def api_manual_order(request: Request) -> dict[str, Any]:
     if action not in ("buy", "sell"):
         raise HTTPException(status_code=400, detail="action must be buy or sell")
     try:
-        qty = int(float(body.get("qty") or 0))
-    except (TypeError, ValueError):
+        qty_f = float(body.get("qty") or 0)
+        qty = int(qty_f) if math.isfinite(qty_f) else -1
+    except (TypeError, ValueError, OverflowError):
         raise HTTPException(status_code=400, detail="qty must be a whole number")
     if not 1 <= qty <= MAX_MANUAL_QTY:
         raise HTTPException(status_code=400, detail=f"qty must be between 1 and {MAX_MANUAL_QTY}")
@@ -87,19 +88,19 @@ async def api_manual_order(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="Trading is disabled — switch it on in the top bar first")
     target = (s.get("symbol_map") or {}).get(symbol) or (s.get("symbol_map") or {}).get(symbol.upper()) or symbol.upper()
     ex = _executor(body)
+    detail = f"{action} {qty} {target} {order_type}" + (f" @ {price}" if price is not None else "") + (f" stop {stop_price}" if stop_price is not None else "")
+    if user:                                     # audited before the broker call: an unknown outcome still names who sent it
+        db.log_action(user["id"], user["email"], "manual_order", ex.name, detail)
     try:
         contract = await ex.resolve_contract(target)
         order = await ex.place_order(symbol=contract, action=action.capitalize(), qty=qty, order_type=order_type,
                                      price=price, stop_price=stop_price)
     except OrderOutcomeUnknown as exc:
-        state.log_event("error", f"Manual order {action} {qty} {target} on {ex.name}: outcome unknown — {exc}")
+        state.log_event("error", f"Manual order {detail} on {ex.name} by {user.get('email', '?')}: outcome unknown — {exc}")
         raise HTTPException(status_code=502, detail=f"Order outcome unknown — check the broker: {exc}") from exc
     except TradovateError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     state.log_event("info", f"Manual order: {action} {qty} {contract} {order_type} on {ex.name} by {user.get('email', '?')}")
-    if user:
-        db.log_action(user["id"], user["email"], "manual_order", ex.name, f"{action} {qty} {contract} {order_type}"
-                      + (f" @ {price}" if price is not None else "") + (f" stop {stop_price}" if stop_price is not None else ""))
     return {"status": order.get("status", "submitted"), "order_id": order.get("order_id"), "contract": contract,
             "account": ex.name, "action": action, "qty": qty, "order_type": order_type}
 
@@ -117,26 +118,39 @@ async def api_close_position(request: Request) -> dict[str, Any]:
     if not contract or len(contract) > 20:
         raise HTTPException(status_code=400, detail="symbol is required")
     ex = _executor(body)
-    errors: list[str] = []
-    cancelled = await _cancel_working(ex, "", errors, contract=contract)
-    try:
-        await ex.liquidate_position(contract)
-    except TradovateError as exc:
-        raise HTTPException(status_code=502, detail=f"{ex.name}: close {contract} failed — {exc}" + (f" (cancel errors: {'; '.join(errors)})" if errors else "")) from exc
-    # the bridge stops managing that trade on this account (other accounts stay tracked)
+    # Hold the trade locks of every tracked trade on this account + contract so an
+    # in-flight signal (entry, stop placement, close) cannot interleave with the close.
     live = signals._map_for(False)
+    root = _base_root(contract.upper())
     with signals._lock:
-        for key in list(live):
-            accounts = live[key].get("accounts") or {}
-            acc = accounts.get(ex.name)
-            if acc and str(acc.get("contract") or live[key].get("contract") or "") == contract:
+        keys = sorted(k for k, t in live.items() if (t.get("accounts") or {}).get(ex.name)
+                      and str(((t.get("accounts") or {}).get(ex.name) or {}).get("contract") or t.get("contract") or "") == contract)
+    lock_keys = [f"{context.get_area()}:live:{k.split(':', 1)[0]}:{root}" for k in keys] or [f"{context.get_area()}:live:manual:{root}"]
+    locks = [signals._trade_lock(k) for k in sorted(set(lock_keys))]
+    for lk in locks:
+        await lk.acquire()
+    try:
+        try:
+            cancelled = await _close_contract(ex, "", contract)          # cancel → liquidate → retry cancels; raises when orders remain
+        except TradovateError as exc:
+            raise HTTPException(status_code=502, detail=f"{ex.name}: close {contract} failed — {exc}") from exc
+        # the bridge stops managing that trade on this account (other accounts stay tracked)
+        with signals._lock:
+            for key in keys:
+                trade = live.get(key)
+                if not trade:
+                    continue
+                accounts = trade.get("accounts") or {}
                 accounts.pop(ex.name, None)
                 if not accounts:
                     live.pop(key, None)
+    finally:
+        for lk in locks:
+            lk.release()
     state.log_event("info", f"Position closed from the dashboard: {contract} on {ex.name} ({cancelled} order(s) cancelled) by {user.get('email', '?')}")
     if user:
         db.log_action(user["id"], user["email"], "close_position", ex.name, f"{contract}, {cancelled} order(s) cancelled")
-    return {"status": "ok", "contract": contract, "account": ex.name, "cancelled": cancelled, "errors": errors}
+    return {"status": "ok", "contract": contract, "account": ex.name, "cancelled": cancelled, "errors": []}
 
 
 @router.get("/api/exposure")

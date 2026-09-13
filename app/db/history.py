@@ -134,7 +134,7 @@ def count_signal_outcomes(area_id: int, webhook_id: str, since_ts: str) -> int:
     """Outcome rows (everything but the ingress ``received`` echo) since ``since_ts``."""
     init()
     with _connect() as c:
-        r = c.execute("SELECT COUNT(*) n FROM signal_log WHERE area_id=? AND webhook_id=? AND ts>=? AND result<>'received'",
+        r = c.execute("SELECT COUNT(*) n FROM signal_log WHERE area_id=? AND webhook_id=? AND ts>=? AND result NOT IN ('received','skipped')",
                       (area_id, webhook_id, since_ts)).fetchone()
     return int(r["n"] or 0)
 

@@ -4,6 +4,71 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.80
+Fifth review pass over the alpha.75–79 code (five independent read-only reviews, every finding
+verified before a change; 665 tests, 23 new). The signal path for Tradovate is unchanged.
+
+**Payments**
+- A completed Checkout session grants access only when Stripe reports it *paid*; delayed
+  payment methods stay `unpaid` until the subscription event confirms.
+- Stripe events are applied once and in order (event id + created stamp per payment row):
+  a replayed or late `canceled` can no longer re-activate or de-activate a subscriber.
+- Unknown or missing subscription states fail closed (unpaid); refunds, disputes and
+  uncollectible invoices withdraw access (resolved through the invoice's subscription).
+- A listing that turns paid — or the operator switching payments on — demotes every
+  active / pending subscription without a paid record to `unpaid`; a publisher cannot set an
+  unpaid subscriber to active on a paid listing.
+- One Checkout per listing: a pending session link is handed back for up to 20 h, a live
+  Stripe subscription refuses a second Checkout, a trial is granted once per subscriber and
+  listing, and unsubscribing cancels the Stripe subscription.
+- A publisher's pause survives a payment lapse and return. The operator (first admin) alone
+  reads / writes the Stripe keys and the full ledger; other admins see their own listings'
+  payments. Return URLs come from `NEXUSPRED_PUBLIC_URL` or the bound host, never a
+  forwarded header. Odd bytes in `Stripe-Signature` are a 400, error bodies are constant.
+
+**Automations / event bus**
+- Producers announce unconditionally: the position, agent, news-lock and rollover events no
+  longer depend on the *alert* preferences (an "alerts off" user still gets their flatten
+  rule); the alert handlers apply the switches and the account list. Position polling stays
+  fast while a rule listens on position events.
+- `"*"` subscribers (automations, metrics) never hold the producer — the risk guard's flatten
+  no longer waits for SMTP.
+- Rule messages use plain `{name}` substitution (no format specs, no attribute walks — a 20-
+  character message could have allocated a gigabyte); the cooldown starts after the action
+  and a failed action retries after 30 s; events caused by an action never re-trigger rules;
+  the minimum cooldown is 10 s; `lock_account` never overwrites the risk guard's own record;
+  the webhook filter applies only to events that name a webhook; rules are read without
+  copying the settings on every event.
+
+**Order ticket / exposure / metrics / settings**
+- Close-position holds the trade locks and uses the engine's close routine: leftover working
+  orders are retried, alerted and reported as a failure instead of a green toast.
+- The manual order is audited before the broker call (an unknown outcome still names who
+  sent it); `qty: inf` is a 400.
+- Exposure: one broken login of any broker no longer 500s the view; symbols without a
+  contract multiplier are flagged instead of counted at 1.0; accounts are counted once.
+- `/metrics` publishes connected / configured logins per area and broker, never login names;
+  non-ASCII bearer bytes are a 401.
+- `symbol_map` values are validated on the settings form path too; the signal latency now
+  spans acceptance → broker answer (queueing included).
+
+**Marketplace**
+- A publisher's pause takes copy followers out of the mirror; the copy subscription journal
+  reads the subscriber's own rows; TS-Hunter subscriptions honour the symbol and daily-cap
+  controls; management no-ops and skips never count towards "pause after N errors"; the
+  daily cap ignores skipped signals and uses the journal timezone; routed accounts are
+  bounded to known ones; listing records are built without the detail path and invalidated
+  by journal imports and routing changes; `controls` migrates independently of `status`.
+
+**Dashboard**
+- Hidden rule filters are no longer saved (a webhook picked for one event silently killed a
+  rule on another); rule tables show webhook names; a stale positions error clears; Close /
+  Pay / Save buttons cannot double-submit; Stripe links are validated before redirecting;
+  pages ignore responses that arrive after navigation; the copy "Following" table shows
+  unpaid / pending / paused and can pay; the marketplace card strings are translated and a
+  tag filter can be cleared from the bar; the subscription drawer's Save never jumps to
+  Stripe (a Pay now button does).
+
 ## 5.0.0-alpha.79
 Marketplace 8 — paid subscriptions (642 tests, 9 new):
 - **Stripe Checkout** for paid listings: operator config under Settings → Payments (admin

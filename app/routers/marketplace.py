@@ -73,8 +73,8 @@ def _record(publisher_area_id: int, item: dict[str, Any], *, detail: bool = Fals
             return track_record.copy_record(publisher_area_id, g, detail=detail) if g else None
         wh, _sh = marketplace.find_published(publisher_area_id, item["webhook_id"])
         return track_record.webhook_record(publisher_area_id, wh, detail=detail) if wh else None
-    except Exception as exc:  # noqa: BLE001 - a record must never break the listing
-        state.log_event("warn", f"track record for {item.get('webhook_id') or item.get('group_id')} failed: {exc}")
+    except Exception:  # noqa: BLE001 - a record must never break the listing; the cause goes to the server log, not the viewer's
+        track_record.log.exception("track record for %s failed", item.get("webhook_id") or item.get("group_id"))
         return None
 
 
@@ -229,6 +229,12 @@ async def api_update_subscription(request: Request, sub_id: int) -> dict[str, An
 @router.delete("/subscriptions/{sub_id}")
 async def api_unsubscribe(request: Request, sub_id: int) -> dict[str, Any]:
     user = request.state.user
+    current = db.get_subscription(sub_id, context.get_area())
+    if not current:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    pay = db.get_payment(context.get_area(), current["publisher_area_id"], current["webhook_id"])
+    if pay and not await payments.cancel_stripe_subscription(pay):
+        raise HTTPException(status_code=502, detail="Stripe could not cancel the subscription — try again or use Manage billing")
     sub = db.delete_subscription(sub_id, area_id=context.get_area())
     if not sub:
         raise HTTPException(status_code=404, detail="Subscription not found")

@@ -39,7 +39,7 @@ def authorized(header: str | None) -> bool:
     if not t or not header:
         return False
     scheme, _, value = header.partition(" ")
-    return scheme.lower() == "bearer" and secrets.compare_digest(value.strip(), t)
+    return scheme.lower() == "bearer" and secrets.compare_digest(value.strip().encode("utf-8", "ignore"), t.encode())
 
 
 def _labels(**kw: Any) -> tuple[tuple[str, str], ...]:
@@ -107,7 +107,7 @@ events.subscribe("*", _on_event)
 
 # --------------------------------------------------------------- rendering
 def _esc(v: str) -> str:
-    return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "")
 
 
 def _fmt_labels(labels: Iterable[tuple[str, str]]) -> str:
@@ -116,7 +116,12 @@ def _fmt_labels(labels: Iterable[tuple[str, str]]) -> str:
 
 
 def _num(v: float) -> str:
-    return str(int(v)) if float(v).is_integer() else repr(float(v))
+    f = float(v)
+    if f != f:
+        return "NaN"
+    if f in (float("inf"), float("-inf")):
+        return "+Inf" if f > 0 else "-Inf"
+    return str(int(f)) if f.is_integer() else repr(f)
 
 
 def _gauges() -> list[tuple[str, str, str, list[tuple[tuple[tuple[str, str], ...], float]]]]:
@@ -127,6 +132,7 @@ def _gauges() -> list[tuple[str, str, str, list[tuple[tuple[tuple[str, str], ...
     out.append(("fluxbridge_uptime_seconds", "gauge", "Seconds since the process started.", [((), time.time() - STARTED_AT)]))
     out.append(("fluxbridge_info", "gauge", "Version label.", [(_labels(version=config.get_version()), 1.0)]))
     sessions: list[tuple[tuple[tuple[str, str], ...], float]] = []
+    totals: list[tuple[tuple[tuple[str, str], ...], float]] = []
     trades: list[tuple[tuple[tuple[str, str], ...], float]] = []
     subs: list[tuple[tuple[tuple[str, str], ...], float]] = []
     for aid in list(state._areas):
@@ -135,11 +141,19 @@ def _gauges() -> list[tuple[str, str, str, list[tuple[tuple[tuple[str, str], ...
             continue
         with state._lock:
             sess = [dict(v) for v in st.sessions.values()]
+        # per area and broker, never per login: a scrape token must not learn every tenant's login names
+        per_broker: dict[str, list[int]] = {}
         for s in sess:
-            sessions.append((_labels(area=aid, login=str(s.get("name") or ""), broker=str(s.get("broker") or "tradovate")), 1.0 if s.get("connected") else 0.0))
+            b = per_broker.setdefault(str(s.get("broker") or "tradovate"), [0, 0])
+            b[0] += 1
+            b[1] += 1 if s.get("connected") else 0
+        for broker, (n, up) in per_broker.items():
+            sessions.append((_labels(area=aid, broker=broker), float(up)))
+            totals.append((_labels(area=aid, broker=broker), float(n)))
         trades.append((_labels(area=aid), float(sum(len(t.get("accounts") or {}) for t in signals.active_trades_for(aid).values()))))
         subs.append((_labels(area=aid), float(state.subscriber_count(aid))))
-    out.append(("fluxbridge_broker_connected", "gauge", "1 when the login is connected.", sessions))
+    out.append(("fluxbridge_broker_connected", "gauge", "Connected logins per area and broker.", sessions))
+    out.append(("fluxbridge_brokers_total", "gauge", "Configured logins per area and broker.", totals))
     out.append(("fluxbridge_active_trades", "gauge", "Positions the bridge is managing (per account).", trades))
     out.append(("fluxbridge_stream_subscribers", "gauge", "Open live-feed (SSE) connections.", subs))
     out.append(("fluxbridge_signals_queued", "gauge", "Background signal tasks in flight.", [((), float(len(signals._bg_tasks)))]))

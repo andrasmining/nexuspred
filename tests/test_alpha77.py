@@ -121,10 +121,13 @@ async def test_subscription_journal_lists_signals_and_pnl_since_subscribing(two_
 async def test_subscription_journal_for_a_copy_follow(two_areas, sub_client):
     a2 = two_areas["a2"]
     sub = db.upsert_subscription(a2, 1, "copy:cg_lead", [{"token_idx": 0, "spec": "S1", "enabled": True}], True)
-    db.insert_copy_event(1, {"group_id": "cg_lead", "kind": "mirror", "leader": "L", "follower": "S1", "symbol": "MNQZ6", "detail": "bought 1", "latency_ms": 120})
-    db.insert_copy_event(1, {"group_id": "cg_lead", "kind": "mirror", "leader": "L", "follower": "S9", "symbol": "MNQZ6", "detail": "someone else"})
+    # the runner writes the follower's row into the SUBSCRIBER's area with the real spec (the publisher's copy is aliased)
+    db.insert_copy_event(a2, {"group_id": "cg_lead", "kind": "mirror", "leader": "leader", "follower": "S1", "symbol": "MNQZ6", "detail": "bought 1", "latency_ms": 120})
+    db.insert_copy_event(a2, {"group_id": "cg_lead", "kind": "mirror", "leader": "leader", "follower": "S9", "symbol": "MNQZ6", "detail": "another account"})
+    db.insert_copy_event(1, {"group_id": "cg_lead", "kind": "mirror", "leader": "L", "follower": "subscriber #1", "symbol": "MNQZ6", "detail": "publisher side"})
     j = track_record.subscription_journal(a2, sub)
     assert j["kind"] == "copy" and len(j["copy_events"]) == 1 and j["copy_events"][0]["latency_ms"] == 120 and j["signals"] is None
+    assert j["latency"] == {"n": 1, "p50": 120, "p95": 120, "max": 120}
 
 
 def test_signal_stats_and_filters(admin):

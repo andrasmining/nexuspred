@@ -277,3 +277,120 @@ async def test_signal_done_carries_the_latency(admin, monkeypatch):
     finally:
         off()
     assert seen and isinstance(seen[-1]["seconds"], float) and seen[-1]["seconds"] >= 0
+
+
+# ---------------------------------------------------- review round 5 fixes
+def test_render_message_is_safe_against_format_specs_and_attribute_walks():
+    r = {"name": "N", "message": "{account:>999999999}{account.__class__}{pnl}"}
+    out = automations.render_message(r, "position.closed", {"account": "DEMO11", "pnl": -5.0})
+    assert len(out) < 200 and "{account:>999999999}" in out and "-5.0" in out          # no giant string, no attribute access
+
+
+def test_webhook_filter_only_applies_to_events_that_name_a_webhook():
+    r = automations.normalize_rule({"event": "risk.triggered", "action": "pause_webhook", "webhooks": ["wh_1"]})
+    assert automations.matches(r, "risk.triggered", {"spec": "DEMO11"}, 1)              # the webhook list is the pause target here, not a filter
+
+
+async def test_lock_account_never_overwrites_the_risk_guards_record(monkeypatch, admin):
+    from tests.test_risk import Sess
+    sess = Sess()
+    monkeypatch.setattr(automations, "_find_account", lambda aid, spec: (sess, sess.accounts[0]))
+    risk._lock(1, "DEMO11", "loss", "daily loss limit", -500.0, realized=-500.0, clock_day="2026-09-13")
+    await automations._flatten_accounts(1, ["DEMO11"], lock_reason="automation 'x'")
+    rec = risk.lock_of(1, "DEMO11")
+    assert rec["kind"] == "loss" and rec["realized"] == -500.0                          # the guard's own record survives
+
+
+async def test_cooldown_starts_after_the_action_and_failures_retry_sooner(notified, monkeypatch):
+    calls = []
+
+    async def flaky(name, message):
+        calls.append(name)
+        if len(calls) == 1:
+            raise RuntimeError("smtp down")
+    monkeypatch.setattr(alerts, "automation", flaky)
+    config.save_settings({"automations": automations.normalize_rules([{"id": "au_c", "name": "N", "event": "news.lock", "action": "notify", "cooldown_s": 3600}])}, area_id=1)
+    with context.use_area(1):
+        await events.emit_async("news.lock", title="CPI", currency="USD", until="14:00")
+        await asyncio.sleep(0.01)
+        assert automations.recent(1)[0]["result"].startswith("failed")
+        last = automations._last_fired[(1, "au_c")]
+        assert last < __import__("time").monotonic() - 3600 + automations.RETRY_AFTER_FAILURE_S + 1   # retry window, not the full hour
+        await events.emit_async("news.lock", title="CPI", currency="USD", until="14:00")
+        await asyncio.sleep(0.01)
+    assert len(calls) == 1                                                              # still inside the retry window
+
+
+async def test_actions_do_not_trigger_rules_on_the_events_they_cause(notified, monkeypatch):
+    fired = []
+
+    async def fake_flatten(area_id, specs, *, lock_reason=""):
+        fired.append(specs)
+        events.emit("position.closed", account="DEMO11", symbol="MNQZ6", direction="LONG", qty=1, pnl=-300.0, duration="", remaining=0)
+        await asyncio.sleep(0)
+        return "DEMO11: 1 flattened"
+    monkeypatch.setattr(automations, "_flatten_accounts", fake_flatten)
+    config.save_settings({"automations": automations.normalize_rules([{"event": "position.closed", "action": "flatten_account", "cooldown_s": 0}])}, area_id=1)
+    with context.use_area(1):
+        await events.emit_async("position.closed", account="DEMO11", symbol="MNQZ6", direction="LONG", qty=1, pnl=-300.0, duration="", remaining=0)
+        for _ in range(5):
+            await asyncio.sleep(0)
+    assert fired == [["DEMO11"]]                                                        # the close caused by the flatten did not re-fire the rule
+
+
+async def test_star_handlers_never_block_the_producer(monkeypatch):
+    gate = asyncio.Event()
+
+    async def slow(kind, data):
+        await gate.wait()
+    off = events.subscribe("*", slow)
+    try:
+        await asyncio.wait_for(events.emit_async("execution.problem", title="t", message="m"), 0.5)   # returns without waiting for the star handler
+    finally:
+        gate.set(); off()
+
+
+async def test_close_position_reports_leftover_orders_as_a_failure(client, ticket, monkeypatch):
+    from app.engine import common
+
+    async def failing_cancel(ex, tag, errors=None, contract=None):
+        if errors is not None:
+            errors.append("cancel 5: broker down")
+        return 0
+    monkeypatch.setattr(common, "_cancel_working", failing_cancel)
+    r = await client.post("/api/positions/close", json={"lid": "L1", "spec": "DEMO11", "symbol": "MNQZ6"})
+    assert r.status_code == 502 and "working orders remain" in r.json()["detail"]
+    assert ticket.of("liquidate") == [{"symbol": "MNQZ6"}]                             # the position is closed, the leftover order is reported, never hidden
+
+
+async def test_manual_order_rejects_infinite_qty(client, ticket):
+    config.save_settings({"trading_enabled": True})
+    r = await client.post("/api/orders/manual", json={"lid": "L1", "spec": "DEMO11", "symbol": "MNQ", "action": "buy", "qty": "inf"})
+    assert r.status_code == 400
+
+
+def test_exposure_counts_accounts_once_and_flags_unknown_multipliers():
+    rows = [{"symbol": "MNQZ6", "account": "A", "netPos": 1, "netPrice": 20000.0}, {"symbol": "MNQH7", "account": "A", "netPos": 1, "netPrice": 20100.0},
+            {"symbol": "XYZZ6", "account": "B", "netPos": 5, "netPrice": 1000.0}]
+    x = exposure.summarize(rows)
+    mnq = next(s for s in x["symbols"] if s["root"] == "MNQ"); xyz = next(s for s in x["symbols"] if s["root"] == "XYZ")
+    assert mnq["accounts"] == 1 and mnq["long_accounts"] == ["A"] and mnq["share"] == 1.0
+    assert xyz["value_per_point_known"] is False and xyz["notional"] is None and xyz["share"] is None
+    assert {w["kind"] for w in x["warnings"]} == {"unknown_multiplier"}                # no false concentration warning from a placeholder multiplier
+
+
+async def test_metrics_tolerate_odd_bearer_bytes_and_hide_login_names(anon_client, monkeypatch, admin):
+    monkeypatch.setenv("NEXUSPRED_METRICS_TOKEN", "s3cret")
+    assert (await anon_client.get("/metrics", headers={"Authorization": b"Bearer \xfc"})).status_code == 401
+    with context.use_area(1):
+        from app import state
+        state.set_session_status("Secret Login Name", connected=True, broker="tradovate")
+    text = (await anon_client.get("/metrics", headers={"Authorization": "Bearer s3cret"})).text
+    assert "Secret Login Name" not in text and 'fluxbridge_broker_connected{area="1",broker="tradovate"} 1' in text and 'fluxbridge_brokers_total{area="1",broker="tradovate"} 1' in text
+
+
+async def test_symbol_map_values_are_validated_on_the_form_path(client):
+    r = await client.post("/api/settings", json={"symbol_map": {"MNQ1!": {"a": 1}}})
+    assert r.status_code == 400
+    r = await client.post("/api/settings", json={"symbol_map": {" MNQ1! ": " MNQZ6 "}})
+    assert r.status_code == 200 and r.json()["symbol_map"] == {"MNQ1!": "MNQZ6"}

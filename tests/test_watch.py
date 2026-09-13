@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import asyncio
+
 import pytest
 
 from app import alerts, config, context, db, relay, state, watch
@@ -33,6 +35,27 @@ class Sess(BrokerFeed):
 
 def _snap(acc, realized):
     return {"account_id": acc, "spec": f"DEMO{acc}", "realized": realized}
+
+
+async def settle(n: int = 6) -> None:
+    for _ in range(n):
+        await asyncio.sleep(0)
+
+
+@pytest.fixture
+def pushes(monkeypatch):
+    """Real alert handlers, captured push sends (title, message); Discord / email silenced."""
+    out: list[tuple[str, str]] = []
+
+    async def fake_push(title, message, *, url="/", settings=None):
+        out.append((title, message))
+
+    async def quiet(*a, **k):
+        return None
+    monkeypatch.setattr(alerts, "_send_push", fake_push)
+    monkeypatch.setattr(alerts, "_send_discord", quiet)
+    monkeypatch.setattr(alerts, "_send_email", quiet)
+    return out
 
 
 @pytest.fixture
@@ -101,19 +124,33 @@ async def test_unreachable_login_never_looks_like_a_close(admin, sent):
     assert [e["kind"] for e in ev] == ["closed"] and ev[0]["pnl"] == 12.5 and sent[-1][0] == "trade_closed"
 
 
-async def test_pre_existing_positions_do_not_alert_and_switches_are_honoured(admin, sent):
+async def test_pre_existing_positions_do_not_alert_and_switches_are_honoured(admin, pushes):
+    from app import events
     sess = Sess(positions=[{"accountId": 11, "contractId": 901, "netPos": -1}])
     await watch.observe_area(1, [sess], [_snap(11, 0.0)])
-    assert sent == []                                              # baseline: nothing sent
+    await settle()
+    assert pushes == []                                            # baseline: nothing sent
     with context.use_area(1):
         config.save_settings({"alert_on_trade_closed": False})
-    sess.positions = []
-    ev = await watch.observe_area(1, [sess], [_snap(11, 5.0)])
-    assert [e["kind"] for e in ev] == ["closed"] and sent == []   # detected, recorded, not alerted
-    with context.use_area(1):
-        config.save_settings({"alert_on_trade_opened": False})
-    assert await watch.observe_area(1, [sess], [_snap(11, 5.0)]) == []   # both off → not even polled
-    assert not watch.trade_alerts_enabled(config.load_settings(area_id=1))
+    announced: list[dict] = []
+    off = events.subscribe("position.closed", lambda e: announced.append(e))
+    try:
+        sess.positions = []
+        ev = await watch.observe_area(1, [sess], [_snap(11, 5.0)])
+        await settle()
+        assert [e["kind"] for e in ev] == ["closed"] and pushes == []    # detected, recorded, not alerted …
+        assert announced and announced[0]["account"] == "DEMO11"         # … but still announced (automations do not depend on alert switches)
+        with context.use_area(1):
+            config.save_settings({"alert_on_trade_opened": False})
+        sess.positions = [{"accountId": 11, "contractId": 901, "netPos": 2}]
+        assert [e["kind"] for e in await watch.observe_area(1, [sess], [_snap(11, 5.0)])] == ["opened"]   # both switches off: still diffed
+        await settle()
+        assert pushes == []
+    finally:
+        off()
+    s = config.load_settings(area_id=1)
+    assert not watch.trade_alerts_enabled(s)                                                           # no alert, no rule: slow poll
+    assert watch.trade_alerts_enabled({**s, "automations": [{"enabled": True, "event": "position.closed", "action": "notify"}]})
 
 
 async def test_agent_transitions(admin, sent):
@@ -197,19 +234,21 @@ async def test_daily_summary_time_is_validated(client):
     assert r.status_code == 200 and r.json()["daily_summary_time"] == "07:05"
 
 
-async def test_alert_accounts_filter(admin, sent):
-    """Only ticked accounts raise account-level alerts; others are tracked silently."""
+async def test_alert_accounts_filter(admin, pushes):
+    """Only ticked accounts raise account-level alerts; others are tracked (and announced) silently."""
     with context.use_area(1):
         config.save_settings({"alert_accounts": ["DEMO11"]})
     sess = Sess(accounts=[{"id": 11, "spec": "DEMO11"}, {"id": 12, "spec": "DEMO12"}])
     await watch.observe_area(1, [sess], [_snap(11, 0.0), _snap(12, 0.0)])
     sess.positions = [{"accountId": 11, "contractId": 901, "netPos": 1}, {"accountId": 12, "contractId": 901, "netPos": 1}]
     ev = await watch.observe_area(1, [sess], [_snap(11, 0.0), _snap(12, 0.0)])
+    await settle()
     assert [e["account"] for e in ev] == ["DEMO11", "DEMO12"]           # both detected…
-    assert [c[1][0] for c in sent] == ["DEMO11"]                        # …one alerted
+    assert [t for t, _m in pushes] == [t for t, _m in pushes if "DEMO11" in t] and len(pushes) == 1   # …one alerted
     sess.positions = []
     await watch.observe_area(1, [sess], [_snap(11, 30.0), _snap(12, -5.0)])
-    assert [c[1][0] for c in sent if c[0] == "trade_closed"] == ["DEMO11"]
+    await settle()
+    assert [t for t, _m in pushes if t.startswith("Closed")] == ["Closed LONG MNQZ6 · DEMO11"]
 
 
 async def test_alert_accounts_filter_texts(admin, monkeypatch):

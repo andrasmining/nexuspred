@@ -23,6 +23,7 @@ from . import config, db, sizing, trade_window
 
 VISIBILITIES = ("all", "selected")
 MAX_TAGS, TAG_LEN = 5, 20
+MAX_ROUTED = 50
 MAX_MAX_SUBSCRIBERS = 10_000
 
 
@@ -150,7 +151,12 @@ def subscription_gate(view: dict[str, Any], root: str, action: str, *, area_id: 
         return False, "subscription_symbols", f"{root} is not in the subscription's symbols ({', '.join(c['symbols'])})"
     cap = int(c.get("max_signals_per_day") or 0)
     if cap and action in ("buy", "sell"):
-        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        from zoneinfo import ZoneInfo
+        try:
+            zone = ZoneInfo(str(config.load_settings(area_id=area_id).get("journal_timezone") or "Europe/Zurich"))
+        except Exception:  # noqa: BLE001
+            zone = timezone.utc
+        day_start = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
         n = db.count_signal_outcomes(area_id, str(view.get("id") or ""), day_start)
         if n >= cap:
             return False, "subscription_daily_cap", f"{n} signal(s) already today (cap {cap})"
@@ -224,11 +230,21 @@ def find_published(publisher_area_id: int, webhook_id: str) -> tuple[Optional[di
 
 
 def clean_accounts(raw: Any) -> list[dict[str, Any]]:
-    """Coerce a subscriber's routed-accounts list (same shape as a webhook's)."""
+    """Coerce a subscriber's routed-accounts list (same shape as a webhook's):
+    known accounts only, one entry per account, at most MAX_ROUTED."""
     out: list[dict[str, Any]] = []
-    for a in raw or []:
+    s0 = config.load_settings()
+    known = {str(acc.get("spec") or "") for t in (s0.get("token_accounts") or []) for acc in (t.get("accounts") or [])}
+    seen: set[str] = set()
+    for a in (raw if isinstance(raw, list) else []):
         if not isinstance(a, dict) or not a.get("spec") or a.get("token_idx") is None:
             continue
+        spec = str(a.get("spec"))
+        if spec in seen or (known and spec not in known):
+            continue
+        seen.add(spec)
+        if len(out) >= MAX_ROUTED:
+            break
         try:
             sz = sizing.normalize(a)
             s = config.load_settings()

@@ -140,7 +140,7 @@ function webhookDrawer(wh, { navigate }) {
         catch (e) { toast(e.message, "error"); }
       } }, icon("trash"), t("Remove"))) },
     ] });
-    const loadSubs = () => api.get(`/api/webhooks/${w.id}/subscribers`).then((list) => subsTable.update(list)).catch((e) => { subsTable.update([]); const c = subsTable.tbody.querySelector("td.empty"); if (c) c.textContent = t("Could not load subscribers: ") + e.message; });
+    const loadSubs = () => api.get(`/api/webhooks/${w.id}/subscribers`).then((list) => subsTable.update(list)).catch((e) => { subsTable.update([], { force: true }); const c = subsTable.tbody.querySelector("td.empty"); if (c) c.textContent = t("Could not load subscribers: ") + e.message; });
     loadSubs();
     const shareBtn = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
       shareBtn.disabled = true;

@@ -328,11 +328,10 @@ async def check_area(area_id: int, *, force: bool = False, today: Optional[date]
                                 f"Rollover: {w['tv_symbol']} → {w['contract']} {w['date_kind']} {w['date']} "
                                 f"({'in ' + str(w['days_left']) + 'd' if w['days_left'] >= 0 else 'passed'}); "
                                 f"suggested {w['next']}")
-            if s.get("alert_on_rollover", True):
-                try:
-                    await events.emit_async("rollover.due", message=_message(fresh))
-                except Exception as exc:  # noqa: BLE001
-                    state.log_event("warn", f"rollover alert failed: {exc}")
+            try:
+                await events.emit_async("rollover.due", message=_message(fresh))     # the alert handler applies alert_on_rollover
+            except Exception as exc:  # noqa: BLE001
+                state.log_event("warn", f"rollover alert failed: {exc}")
             for w in fresh:
                 notified[w["contract"]] = w["stage"]
         # Forget contracts that are no longer mapped, so a re-mapped symbol alerts again.

@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import config, context, copy, db, history, marketplace, state
+from .. import config, context, copy, db, history, marketplace, payments, state
 from ..web import require_admin
 from .accounts import trade_accounts_overview
 
@@ -83,10 +83,14 @@ async def api_group_sharing(group_id: str, request: Request) -> dict[str, Any]:
     groups[i] = g
     copy.save_groups(groups)
     after = g["sharing"]
+    if after["enabled"] and after["price_cents"] and (not before["price_cents"] or not before["enabled"]) and payments.configured():
+        n = payments.demote_unpaid(context.get_area(), f"copy:{group_id}")
+        if n:
+            state.log_event("info", f"Copy group '{g.get('name')}' is now paid: {n} follower(s) wait for payment")
     if before["enabled"] != after["enabled"]:
         db.log_action(user["id"], user["email"], "copy_share", after["title"] or g.get("name", ""), "published" if after["enabled"] else "unpublished")
         state.log_event("info", f"Copy group '{g.get('name')}' {'published on' if after['enabled'] else 'removed from'} the marketplace")
-    if before["enabled"] and not after["enabled"]:
+    if (before["enabled"] and not after["enabled"]) or (after["paused"] and not before["paused"]):
         r = copy._runners.get((context.get_area(), group_id))
         await copy.release_followers(context.get_area(), group_id, [f["spec"] for f in (r.external if r else [])])
     await copy.sync_area(context.get_area())          # unpublished → subscribers' accounts leave the mirror
@@ -115,6 +119,9 @@ async def api_group_subscriber_status(group_id: str, sub_id: int, request: Reque
     cur = db.get_subscription(sub_id)
     if not cur or cur["publisher_area_id"] != context.get_area() or cur["webhook_id"] != f"copy:{group_id}":
         raise HTTPException(status_code=404, detail="Subscriber not found")
+    groups, i = _group_or_404(group_id)
+    if status == "active" and not payments.may_activate(cur, marketplace.sharing_of(groups[i])):
+        raise HTTPException(status_code=409, detail="This listing is paid and the follower has not paid")
     sub = db.set_subscription_status(sub_id, context.get_area(), status)
     email = db.area_owner_email(cur["area_id"]) or str(cur["area_id"])
     db.log_action(user["id"], user["email"], "subscriber_status", email, f"copy group {group_id}: {status}")

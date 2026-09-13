@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from . import alerts, config, context, db, relay, state
+from . import config, context, db, relay, state
 from . import events as bus
 
 # area → (account_id, contract_id) → {"qty", "price", "symbol", "account", "opened_at"}
@@ -44,8 +44,13 @@ def reset() -> None:
 
 
 def trade_alerts_enabled(settings: dict[str, Any]) -> bool:
-    """Whether positions must be polled at the fast cadence for alerts."""
-    return bool(settings.get("alert_on_trade_opened", True) or settings.get("alert_on_trade_closed", True))
+    """Whether positions must be polled at the fast cadence: a position alert
+    is on, or an automation listens on position events."""
+    if settings.get("alert_on_trade_opened", True) or settings.get("alert_on_trade_closed", True):
+        return True
+    rules = settings.get("automations")
+    return any(isinstance(r, dict) and r.get("enabled", True) and str(r.get("event", "")).startswith("position.")
+               for r in (rules if isinstance(rules, list) else []))
 
 
 def _direction(net: float) -> str:
@@ -118,12 +123,8 @@ async def observe_area(area_id: int, sessions: list[Any], snapshots: list[dict[s
                        positions: Optional[dict[str, Optional[list[dict[str, Any]]]]] = None,
                        settings: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
     """One tick: diff positions against the last tick, fire trade alerts.
-    Returns the list of events (also used by tests)."""
-    s = settings if settings is not None else config.load_settings(area_id=area_id)
-    want_open = bool(s.get("alert_on_trade_opened", True))
-    want_close = bool(s.get("alert_on_trade_closed", True))
-    if not (want_open or want_close):
-        return []
+    Returns the list of events (also used by tests). ``settings`` is accepted
+    for the callers' sake; the alert handlers read their own preferences."""
     current, polled = await _current_positions(area_id, sessions, positions)
     prev = _positions.setdefault(area_id, {})
     now = datetime.now(timezone.utc).isoformat()
@@ -168,15 +169,15 @@ async def observe_area(area_id: int, sessions: list[Any], snapshots: list[dict[s
     if area_id not in _seeded:
         _seeded.add(area_id)
         return []
+    # every change is announced; the alert handlers apply the notification
+    # preferences (switches, account list) — automations must not depend on them
     with context.use_area(area_id):
         for ev in events:
-            if not alerts.account_alerts_on(ev["account"], s):
-                continue  # tracked, but this account is not on the alert list
-            if ev["kind"] == "opened" and want_open:
+            if ev["kind"] == "opened":
                 bus.emit("position.opened", account=ev["account"], symbol=ev["symbol"], direction=_direction(ev["qty"]), qty=abs(ev["qty"]), price=ev.get("price"))
-            elif ev["kind"] == "added" and want_open:
+            elif ev["kind"] == "added":
                 bus.emit("position.added", account=ev["account"], symbol=ev["symbol"], direction=_direction(ev["qty"]), added=ev["added"], total=abs(ev["qty"]))
-            elif ev["kind"] == "reduced" and want_close:
+            elif ev["kind"] == "reduced":
                 bus.emit("position.closed", account=ev["account"], symbol=ev["symbol"], direction=_direction(ev["qty"]), qty=abs(ev["qty"]) - ev["remaining"],
                             pnl=ev.get("pnl"), duration=ev.get("duration", ""), remaining=ev["remaining"])
             elif ev["kind"] == "closed":
@@ -184,9 +185,8 @@ async def observe_area(area_id: int, sessions: list[Any], snapshots: list[dict[s
                 closes.append({"account": ev["account"], "symbol": ev["symbol"], "pnl": ev.get("pnl")})
                 if len(closes) > CLOSES_KEPT:
                     del closes[:-CLOSES_KEPT]           # no daily summary configured: never grow without bound
-                if want_close:
-                    bus.emit("position.closed", account=ev["account"], symbol=ev["symbol"], direction=_direction(ev["qty"]), qty=abs(ev["qty"]),
-                                pnl=ev.get("pnl"), duration=ev.get("duration", ""), remaining=0)
+                bus.emit("position.closed", account=ev["account"], symbol=ev["symbol"], direction=_direction(ev["qty"]), qty=abs(ev["qty"]),
+                            pnl=ev.get("pnl"), duration=ev.get("duration", ""), remaining=0)
     return events
 
 
@@ -207,8 +207,6 @@ def _agents_of(area_id: int) -> list[dict[str, Any]]:
 
 async def observe_agents(area_id: int, settings: Optional[dict[str, Any]] = None) -> None:
     s = settings if settings is not None else config.load_settings(area_id=area_id)
-    if not (s.get("alert_on_agent_lost", True) or s.get("alert_on_agent_restored", True)):
-        return
     known = _agents.setdefault(area_id, {})
     seen: set[int] = set()
     with context.use_area(area_id):

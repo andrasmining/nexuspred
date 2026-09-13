@@ -348,7 +348,7 @@ export default {
           catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
         } }) },
         { label: t("Leader"), render: (f) => [h("span", { class: "wh-name" }, f.title), h("small", { class: "muted", style: "display:block" }, f.publisher_email)] },
-        { label: t("Status"), render: (f) => !f.published ? tag("unpublished", "warn") : !f.enabled ? tag("off", "off") : f.paused ? tag("paused", "warn") : f.running && f.feed_ok ? tag("live", "on") : f.running ? tag("feed lost", "off") : tag("group off", "warn") },
+        { label: t("Status"), render: (f) => !f.published ? tag(t("unpublished"), "warn") : f.status === "unpaid" ? tag(t("unpaid"), "off") : f.status === "pending" ? tag(t("awaiting approval"), "warn") : f.status === "paused" ? tag(t("paused by publisher"), "warn") : !f.enabled ? tag("off", "off") : f.paused ? tag(t("paused"), "warn") : f.running && f.feed_ok ? tag("live", "on") : f.running ? tag("feed lost", "off") : tag("group off", "warn") },
         { label: t("My accounts"), render: (f) => h("div", null, (f.followers || []).length ? f.followers.map((a) => h("div", { class: "cp-pos" }, h("code", null, maskAccount(a.spec)),
           a.error ? h("span", { class: "neg" }, a.error) : null,
           ...(a.positions || []).map((p) => h("span", null, `${p.symbol} target ${signed(p.target)} · `, h("span", { class: p.actual === p.target ? "pos" : "neg" }, `actual ${signed(p.actual)}`), p.baseline ? t(" (baseline)") : "")),
@@ -356,7 +356,8 @@ export default {
         { label: t("Leader positions"), render: (f) => (f.leader_positions || []).length ? f.leader_positions.map((p) => h("div", null, `${p.symbol} ${signed(p.net)}`)) : h("span", { class: "muted" }, "flat") },
         { label: t("Latency"), className: "num", render: (f) => f.latency_ms != null ? `${f.latency_ms} ms` : "—" },
         { label: "", render: (f) => h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: () => openCopySubscriptionDrawer({ publisher_area_id: f.publisher_area_id, group_id: f.group_id, title: f.title, publisher_email: f.publisher_email, symbols: f.symbols,
-          subscription: { id: f.sub_id, enabled: f.enabled, accounts: f.accounts } }, loadFollowing) }, t("Manage"), icon("chevron")) },
+          paid: !!f.paid, price_cents: f.price_cents, currency: f.currency, trial_days: f.trial_days, kind: "copy",
+          subscription: { id: f.sub_id, enabled: f.enabled, accounts: f.accounts, status: f.status } }, loadFollowing) }, t("Manage"), icon("chevron")) },
       ],
     });
     let lastFollowingJson = "";

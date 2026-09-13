@@ -368,6 +368,16 @@ def load_settings(area_id: int | None = None, force: bool = False) -> dict[str, 
         return _copy_of(aid)
 
 
+def peek(key: str, area_id: int | None = None) -> Any:
+    """The cached value of one key WITHOUT copying — for readers that only
+    look (the automation rules on every bus event). Never mutate the result."""
+    aid = _resolve_area(area_id)
+    with _lock:
+        if aid in _cache:
+            return _cache[aid].get(key)
+    return load_settings(area_id=aid).get(key)
+
+
 def setting(key: str, area_id: int | None = None) -> Any:
     """A private copy of one settings key (defaults applied). Hot paths that
     need a single small key — the risk guard's ``risk_state`` before every

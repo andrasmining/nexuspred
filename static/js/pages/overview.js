@@ -45,15 +45,18 @@ export default {
         { label: t("Last error"), render: (x) => h("span", { class: x.last_error ? "neg" : "muted" }, x.last_error || "—") },
       ],
     });
+    const closing = new Set();
     async function closePosition(p) {
+      const key = `${p.spec || p.account}|${p.symbol}`;
+      if (closing.has(key)) return;
       const ok = await confirmDialog({ title: t("Close {symbol} on {account}?", { symbol: p.symbol, account: maskAccount(p.account) }),
         body: t("Working orders on this contract are cancelled first, then the position ({qty}) is closed at market.", { qty: p.netPos }), confirmText: t("Close position"), danger: true });
-      if (!ok) return;
+      if (!ok || closing.has(key)) return;
+      closing.add(key);
       try {
         const r = await api.post("/api/positions/close", { lid: p.lid || "", token_idx: p.token_idx, spec: p.spec || p.account, symbol: p.symbol });
         toast(t("{symbol} closed on {account} ({n} order(s) cancelled)", { symbol: r.contract, account: maskAccount(r.account), n: r.cancelled }), "success");
-        if (r.errors && r.errors.length) toast(r.errors.join("; "), "warn");
-      } catch (e) { toast(e.message, "error"); }
+      } catch (e) { toast(e.message, "error"); } finally { closing.delete(key); }
       actions.refreshPositions();
     }
     const positions = dataTable({
@@ -134,8 +137,8 @@ export default {
         { label: t("Short"), className: "num", render: (x) => x.short ? h("span", { class: "neg" }, String(x.short)) : "—" },
         { label: t("Net"), className: "num", render: (x) => h("span", { class: x.net > 0 ? "pos" : x.net < 0 ? "neg" : "" }, String(x.net)) },
         { label: t("Accounts"), className: "num", render: (x) => String(x.accounts) },
-        { label: t("Notional"), className: "num", render: (x) => fmtMoney(x.notional, 0) },
-        { label: t("Share"), className: "num", render: (x) => `${Math.round((x.share || 0) * 100)}%` },
+        { label: t("Notional"), className: "num", render: (x) => x.value_per_point_known === false ? h("span", { class: "muted", title: t("No contract multiplier on file for this symbol") }, "?") : fmtMoney(x.notional, 0) },
+        { label: t("Share"), className: "num", render: (x) => x.value_per_point_known === false ? "—" : `${Math.round((x.share || 0) * 100)}%` },
       ],
     });
     const expoWarn = h("div", { class: "callout warn", hidden: true });
@@ -147,7 +150,7 @@ export default {
       const warns = x.warnings || [];
       expoWarn.hidden = !warns.length;
       for (const w of warns) {
-        expoWarn.append(h("div", null, h("strong", null, w.kind === "hedged" ? t("{root} is hedged across accounts: ", { root: w.root }) : t("{root} concentration: ", { root: w.root })), w.detail));
+        expoWarn.append(h("div", null, h("strong", null, w.kind === "hedged" ? t("{root} is hedged across accounts: ", { root: w.root }) : w.kind === "unknown_multiplier" ? t("{root}: ", { root: w.root }) : t("{root} concentration: ", { root: w.root })), w.detail));
       }
       const accts = (x.accounts || []).map((a) => `${maskAccount(a.account)} ${fmtMoney(a.notional, 0)} (${Math.round((a.share || 0) * 100)}%)`).join(" · ");
       expoSub.textContent = (x.symbols || []).length ? t("{n} contract(s), notional {total} at average entry · ", { n: x.contracts, total: fmtMoney(x.total_notional, 0) }) + accts : "";
@@ -379,7 +382,7 @@ export default {
       store.subscribe("exposure", (x) => paintExposure(x), { immediate: true }),
       store.subscribe("orders", (o) => { orders.update((o || []).slice(0, 50)); refreshPositionsSoon(); }, { immediate: true }),
       store.subscribe("positions", (p) => {
-        if (p && p.error) { positions.update([]); positions.tbody.firstChild.firstChild.textContent = p.error; return; }
+        if (p && p.error) { positions.update([], { force: true }); positions.tbody.firstChild.firstChild.textContent = p.error; return; }
         positions.update(p || []);
       }, { immediate: true }),
       store.subscribe("stream", (s) => k.stream.set(s === "live" ? t("Live") : s === "reconnecting" ? t("Reconnecting…") : t("Offline"), s === "live" ? "on" : s === "reconnecting" ? "warn" : "off", t("event stream")), { immediate: true }),

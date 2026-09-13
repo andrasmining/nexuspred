@@ -10,6 +10,7 @@ fills. Subscribers never see the publisher's account names.
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from . import config, db, journal
 
+log = logging.getLogger("track_record")
 CACHE_TTL_S = 120.0
 EQUITY_POINTS = 120
 VERIFIED_SOURCES = frozenset({"history", "fillpair", "report", "fifo"})
@@ -111,14 +113,14 @@ def webhook_record(publisher_area_id: int, webhook: dict[str, Any], *, detail: b
     def build() -> dict[str, Any]:
         specs = sorted({str(a.get("spec") or "") for a in (webhook.get("accounts") or []) if a.get("enabled") and a.get("spec")})
         trades = db.list_journal_trades(publisher_area_id, accounts=specs) if specs else []
-        out = summarize_trades(trades, _zone(publisher_area_id), detail=True)
+        out = summarize_trades(trades, _zone(publisher_area_id), detail=detail)
         out.update({"basis": "accounts" if specs else "none", "accounts_n": len(specs),
                     "signals": db.signal_stats(publisher_area_id, wid),
                     "signals_30d": db.signal_stats(publisher_area_id, wid, _iso_days_ago(30)),
                     "latency": latency_summary(db.signal_latencies(publisher_area_id, wid)),
                     "computed_at": datetime.now(timezone.utc).isoformat()})
         return out
-    rec = _cached("webhook", publisher_area_id, wid, build)
+    rec = _cached("webhook-detail" if detail else "webhook", publisher_area_id, wid, build)
     return rec if detail else compact(rec)
 
 
@@ -129,11 +131,11 @@ def copy_record(publisher_area_id: int, group: dict[str, Any], *, detail: bool =
     def build() -> dict[str, Any]:
         spec = str((group.get("leader") or {}).get("spec") or "")
         trades = db.list_journal_trades(publisher_area_id, accounts=[spec]) if spec else []
-        out = summarize_trades(trades, _zone(publisher_area_id), detail=True)
+        out = summarize_trades(trades, _zone(publisher_area_id), detail=detail)
         out.update({"basis": "leader" if spec else "none", "accounts_n": 1 if spec else 0, "signals": None, "signals_30d": None, "latency": None,
                     "computed_at": datetime.now(timezone.utc).isoformat()})
         return out
-    rec = _cached("copy", publisher_area_id, gid, build)
+    rec = _cached("copy-detail" if detail else "copy", publisher_area_id, gid, build)
     return rec if detail else compact(rec)
 
 
@@ -165,7 +167,7 @@ def subscription_journal(area_id: int, sub: dict[str, Any], *, limit: int = 50) 
     out: dict[str, Any] = {"subscription_id": sub.get("id"), "since": since, "accounts_n": len(specs), "pnl": pnl, "kind": "copy" if is_copy else "webhook"}
     if is_copy:
         gid = str(sub["webhook_id"])[5:]
-        events = db.list_copy_events(int(sub["publisher_area_id"]), gid, limit=limit, followers=specs)
+        events = db.list_copy_events(area_id, gid, limit=limit, followers=specs)      # the subscriber's own rows (real specs; the publisher's copy is aliased)
         out["copy_events"] = [{"ts": e["ts"], "kind": e["kind"], "symbol": e["symbol"], "detail": e["detail"], "latency_ms": e.get("latency_ms")} for e in events]
         out["latency"] = latency_summary([int(e["latency_ms"]) for e in events if isinstance(e.get("latency_ms"), int)])
         out["signals"] = None
@@ -182,3 +184,9 @@ def subscription_journal(area_id: int, sub: dict[str, Any], *, limit: int = 50) 
 
 def reset() -> None:
     _cache.clear()
+
+
+def invalidate(area_id: int) -> None:
+    """A journal import or a routing change in ``area_id``: its records are rebuilt on the next read."""
+    for k in [k for k in _cache if k[1] == area_id]:
+        _cache.pop(k, None)

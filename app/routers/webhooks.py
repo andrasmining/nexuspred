@@ -8,7 +8,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import config, context, db, marketplace, security, signals, sizing, state, trade_window
+from .. import config, context, db, marketplace, payments, security, signals, sizing, state, track_record, trade_window
 from ..tradovate import TradovateError
 from ..web import require_admin
 
@@ -112,6 +112,7 @@ def _edit_webhook(webhook_id: str, fn: Callable[[list[dict[str, Any]], int], Any
             if wh.get("id") == webhook_id:
                 out["result"] = fn(webhooks, i)
                 s["webhooks"] = webhooks
+                track_record.invalidate(context.get_area())
                 return
         raise HTTPException(status_code=404, detail="Webhook not found")
     config.update(mutate)
@@ -203,6 +204,10 @@ async def api_update_sharing(webhook_id: str, request: Request) -> dict[str, Any
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     before, after = edited["before"], wh["sharing"]
+    if after["enabled"] and after["price_cents"] and (not before["price_cents"] or not before["enabled"]) and payments.configured():
+        n = payments.demote_unpaid(context.get_area(), webhook_id)      # a listing that turned paid: nobody rides for free
+        if n:
+            state.log_event("info", f"Webhook '{wh.get('name')}' is now paid: {n} subscription(s) wait for payment")
     if before["enabled"] != after["enabled"]:
         db.log_action(user["id"], user["email"], "webhook_share", after["title"] or wh.get("name", ""),
                       "published" if after["enabled"] else "unpublished")
@@ -233,6 +238,9 @@ async def api_set_subscriber_status(webhook_id: str, sub_id: int, request: Reque
     cur = db.get_subscription(sub_id)
     if not cur or cur["publisher_area_id"] != context.get_area() or cur["webhook_id"] != webhook_id:
         raise HTTPException(status_code=404, detail="Subscriber not found")
+    webhooks, i = _webhook_or_404(webhook_id)
+    if status == "active" and not payments.may_activate(cur, marketplace.sharing_of(webhooks[i])):
+        raise HTTPException(status_code=409, detail="This listing is paid and the subscriber has not paid")
     sub = db.set_subscription_status(sub_id, context.get_area(), status)
     email = db.area_owner_email(cur["area_id"]) or str(cur["area_id"])
     db.log_action(user["id"], user["email"], "subscriber_status", email, f"webhook {webhook_id}: {status}")

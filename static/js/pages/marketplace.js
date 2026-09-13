@@ -21,14 +21,20 @@ import { t } from "../i18n.js";
  * item: {publisher_area_id, webhook_id, title, description, strategy, publisher_email, subscription|null}
  * onDone(): called after save / unsubscribe.
  */
+const STRIPE_URL = /^https:\/\/([a-z0-9-]+\.)*stripe\.com\//;
+let checkoutBusy = false;
+
 /** Start Stripe Checkout for a paid listing and leave for Stripe. */
 export async function startCheckout(item) {
+  if (checkoutBusy) return;
+  checkoutBusy = true;
   try {
     const key = item.kind === "copy" ? `copy:${item.group_id}` : item.webhook_id;
     const r = await api.post("/api/payments/checkout", { publisher_area_id: item.publisher_area_id, key });
+    if (!STRIPE_URL.test(r.url || "")) { toast(t("Stripe did not return a payment link"), "error"); return; }
     toast(t("Taking you to the payment page…"));
     window.location.href = r.url;
-  } catch (e) { toast(e.message, "error"); }
+  } catch (e) { toast(e.message, "error"); } finally { checkoutBusy = false; }
 }
 
 export const priceLabel = (item) => item.paid ? `${(item.price_cents / 100).toFixed(2)} ${(item.currency || "").toUpperCase()}/${t("mo")}${item.trial_days ? ` · ${t("{n}-day trial", { n: item.trial_days })}` : ""}` : "";
@@ -69,10 +75,11 @@ export function openSubscriptionDrawer(item, onDone) {
       const r = sub ? await api.put(`/api/subscriptions/${sub.id}`, body) : await api.post(`/api/marketplace/${item.publisher_area_id}/${item.webhook_id}/subscribe`, body);
       toast(sub ? t("Subscription saved") : t("Subscribed to {title}", { title: item.title }), "success");
       closeDrawer();
-      if (r && r.status === "unpaid" && item.paid) { await startCheckout(item); return; }
+      if (!sub && r && r.status === "unpaid" && item.paid) { await startCheckout(item); return; }
       if (onDone) onDone();
     } catch (e) { toast(e.message, "error"); } finally { saveBtn.disabled = false; }
-  } }, icon("check"), sub ? t("Save") : item.paid && !(sub && sub.status !== "unpaid") ? t("Subscribe & pay") : t("Subscribe"));
+  } }, icon("check"), sub ? t("Save") : item.paid ? t("Subscribe & pay") : t("Subscribe"));
+  const payBtn = sub && sub.status === "unpaid" && item.paid ? h("button", { type: "button", class: "btn btn-primary", onClick: () => startCheckout(item) }, icon("external"), t("Pay now")) : null;
   const unsubBtn = sub ? h("button", { type: "button", class: "btn btn-danger", onClick: async () => {
     if (!(await confirmDialog({ title: t("Unsubscribe from \"{title}\"?", { title: item.title }), body: t("Future signals from this publisher won't reach your accounts. Open positions are not touched."), confirmText: t("Unsubscribe"), danger: true }))) return;
     try { await api.del(`/api/subscriptions/${sub.id}`); toast(t("Unsubscribed"), "success"); closeDrawer(); if (onDone) onDone(); }
@@ -91,7 +98,7 @@ export function openSubscriptionDrawer(item, onDone) {
       accTable.el,
       controlsBlock,
     ],
-    foot: [saveBtn, h("button", { type: "button", class: "btn btn-ghost", onClick: () => closeDrawer() }, t("Close")), h("span", { style: "flex:1" }), unsubBtn],
+    foot: [saveBtn, payBtn, h("button", { type: "button", class: "btn btn-ghost", onClick: () => closeDrawer() }, t("Close")), h("span", { style: "flex:1" }), unsubBtn],
   });
 }
 
@@ -136,10 +143,11 @@ export function openCopySubscriptionDrawer(item, onDone) {
       const r = sub ? await api.put(`/api/subscriptions/${sub.id}`, body) : await api.post(`/api/marketplace/${item.publisher_area_id}/copy/${item.group_id}/subscribe`, body);
       toast(sub ? t("Copy subscription saved") : t("Following {title}", { title: item.title }), "success");
       closeDrawer();
-      if (r && r.status === "unpaid" && item.paid) { await startCheckout(item); return; }
+      if (!sub && r && r.status === "unpaid" && item.paid) { await startCheckout(item); return; }
       if (onDone) onDone();
     } catch (e) { toast(e.message, "error"); } finally { saveBtn.disabled = false; }
-  } }, icon("check"), sub ? t("Save") : item.paid && !(sub && sub.status !== "unpaid") ? t("Follow & pay") : t("Follow"));
+  } }, icon("check"), sub ? t("Save") : item.paid ? t("Follow & pay") : t("Follow"));
+  const payBtn = sub && sub.status === "unpaid" && item.paid ? h("button", { type: "button", class: "btn btn-primary", onClick: () => startCheckout(item) }, icon("external"), t("Pay now")) : null;
   const unsubBtn = sub ? h("button", { type: "button", class: "btn btn-danger", onClick: async () => {
     if (!(await confirmDialog({ title: t("Stop following \"{title}\"?", { title: item.title }), body: t("Your accounts leave the mirror. Positions they hold are NOT closed — flatten them yourself if you want to be flat."), confirmText: t("Stop following"), danger: true }))) return;
     try { await api.del(`/api/subscriptions/${sub.id}`); toast(t("Stopped following"), "success"); closeDrawer(); if (onDone) onDone(); }
@@ -159,17 +167,18 @@ export function openCopySubscriptionDrawer(item, onDone) {
       accTable.el,
       h("div", { class: "callout warn", style: "margin-top:10px" }, t("Positions the leader already holds when you start following are not copied (baseline). Mirroring of such a contract begins once the leader is flat again. If the leader's feed is lost, the group's feed-loss rule applies to your accounts too (flatten or pause).")),
     ],
-    foot: [saveBtn, h("button", { type: "button", class: "btn btn-ghost", onClick: () => closeDrawer() }, t("Close")), h("span", { style: "flex:1" }), unsubBtn],
+    foot: [saveBtn, payBtn, h("button", { type: "button", class: "btn btn-ghost", onClick: () => closeDrawer() }, t("Close")), h("span", { style: "flex:1" }), unsubBtn],
   });
 }
 
 /** Full track record drawer: figures, monthly table, equity curve. */
-export async function openRecordDrawer(item) {
+export async function openRecordDrawer(item, isAlive = null) {
   const isCopy = item.kind === "copy";
   let rec;
   try {
     rec = await api.get(isCopy ? `/api/marketplace/${item.publisher_area_id}/copy/${item.group_id}/record` : `/api/marketplace/${item.publisher_area_id}/${item.webhook_id}/record`);
   } catch (e) { toast(e.message, "error"); return; }
+  if (isAlive && !isAlive()) return;                       // the page went away while the record loaded
   const kv = (k, v) => h("div", { class: "tr-cell" }, h("div", { class: "k" }, k), h("div", { class: "v" }, v));
   const money = (v) => h("span", { class: `pnl ${Number(v) > 0 ? "pos" : Number(v) < 0 ? "neg" : ""}` }, fmtSigned(v, 2));
   const pct = (v) => `${Math.round((v || 0) * 100)}%`;
@@ -233,8 +242,10 @@ export default {
     const kindSel = h("select", { class: "input-sm", onChange: (e) => { filters.kind = e.target.value; paint(); } },
       [["", t("Signals + copy")], ["webhook", t("Signals only")], ["copy", t("Copy trading only")]].map(([v, l]) => h("option", { value: v }, l)));
     const verifiedBox = h("input", { type: "checkbox", onChange: (e) => { filters.verified = e.target.checked; paint(); } });
+    const tagChip = h("button", { type: "button", class: "chip active", hidden: true, title: t("Clear the tag filter"), onClick: () => { filters.tag = ""; paint(); } });
     const bar = h("div", { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" }, qIn, sortSel, kindSel,
-      h("label", { class: "check-row", style: "padding:0;border:0" }, verifiedBox, " ", t("broker-verified only")));
+      h("label", { class: "check-row", style: "padding:0;border:0" }, verifiedBox, " ", t("broker-verified only")), tagChip);
+    let alive = true;
     const recOf = (it) => it.record || {};
     const matches = (it) => {
       if (filters.kind && it.kind !== filters.kind) return false;
@@ -259,6 +270,9 @@ export default {
     };
 
     function paint() {
+        if (!alive) return;
+        tagChip.hidden = !filters.tag;
+        tagChip.textContent = filters.tag ? `${filters.tag} ×` : "";
         clear(grid);
         const items = all.filter(matches).sort((a, b) => (rank(b) > rank(a) ? 1 : rank(b) < rank(a) ? -1 : String(a.title).localeCompare(String(b.title))));
         if (!items.length) {
@@ -268,31 +282,32 @@ export default {
         for (const it of items) {
           const sub = it.subscription;
           const isCopy = it.kind === "copy";
-          const live = isCopy ? (!it.enabled ? tag("group off", "warn") : it.paused ? tag("paused", "warn") : it.running && it.feed_ok ? tag("live", "on") : it.running ? tag("feed lost", "off") : tag("starting", "")) : null;
+          const live = isCopy ? (!it.enabled ? tag(t("group off"), "warn") : it.paused ? tag(t("paused"), "warn") : it.running && it.feed_ok ? tag(t("live"), "on") : it.running ? tag(t("feed lost"), "off") : tag(t("starting"), "")) : null;
           const full = it.max_subscribers && it.subscriber_count >= it.max_subscribers && !sub;
-          const state = !sub ? (full ? tag(t("full"), "warn") : tag("not subscribed")) : sub.status === "unpaid" ? tag(t("unpaid"), "off") : sub.status === "pending" ? tag(t("awaiting approval"), "warn") : sub.status === "paused" ? tag(t("paused by publisher"), "warn")
-            : (isCopy ? !it.enabled : !it.webhook_enabled) ? tag("paused by publisher", "warn") : sub.enabled ? tag(isCopy ? t("following · on") : t("subscribed · on"), "on") : tag(isCopy ? t("following · off") : t("subscribed · off"), "off");
+          const state = !sub ? (full ? tag(t("full"), "warn") : tag(t("not subscribed"))) : sub.status === "unpaid" ? tag(t("unpaid"), "off") : sub.status === "pending" ? tag(t("awaiting approval"), "warn") : sub.status === "paused" ? tag(t("paused by publisher"), "warn")
+            : (isCopy ? !it.enabled : !it.webhook_enabled) ? tag(t("paused by publisher"), "warn") : sub.enabled ? tag(isCopy ? t("following · on") : t("subscribed · on"), "on") : tag(isCopy ? t("following · off") : t("subscribed · off"), "off");
           const open = () => (isCopy ? openCopySubscriptionDrawer(it, load) : openSubscriptionDrawer(it, load));
           grid.append(h("div", { class: "card mk-card" },
-            h("div", { class: "mk-title" }, h("strong", null, it.title), isCopy ? tag("copy trading", "accent") : tag(STRATEGY_LABEL[it.strategy] || it.strategy, it.strategy),
+            h("div", { class: "mk-title" }, h("strong", null, it.title), isCopy ? tag(t("copy trading"), "accent") : tag(STRATEGY_LABEL[it.strategy] || it.strategy, it.strategy),
               isCopy ? tag((it.environment || "demo").toUpperCase(), it.environment === "live" ? "live" : "demo") : null,
               it.paid ? tag(priceLabel(it), "accent") : null),
-            h("div", { class: "mk-desc" }, it.description || (isCopy ? `Mirrors the leader's positions live${(it.symbols || []).length ? ` (${it.symbols.join(", ")})` : ""}.` : "No description.")),
-            h("div", { class: "mk-meta" }, icon("user"), it.publisher_email || "—", "·", icon("users"), `${it.subscriber_count}${it.max_subscribers ? `/${it.max_subscribers}` : ""} ${isCopy ? "follower" : "subscriber"}${it.subscriber_count === 1 ? "" : "s"}`,
+            h("div", { class: "mk-desc" }, it.description || (isCopy ? t("Mirrors the leader's positions live{symbols}.", { symbols: (it.symbols || []).length ? ` (${it.symbols.join(", ")})` : "" }) : t("No description."))),
+            h("div", { class: "mk-meta" }, icon("user"), it.publisher_email || "—", "·", icon("users"), isCopy ? t("{n} follower(s)", { n: `${it.subscriber_count}${it.max_subscribers ? `/${it.max_subscribers}` : ""}` }) : t("{n} subscriber(s)", { n: `${it.subscriber_count}${it.max_subscribers ? `/${it.max_subscribers}` : ""}` }),
               live ? ["·", live] : null,
-              it.visibility === "selected" ? ["·", tag("invite-only", "accent")] : null,
+              it.visibility === "selected" ? ["·", tag(t("invite-only"), "accent")] : null,
               it.approval ? ["·", tag(t("approval"), "")] : null,
               (isCopy ? it.publisher_paused : it.paused) ? ["·", tag(t("paused"), "warn")] : null,
               it.published_at ? ["·", t("since {when}", { when: it.published_at.slice(0, 10) })] : null),
-            (it.tags || []).length ? h("div", { class: "chips" }, it.tags.map((tg) => h("span", { class: `chip ${filters.tag === tg ? "active" : ""}`, onClick: () => { filters.tag = filters.tag === tg ? "" : tg; paint(); } }, tg))) : null,
+            (it.tags || []).length ? h("div", { class: "chips" }, it.tags.map((tg) => h("button", { type: "button", class: `chip ${filters.tag === tg ? "active" : ""}`, "aria-pressed": String(filters.tag === tg), onClick: () => { filters.tag = filters.tag === tg ? "" : tg; paint(); } }, tg))) : null,
             h("div", { class: "mk-record" }, recordStrip(it.record, { compact: true }),
-              h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: () => openRecordDrawer(it) }, icon("activity"), t("Track record"))),
+              h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: () => openRecordDrawer(it, () => alive) }, icon("activity"), t("Track record"))),
             h("div", { class: "mk-foot" }, state,
               h("div", { class: "inline-actions" },
                 sub && sub.status === "unpaid" && it.paid ? h("button", { type: "button", class: "btn btn-primary btn-sm", onClick: () => startCheckout(it) }, icon("external"), t("Pay now")) : null,
                 sub ? h("input", { type: "checkbox", class: "switch", checked: !!sub.enabled, title: t("Enable / disable"), onChange: async (e) => {
-                  try { await api.put(`/api/subscriptions/${sub.id}`, { enabled: e.target.checked }); toast(e.target.checked ? t("Subscription enabled") : t("Subscription disabled"), "success"); load(); }
-                  catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
+                  const sw = e.target; sw.disabled = true;
+                  try { await api.put(`/api/subscriptions/${sub.id}`, { enabled: sw.checked }); toast(sw.checked ? t("Subscription enabled") : t("Subscription disabled"), "success"); load(); }
+                  catch (err) { sw.checked = !sw.checked; toast(err.message, "error"); } finally { sw.disabled = false; }
                 } }) : null,
                 h("button", { type: "button", class: `btn btn-sm ${sub ? "" : "btn-primary"}`, disabled: !!full, onClick: open }, sub ? t("Manage") : isCopy ? t("Follow") : t("Subscribe"))))));
         }
@@ -316,6 +331,6 @@ export default {
     );
     if (!(store.get("tradeAccounts") || []).length) actions.loadTradeAccounts();
     load();
-    return () => {};
+    return () => { alive = false; };
   },
 };

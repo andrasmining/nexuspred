@@ -71,7 +71,7 @@ def save_config(updates: dict[str, Any]) -> dict[str, Any]:
     if "trial_days_default" in updates:
         try:
             n = int(float(updates["trial_days_default"] or 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValueError("trial_days_default must be a whole number")
         if not 0 <= n <= MAX_TRIAL_DAYS:
             raise ValueError(f"trial_days_default must be between 0 and {MAX_TRIAL_DAYS}")
@@ -115,7 +115,7 @@ def reset() -> None:
 def normalize_price(raw: Any) -> int:
     try:
         n = int(float(raw or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError("price_cents must be a whole number of cents")
     if not 0 <= n <= MAX_PRICE_CENTS:
         raise ValueError(f"price_cents must be between 0 and {MAX_PRICE_CENTS}")
@@ -127,7 +127,7 @@ def normalize_price(raw: Any) -> int:
 def normalize_trial(raw: Any) -> int:
     try:
         n = int(float(raw or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError("trial_days must be a whole number")
     if not 0 <= n <= MAX_TRIAL_DAYS:
         raise ValueError(f"trial_days must be between 0 and {MAX_TRIAL_DAYS}")
@@ -177,6 +177,12 @@ async def create_checkout(*, area_id: int, publisher_area_id: int, key: str, tit
     payment. Returns the URL to send the subscriber to."""
     cfg = get_config()
     existing = db.get_payment(area_id, publisher_area_id, key)
+    if existing:
+        if existing["status"] in db.payments.LIVE and existing.get("stripe_subscription"):
+            raise RuntimeError("A Stripe subscription already exists for this listing — manage it in the billing portal")
+        if existing["status"] == "pending" and existing.get("checkout_url") and _recent(existing.get("updated_at"), CHECKOUT_REUSE_S):
+            return str(existing["checkout_url"])                   # one session per click storm
+    had_trial = bool(existing and (existing.get("trial_end") or existing.get("stripe_subscription")))
     data: dict[str, Any] = {
         "mode": "subscription",
         "success_url": f"{base_url}/#/subscriptions?paid=1",
@@ -191,16 +197,42 @@ async def create_checkout(*, area_id: int, publisher_area_id: int, key: str, tit
         "subscription_data[metadata][area_id]": str(area_id), "subscription_data[metadata][publisher_area_id]": str(publisher_area_id),
         "subscription_data[metadata][key]": key,
     }
-    if trial_days:
+    if trial_days and not had_trial:                              # one trial per subscriber and listing
         data["subscription_data[trial_period_days]"] = str(int(trial_days))
     if existing and existing.get("stripe_customer"):
         data["customer"] = existing["stripe_customer"]
     elif email:
         data["customer_email"] = email
     session = await _stripe("POST", "/checkout/sessions", data)
+    url = str(session.get("url") or "")
     db.upsert_payment(area_id, publisher_area_id, key, checkout_session=str(session.get("id") or ""), status="pending",
-                      price_cents=int(price_cents), currency=cfg["currency"])
-    return str(session.get("url") or "")
+                      price_cents=int(price_cents), currency=cfg["currency"], checkout_url=url)
+    return url
+
+
+CHECKOUT_REUSE_S = 20 * 3600          # a Checkout session lives 24 h; hand the same link back until then
+
+
+def _recent(iso: Any, within_s: float) -> bool:
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(str(iso))).total_seconds() < within_s
+    except (TypeError, ValueError):
+        return False
+
+
+async def cancel_stripe_subscription(p: Optional[dict[str, Any]]) -> bool:
+    """Cancel the Stripe subscription behind a payment row (unsubscribe). True
+    when Stripe confirmed or nothing was live; the row is marked canceled."""
+    if not p or not p.get("stripe_subscription") or p["status"] not in db.payments.LIVE:
+        return True
+    try:
+        await _stripe("DELETE", f"/subscriptions/{p['stripe_subscription']}")
+    except RuntimeError as exc:
+        if "No such subscription" not in str(exc):
+            log.warning("cancel of %s failed: %s", p["stripe_subscription"], exc)
+            return False
+    db.update_payment(p["id"], status="canceled")
+    return True
 
 
 async def create_portal(area_id: int, base_url: str) -> str:
@@ -226,8 +258,8 @@ def verify_signature(payload: bytes, header: str, secret: str, *, now: Optional[
             return False
     except ValueError:
         return False
-    expected = hmac.new(secret.encode(), f"{ts}.".encode() + payload, hashlib.sha256).hexdigest()
-    return any(hmac.compare_digest(expected, s.strip()) for s in sig)
+    expected = hmac.new(secret.encode(), f"{ts}.".encode() + payload, hashlib.sha256).hexdigest().encode()
+    return any(hmac.compare_digest(expected, s.strip().encode("utf-8", "ignore")) for s in sig)
 
 
 def _ref(obj: dict[str, Any]) -> Optional[tuple[int, int, str]]:
@@ -243,8 +275,45 @@ def _ref(obj: dict[str, Any]) -> Optional[tuple[int, int, str]]:
         return None
 
 
+_STATUS_MAP = {"trialing": "trialing", "active": "active", "past_due": "past_due", "canceled": "canceled"}   # anything else = not paid
+
+
+def _stale(p: Optional[dict[str, Any]], event: dict[str, Any]) -> bool:
+    """True when this event was already applied or an older one arrives after a
+    newer one (Stripe neither deduplicates nor orders deliveries)."""
+    if not p:
+        return False
+    eid, created = str(event.get("id") or ""), int(event.get("created") or 0)
+    if eid and eid == p.get("last_event_id"):
+        return True
+    return bool(created and created < int(p.get("last_event_created") or 0))
+
+
+def _stamp(event: dict[str, Any]) -> dict[str, Any]:
+    return {"last_event_id": str(event.get("id") or ""), "last_event_created": int(event.get("created") or 0)}
+
+
+async def _subscription_of_charge(obj: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The payment row behind a charge / dispute object (via its invoice)."""
+    charge = obj.get("charge") if isinstance(obj.get("charge"), dict) else None
+    inv = obj.get("invoice") or (charge or {}).get("invoice")
+    if isinstance(inv, dict):
+        inv = inv.get("id")
+    if inv:
+        try:
+            invoice = await _stripe("GET", f"/invoices/{inv}")
+            sid = invoice.get("subscription")
+            sid = sid.get("id") if isinstance(sid, dict) else sid
+            if sid:
+                return db.payment_by("stripe_subscription", str(sid))
+        except RuntimeError as exc:
+            log.warning("invoice lookup for a refund/dispute failed: %s", exc)
+    cust = obj.get("customer") or (charge or {}).get("customer")
+    return db.payment_by("stripe_customer", str(cust)) if cust else None
+
+
 async def handle_event(event: dict[str, Any]) -> str:
-    """Apply one verified Stripe event. Returns what was done (for the log)."""
+    """Apply one verified Stripe event (idempotent, in order). Returns what was done."""
     kind = str(event.get("type") or "")
     obj = (event.get("data") or {}).get("object") or {}
     if kind == "checkout.session.completed":
@@ -252,10 +321,17 @@ async def handle_event(event: dict[str, Any]) -> str:
         if not ref:
             return "checkout without reference ignored"
         area, pa, key = ref
-        p = db.upsert_payment(area, pa, key, checkout_session=str(obj.get("id") or ""), stripe_customer=str(obj.get("customer") or ""),
-                              stripe_subscription=str(obj.get("subscription") or ""), status="active")
+        p = db.get_payment(area, pa, key)
+        if _stale(p, event):
+            return "stale checkout event ignored"
+        paid = str(obj.get("payment_status") or "") in ("paid", "no_payment_required")
+        fields = {"checkout_session": str(obj.get("id") or ""), "stripe_customer": str(obj.get("customer") or ""),
+                  "stripe_subscription": str(obj.get("subscription") or ""), **_stamp(event)}
+        if paid and (not p or p["status"] in ("pending", "unpaid", "canceled")):
+            fields["status"] = "active"                # the subscription events refine this (trialing / past_due …)
+        p = db.upsert_payment(area, pa, key, **fields)
         await _apply(p)
-        return f"checkout completed for {key}"
+        return f"checkout completed for {key} ({'paid' if paid else 'payment pending'})"
     if kind in ("customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"):
         sid = str(obj.get("id") or "")
         p = db.payment_by("stripe_subscription", sid) if sid else None
@@ -263,22 +339,38 @@ async def handle_event(event: dict[str, Any]) -> str:
             ref = _ref(obj)
             if not ref:
                 return "subscription without reference ignored"
+            p = db.get_payment(*ref)
+            if _stale(p, event):
+                return "stale subscription event ignored"
             p = db.upsert_payment(*ref, stripe_subscription=sid, stripe_customer=str(obj.get("customer") or ""))
-        status = "canceled" if kind.endswith("deleted") else str(obj.get("status") or "active")
-        if status not in db.payments.STATUSES:
-            status = "unpaid" if status in ("incomplete", "incomplete_expired", "paused") else "active"
+        elif _stale(p, event):
+            return "stale subscription event ignored"
+        status = "canceled" if kind.endswith("deleted") else _STATUS_MAP.get(str(obj.get("status") or ""), "unpaid")
         p = db.update_payment(p["id"], status=status, stripe_customer=str(obj.get("customer") or p.get("stripe_customer") or ""),
-                              current_period_end=_iso(obj.get("current_period_end")), trial_end=_iso(obj.get("trial_end")))
+                              current_period_end=_iso(obj.get("current_period_end")), trial_end=_iso(obj.get("trial_end")) or p.get("trial_end") or "",
+                              **_stamp(event))
         await _apply(p)
         return f"subscription {sid}: {status}"
     if kind == "invoice.payment_failed":
-        sid = str(obj.get("subscription") or "")
+        sid = obj.get("subscription")
+        sid = str((sid or {}).get("id") if isinstance(sid, dict) else sid or "")
         p = db.payment_by("stripe_subscription", sid) if sid else None
         if p is None:
             return "invoice for unknown subscription ignored"
-        p = db.update_payment(p["id"], status="past_due")
+        if _stale(p, event):
+            return "stale invoice event ignored"
+        p = db.update_payment(p["id"], status="past_due", **_stamp(event))
         await _apply(p)
         return f"payment failed for {sid}"
+    if kind in ("charge.refunded", "charge.dispute.created", "invoice.marked_uncollectible"):
+        p = await _subscription_of_charge(obj)
+        if p is None:
+            return f"{kind} for an unknown customer ignored"
+        if _stale(p, event):
+            return f"stale {kind} ignored"
+        p = db.update_payment(p["id"], status="unpaid", **_stamp(event))
+        await _apply(p)
+        return f"{kind}: access withdrawn"
     return f"{kind} ignored"
 
 
@@ -294,7 +386,7 @@ async def _apply(p: Optional[dict[str, Any]]) -> None:
         return
     paid = p["status"] in db.payments.PAID
     if paid:
-        if sub["status"] != "unpaid":
+        if sub["status"] != "unpaid":                  # paused by the publisher stays paused; active stays active
             return
         if key.startswith("copy:"):
             _g, sh = cp.find_published(p["publisher_area_id"], key[5:])
@@ -302,7 +394,7 @@ async def _apply(p: Optional[dict[str, Any]]) -> None:
             _w, sh = marketplace.find_published(p["publisher_area_id"], key)
         target = "pending" if (sh or {}).get("approval") else "active"
     else:
-        if sub["status"] == "unpaid":
+        if sub["status"] not in ("active", "pending"):  # unpaid already, or paused by the publisher (their call survives)
             return
         target = "unpaid"
     db.set_subscription_status(sub["id"], p["publisher_area_id"], target)
@@ -313,3 +405,20 @@ async def _apply(p: Optional[dict[str, Any]]) -> None:
             await cp.sync_area(p["publisher_area_id"])
         except Exception as exc:  # noqa: BLE001
             log.warning("copy sync after payment change failed: %s", exc)
+
+
+
+def demote_unpaid(publisher_area_id: int, key: str) -> int:
+    """A listing turned paid (or payments were switched on): every active /
+    pending subscription without a paid record drops to ``unpaid``. Returns how many."""
+    n = 0
+    for sub in db.list_subscribers(publisher_area_id, key):
+        if sub.get("status", "active") in ("active", "pending") and not has_paid(sub["area_id"], publisher_area_id, key):
+            db.set_subscription_status(sub["id"], publisher_area_id, "unpaid")
+            n += 1
+    return n
+
+
+def may_activate(sub: dict[str, Any], sharing: dict[str, Any]) -> bool:
+    """Whether a publisher may set this subscription to active: a paid listing needs a paid record."""
+    return not is_paid_listing(sharing) or has_paid(int(sub["area_id"]), int(sub["publisher_area_id"]), str(sub["webhook_id"]))

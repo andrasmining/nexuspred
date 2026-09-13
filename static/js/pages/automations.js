@@ -85,8 +85,8 @@ function ruleDrawer(rule, onSave) {
     h("div", { class: "field" }, h("label", null, t("Message")), message),
     h("p", { class: "hint" }, t("Flatten and lock actions send market orders on your behalf, without the Trading switch. Every firing is logged under Logs and announced on your alert channels.")));
   const save = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
-    const out = { ...r, name: name.value.trim(), event: event.value, action: action.value, accounts: [...selAcc], webhooks: [...selWh],
-      symbols: symbols.value.split(",").map((s) => s.trim()).filter(Boolean), loss_at_least: loss.value === "" ? null : Number(loss.value),
+    const out = { ...r, name: name.value.trim(), event: event.value, action: action.value, accounts: [...selAcc], webhooks: whField.hidden ? [] : [...selWh],
+      symbols: symbols.value.split(",").map((s) => s.trim()).filter(Boolean), loss_at_least: lossField.hidden || loss.value === "" ? null : Number(loss.value),
       cooldown_s: Number(cooldown.value) || 0, message: message.value, enabled: enabled.checked };
     save.disabled = true;
     try { await onSave(out); closeDrawer(); } catch (e) { toast(e.message, "error"); } finally { save.disabled = false; }
@@ -98,10 +98,11 @@ export default {
   title: t("Automations"),
   render(root, { navigate }) {
     let rules = [];
+    const whName = (id) => ((store.get("webhooks") || []).find((w) => w.id === id || w.name === id) || {}).name || id;
     const filters = (r) => [
       r.accounts.length ? t("accounts: {list}", { list: r.accounts.map(maskAccount).join(", ") }) : null,
       r.symbols.length ? t("symbols: {list}", { list: r.symbols.join(", ") }) : null,
-      r.webhooks.length ? t("webhooks: {list}", { list: r.webhooks.join(", ") }) : null,
+      r.webhooks.length ? t("webhooks: {list}", { list: r.webhooks.map(whName).join(", ") }) : null,
       r.loss_at_least != null ? t("loss ≥ {n}", { n: r.loss_at_least }) : null,
     ].filter(Boolean).join(" · ") || t("every event");
     const table = dataTable({

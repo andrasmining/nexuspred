@@ -198,7 +198,7 @@ def _price(v: Any) -> str:
 async def trade_opened(account: str, symbol: str, direction: str, qty: float, price: Any = None) -> None:
     """A position appeared on the broker side (bridge signal, manual or otherwise)."""
     s = config.load_settings()
-    if not s.get("alert_on_trade_opened", True):
+    if not s.get("alert_on_trade_opened", True) or not account_alerts_on(account, s):
         return
     tr = _tr(s)
     q = f"{qty:g}"
@@ -210,7 +210,7 @@ async def trade_opened(account: str, symbol: str, direction: str, qty: float, pr
 
 async def position_added(account: str, symbol: str, direction: str, added: float, total: float) -> None:
     s = config.load_settings()
-    if not s.get("alert_on_trade_opened", True):
+    if not s.get("alert_on_trade_opened", True) or not account_alerts_on(account, s):
         return
     tr = _tr(s)
     message = tr("➕ **Added** {added} × {symbol} → {direction} {total} · `{account}`", added=f"{added:g}", symbol=symbol, direction=direction, total=f"{total:g}", account=account)
@@ -223,7 +223,7 @@ async def trade_closed(account: str, symbol: str, direction: str, qty: float, pn
     """A position (or part of it) was closed; ``pnl`` is the account's realised
     change between two polls, i.e. the broker's own figure for the close."""
     s = config.load_settings()
-    if not s.get("alert_on_trade_closed", True):
+    if not s.get("alert_on_trade_closed", True) or not account_alerts_on(account, s):
         return
     tr = _tr(s)
     pnl_txt = _money(pnl) if pnl is not None else tr("P&L n/a")
@@ -431,7 +431,7 @@ def _register() -> None:
     ev.subscribe("agent.restored", lambda e: agent_restored(e["name"]))
     ev.subscribe("risk.triggered", lambda e: risk_triggered(e["spec"], e["kind"], e["reason"], e["pnl"], e.get("errors") or []))
     ev.subscribe("execution.problem", lambda e: execution_problem(e["title"], e["message"]))
-    ev.subscribe("news.lock", lambda e: news_lock(e["title"], e["currency"], e["until"], flatten=bool(e.get("flatten"))))
+    ev.subscribe("news.lock", lambda e: news_lock(e["title"], e["currency"], e["until"], flatten=bool(e.get("flatten"))) if e.get("alert", True) else None)
     ev.subscribe("copy.alert", lambda e: copy_alert(e["title"], e["message"], email=bool(e.get("email"))))
     ev.subscribe("daily.summary", lambda e: daily_summary(e["pnl"], e["closes"], e["day"]))
     ev.subscribe("discord.lost", lambda e: discord_listener_lost(e.get("error", "")))

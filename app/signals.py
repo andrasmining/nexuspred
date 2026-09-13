@@ -35,6 +35,7 @@ credentials, risk, or a configured webhook.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import hmac
 import threading
@@ -142,6 +143,7 @@ def _webhook_executors(webhook: dict[str, Any]) -> list[Any]:
 
 
 # ------------------------------------------------------------- acceptance
+log = logging.getLogger("signals")
 _bg_tasks: set[asyncio.Task] = set()
 
 
@@ -149,8 +151,14 @@ def _spawn(coro: Any) -> asyncio.Task:
     """Run a coroutine in the background; the current context (area) is inherited."""
     task = asyncio.get_running_loop().create_task(coro)
     _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    task.add_done_callback(_bg_done)
     return task
+
+
+def _bg_done(task: asyncio.Task) -> None:
+    _bg_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        log.warning("background signal task failed: %r", task.exception())
 
 
 def passphrase_ok(payload: dict[str, Any], settings: dict[str, Any] | None = None) -> bool:
@@ -183,13 +191,14 @@ def accept(payload: dict[str, Any], webhook: dict[str, Any], *, forward: bool = 
         state.log_signal(payload, result="error: Invalid passphrase", webhook=name, webhook_id=str(webhook.get("id") or ""))
         events.emit("signal.failed", webhook=name or "?", reason="Invalid passphrase", settings=s)
         return
-    _spawn(process_background(payload, webhook, settings=s))
+    accepted = time.perf_counter()
+    _spawn(process_background(payload, webhook, settings=s, accepted_at=accepted))
     if forward:
-        forward_to_subscribers(payload, webhook)
+        forward_to_subscribers(payload, webhook, accepted_at=accepted)
 
 
 def forward_to_subscribers(payload: dict[str, Any], webhook: dict[str, Any],
-                           publisher_area: int | None = None) -> int:
+                           publisher_area: int | None = None, accepted_at: float | None = None) -> int:
     """Fan a published webhook's signal out to every enabled subscription, each
     executed in the subscriber's own area (their accounts, trading switch,
     symbol map, alerts and logs). Returns how many subscribers were dispatched.
@@ -210,28 +219,26 @@ def forward_to_subscribers(payload: dict[str, Any], webhook: dict[str, Any],
         view = marketplace.subscription_view(webhook, sub, aid)
         with context.use_area(sub["area_id"]):
             state.log_signal(dict(shared), result="received", webhook=view.get("name", ""), webhook_id=str(view.get("id") or ""))
-            _spawn(process_background(dict(shared), view, trusted=True))
+            _spawn(process_background(dict(shared), view, trusted=True, accepted_at=accepted_at))
     if subs:
         state.log_event("info", f"[{webhook.get('name', '?')}] forwarded to {len(subs)} subscriber(s)")
     return len(subs)
 
 
 async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *, trusted: bool = False,
-                             settings: dict[str, Any] | None = None) -> None:
+                             settings: dict[str, Any] | None = None, accepted_at: float | None = None) -> None:
     """Run the pipeline for an already-accepted signal: log the outcome, alert on
     failure, never raise (a background task must not die silently)."""
     name = webhook.get("name", "?")
     wid = str(webhook.get("id") or "")
-    started = time.perf_counter()
+    started = accepted_at if accepted_at is not None else time.perf_counter()    # latency = acceptance → broker answer, queueing included
     ms = lambda: int((time.perf_counter() - started) * 1000)  # noqa: E731
     try:
         result = await process(payload, webhook, trusted=trusted, settings=settings)
         state.log_signal(payload, result=result.get("status", "ok"), webhook=name, webhook_id=wid, latency_ms=ms())
         events.emit("signal.done", webhook=name, status=result.get("status", "ok"), reason=result.get("reason", ""), action=result.get("action", ""),
                     seconds=time.perf_counter() - started)
-        coro = _note_subscription_outcome(webhook, None, result)
-        if coro is not None:
-            await coro
+        await _after_subscription_outcome(webhook, None, result)
     except (SignalError, TradovateError) as exc:
         state.log_event("error", f"Signal error: {exc}", payload=payload)
         state.log_signal(payload, result=f"error: {exc}", webhook=name, webhook_id=wid, latency_ms=ms())
@@ -250,9 +257,17 @@ _sub_errors: dict[tuple[int, int], int] = {}      # (area, subscription id) → 
 
 
 async def _after_subscription_error(webhook: dict[str, Any], exc: Exception) -> None:
-    coro = _note_subscription_outcome(webhook, exc)
-    if coro is not None:
-        await coro
+    await _after_subscription_outcome(webhook, exc, None)
+
+
+async def _after_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, result: dict[str, Any] | None) -> None:
+    """Bookkeeping must never turn an executed signal into a reported failure."""
+    try:
+        coro = _note_subscription_outcome(webhook, exc, result)
+        if coro is not None:
+            await coro
+    except Exception as err:  # noqa: BLE001
+        state.log_event("warn", f"subscription bookkeeping failed: {err}")
 
 
 def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, result: dict[str, Any] | None = None) -> Any:
@@ -264,7 +279,11 @@ def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, r
     sub = webhook.get("subscription") if isinstance(webhook.get("subscription"), dict) else None
     if not sub or not sub.get("id"):
         return None
+    limit = int((webhook.get("controls") or {}).get("pause_after_errors") or 0)
     key = (context.get_area(), int(sub["id"]))
+    if not limit:
+        _sub_errors.pop(key, None)                    # control off: keep no streak at all
+        return None
     why = ""
     if exc is not None:
         why = str(exc)[:160]
@@ -273,15 +292,16 @@ def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, r
             return None
         if result.get("status") == "error":
             why = str(result.get("reason") or result.get("detail") or "error")[:160]
-        elif "accounts" in result and not result["accounts"]:
-            why = "no account executed the entry"
+        elif str(result.get("action") or "") in ("buy", "sell", "signal") and isinstance(result.get("accounts"), list) and not result["accounts"]:
+            why = "no account executed the entry"      # management actions report a count, never a list
     if not why:
         _sub_errors.pop(key, None)
         return None
     n = _sub_errors.get(key, 0) + 1
     _sub_errors[key] = n
-    limit = int((webhook.get("controls") or {}).get("pause_after_errors") or 0)
-    if not limit or n < limit:
+    if len(_sub_errors) > 5000:                       # bounded: an old streak is worth less than the memory
+        _sub_errors.pop(next(iter(_sub_errors)))
+    if n < limit:
         return None
     from . import db
     _sub_errors.pop(key, None)
@@ -429,6 +449,12 @@ async def _process_ts_hunter(payload, webhook, active_map, simulate, s):
             "warn", f"Trading disabled — TS-Hunter signal for {root} (trade {trade_id}) not executed"
         )
         return {"status": "skipped", "reason": "trading_disabled"}
+    if webhook.get("subscription"):
+        from . import marketplace
+        ok, why, detail = marketplace.subscription_gate(webhook, root, side if event == "signal" else event, area_id=context.get_area())
+        if not ok:
+            state.log_event("warn", f"Subscription '{webhook.get('name')}': TS-Hunter {event} for {root} not executed — {detail}")
+            return {"status": "skipped", "reason": why, "action": event, "detail": detail}
     if not simulate and event == "signal":
         lock = news.active_lock(settings=s)
         if lock:

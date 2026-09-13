@@ -2,6 +2,22 @@
    Placeholders {name} must appear in both. A key missing here shows the English text;
    the key list is every t("…") in static/js (tests/test_i18n.py checks coverage). */
 export const DE = {
+  // review round 5 (alpha.80)
+  "Clear the tag filter": "Tag-Filter löschen",
+  "Mirrors the leader's positions live{symbols}.": "Spiegelt die Positionen des Leaders live{symbols}.",
+  "No contract multiplier on file for this symbol": "Kein Kontrakt-Multiplikator für dieses Symbol hinterlegt",
+  "No description.": "Keine Beschreibung.",
+  "Stripe did not return a payment link": "Stripe hat keinen Zahlungslink geliefert",
+  "copy trading": "Copy-Trading",
+  "feed lost": "Feed verloren",
+  "group off": "Gruppe aus",
+  "invite-only": "nur auf Einladung",
+  "not subscribed": "nicht abonniert",
+  "starting": "startet",
+  "unpublished": "unveröffentlicht",
+  "{n} follower(s)": "{n} Follower",
+  "{n} subscriber(s)": "{n} Abonnent(en)",
+  "{root}: ": "{root}: ",
   // alpha.79 — paid subscriptions
   "0 = free. Charged through the bridge's Stripe account; the operator settles with you.": "0 = kostenlos. Abgerechnet über das Stripe-Konto der Bridge; der Betreiber rechnet mit dir ab.",
   "0 = the bridge default.": "0 = Standard der Bridge.",

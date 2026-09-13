@@ -220,3 +220,56 @@ def test_fan_out_order_is_shuffled(two_areas, monkeypatch):
             signals.forward_to_subscribers(PAYLOAD, wh)
         seen.add(tuple(orders[-1]))
     assert all(sorted(o) == [100, 101, 102, 103, 104, 105] for o in orders) and len(seen) > 1
+
+
+# ---------------------------------------------------- review round 5 fixes
+def test_publisher_pause_takes_copy_followers_out_of_the_mirror(two_areas):
+    from app import copy as cp
+    g = cp.new_group("Lead"); g["leader"] = {"token_idx": 0, "spec": "L1", "account_id": 1}
+    g["sharing"] = {"enabled": True, "title": "Lead", "visibility": "all", "paused": False}
+    config.save_settings({"copy_groups": [g]}, area_id=1)
+    db.upsert_subscription(two_areas["a2"], 1, f"copy:{g['id']}", [{"token_idx": 0, "spec": "S1", "enabled": True, "mode": "multiplier", "multiplier": 1}], True)
+    assert [f["spec"] for f in cp.external_followers(1, g["id"], group=g)] == ["S1"]
+    g["sharing"]["paused"] = True
+    assert cp.external_followers(1, g["id"], group=g) == []
+
+
+def test_management_actions_and_skips_never_count_as_subscription_errors(admin):
+    view = {"name": "T", "subscription": {"id": 5, "webhook_id": "wh"}, "controls": {"pause_after_errors": 1}}
+    with context.use_area(1):
+        assert signals._note_subscription_outcome(view, None, {"status": "ok", "action": "trail_active", "accounts": 0}) is None
+        assert signals._note_subscription_outcome(view, None, {"status": "skipped", "reason": "x"}) is None
+        assert (1, 5) not in signals._sub_errors
+        off_view = {**view, "controls": {"pause_after_errors": 0}}
+        assert signals._note_subscription_outcome(off_view, RuntimeError("x"), None) is None and (1, 5) not in signals._sub_errors   # control off: no streak kept
+
+
+def test_daily_cap_ignores_skipped_signals(admin):
+    view = {"id": "sub1_wh", "controls": {"max_signals_per_day": 1}}
+    with context.use_area(1):
+        state.log_signal({"action": "buy"}, result="skipped", webhook="T", webhook_id="sub1_wh")
+        assert marketplace.subscription_gate(view, "MNQ", "buy", area_id=1)[0] is True
+        state.log_signal({"action": "buy"}, result="ok", webhook="T", webhook_id="sub1_wh")
+        assert marketplace.subscription_gate(view, "MNQ", "buy", area_id=1)[1] == "subscription_daily_cap"
+
+
+async def test_ts_hunter_subscriptions_honour_the_symbol_control(two_areas, sub_client, monkeypatch):
+    from tests.helpers import FakeExecutor
+    wh, a2 = two_areas["wh"], two_areas["a2"]
+    config.update(lambda s: s["webhooks"][0].update({"strategy": "ts_hunter"}), area_id=1)
+    made = []
+    monkeypatch.setattr(signals, "_webhook_executors", lambda w: made.append(context.get_area()) or [FakeExecutor("S1")])
+    await sub_client.post(f"/api/marketplace/1/{wh['id']}/subscribe", json={"accounts": [S1], "controls": {"symbols": ["ES"]}})
+    with context.use_area(1):
+        signals.accept({"event": "signal", "side": "buy", "symbol": "MNQ", "trade_id": "T1", "risk": {"value": 2}, "sl": {"value": 90}}, config.load_settings(area_id=1)["webhooks"][0])
+    await settle(20)
+    assert a2 not in made                                                               # the subscriber's area built no executor
+    assert db.list_signals(a2, webhook_id=f"sub1_{wh['id']}")["items"][0]["result"] == "skipped"
+
+
+def test_clean_accounts_is_bounded_and_known_only(admin):
+    with context.use_area(1):
+        config.save_settings({"token_accounts": [{"name": "L", "enabled": True, "accounts": [{"id": 1, "spec": "K1", "enabled": True}]}]})
+        raw = [{"token_idx": 0, "spec": f"X{i}"} for i in range(300)] + [{"token_idx": 0, "spec": "K1"}, {"token_idx": 0, "spec": "K1"}]
+        out = marketplace.clean_accounts(raw)
+    assert [a["spec"] for a in out] == ["K1"]                                            # unknown specs dropped, duplicates collapsed

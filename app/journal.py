@@ -743,6 +743,8 @@ async def import_area(area_id: int, *, trigger: str = "manual", user_email: str 
             if status == "error":
                 state.log_event("warn", f"Journal import failed: {rec['error']}")
             else:
+                from . import track_record
+                track_record.invalidate(area_id)
                 state.log_event("info", f"Journal import ({trigger}): {totals['trades_new']} new trade(s), "
                                         f"{totals['fills_new']} new fill(s), {totals['history_new']} from history "
                                         f"({totals['history_snapshots']} daily balances) from {len(results)} login(s)"

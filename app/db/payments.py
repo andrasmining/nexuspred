@@ -6,6 +6,9 @@ from .core import _connect, _now, init
 
 STATUSES = ("pending", "trialing", "active", "past_due", "canceled", "unpaid")
 PAID = frozenset({"trialing", "active"})
+LIVE = frozenset({"trialing", "active", "past_due"})      # a Stripe subscription still exists for these
+_COLS = ("stripe_customer", "stripe_subscription", "checkout_session", "status", "price_cents", "currency", "current_period_end", "trial_end",
+         "last_event_id", "last_event_created", "checkout_url")
 
 
 def _row(r: sqlite3.Row) -> dict[str, Any]:
@@ -16,15 +19,16 @@ def upsert_payment(area_id: int, publisher_area_id: int, key: str, **fields: Any
     """Create or update the subscriber's payment record for one listing."""
     init()
     now = _now()
-    cols = ("stripe_customer", "stripe_subscription", "checkout_session", "status", "price_cents", "currency", "current_period_end", "trial_end")
+    cols = _COLS
     with _connect() as c:
         row = c.execute("SELECT * FROM payments WHERE area_id=? AND publisher_area_id=? AND webhook_id=?", (area_id, publisher_area_id, key)).fetchone()
         if row is None:
             vals = {k: fields.get(k) for k in cols}
             c.execute("INSERT INTO payments(area_id,publisher_area_id,webhook_id,stripe_customer,stripe_subscription,checkout_session,status,price_cents,currency,"
-                      "current_period_end,trial_end,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      "current_period_end,trial_end,created_at,updated_at,last_event_id,last_event_created,checkout_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (area_id, publisher_area_id, key, vals["stripe_customer"] or "", vals["stripe_subscription"] or "", vals["checkout_session"] or "",
-                       vals["status"] or "pending", int(vals["price_cents"] or 0), vals["currency"] or "usd", vals["current_period_end"] or "", vals["trial_end"] or "", now, now))
+                       vals["status"] or "pending", int(vals["price_cents"] or 0), vals["currency"] or "usd", vals["current_period_end"] or "", vals["trial_end"] or "", now, now,
+                       vals["last_event_id"] or "", int(vals["last_event_created"] or 0), vals["checkout_url"] or ""))
         else:
             sets = {k: v for k, v in fields.items() if k in cols}
             if sets:
@@ -51,8 +55,7 @@ def payment_by(field: str, value: str) -> Optional[dict[str, Any]]:
 
 def update_payment(payment_id: int, **fields: Any) -> Optional[dict[str, Any]]:
     init()
-    cols = ("stripe_customer", "stripe_subscription", "checkout_session", "status", "price_cents", "currency", "current_period_end", "trial_end")
-    sets = {k: v for k, v in fields.items() if k in cols}
+    sets = {k: v for k, v in fields.items() if k in _COLS}
     with _connect() as c:
         if sets:
             c.execute(f"UPDATE payments SET {', '.join(f'{k}=?' for k in sets)}, updated_at=? WHERE id=?", (*sets.values(), _now(), payment_id))

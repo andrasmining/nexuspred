@@ -419,6 +419,7 @@ def init() -> None:
             if "status" not in sub_cols:
                 # alpha.78: publisher controls (approval, pause) and subscriber controls
                 c.execute("ALTER TABLE subscriptions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+            if "controls" not in sub_cols:
                 c.execute("ALTER TABLE subscriptions ADD COLUMN controls TEXT NOT NULL DEFAULT '{}'")
             c.execute("""CREATE TABLE IF NOT EXISTS payments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -437,8 +438,15 @@ def init() -> None:
                     updated_at TEXT NOT NULL,
                     UNIQUE(area_id, publisher_area_id, webhook_id)
                 )""")
+            pay_cols = {r["name"] for r in c.execute("PRAGMA table_info(payments)").fetchall()}
+            if "last_event_created" not in pay_cols:
+                # alpha.80: Stripe events are applied in order and only once
+                c.execute("ALTER TABLE payments ADD COLUMN last_event_id TEXT NOT NULL DEFAULT ''")
+                c.execute("ALTER TABLE payments ADD COLUMN last_event_created INTEGER NOT NULL DEFAULT 0")
+                c.execute("ALTER TABLE payments ADD COLUMN checkout_url TEXT NOT NULL DEFAULT ''")
             for stmt in ("CREATE INDEX IF NOT EXISTS ix_journal_imports_area ON journal_imports(area_id, id)",
                          "CREATE INDEX IF NOT EXISTS ix_payments_sub ON payments(stripe_subscription)",
+                         "CREATE INDEX IF NOT EXISTS ix_journal_trades_spec ON journal_trades(area_id, account_spec, exit_ts)",
                          "CREATE INDEX IF NOT EXISTS ix_signal_log_wh ON signal_log(area_id, webhook_id, id)",
                          "CREATE INDEX IF NOT EXISTS ix_copy_events_ts ON copy_events(ts)",
                          "CREATE INDEX IF NOT EXISTS ix_audit_action ON audit_log(action, id)",

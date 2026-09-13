@@ -100,14 +100,21 @@ async def emit_async(kind: str, /, **data: Any) -> int:
         except Exception as exc:  # noqa: BLE001
             log.warning("event handler for %s failed: %r", kind, exc)
             continue
-        if inspect.isawaitable(r):
+        if not inspect.isawaitable(r):
+            continue
+        if star:
+            _schedule(r, kind)          # automations / metrics never hold the producer (a risk flatten must not wait for SMTP)
+        else:
             coros.append(r)
     results = await asyncio.gather(*coros, return_exceptions=True)
+    cancelled = None
     for r in results:
         if isinstance(r, asyncio.CancelledError):
-            raise r
-        if isinstance(r, Exception):
+            cancelled = r
+        elif isinstance(r, Exception):
             log.warning("event handler for %s failed: %r", kind, r)
+    if cancelled is not None:
+        raise cancelled
     return len(coros)
 
 
