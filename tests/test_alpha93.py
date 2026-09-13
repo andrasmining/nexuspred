@@ -173,18 +173,15 @@ async def test_directory_is_the_broadcasters_pick_list(trio):
 # ================================================================ requests
 async def test_user_requests_broadcaster_and_admin_approves(trio, monkeypatch):
     admin, bc, us = trio
-    sent = []
-
-    async def fake_mail(to, subject, body):
-        sent.append((to, subject))
-    from app import alerts
-    monkeypatch.setattr(alerts, "send_email_to", fake_mail)
+    from app import mailer
+    monkeypatch.setattr(mailer, "configured", lambda: True)                  # alpha.95: the platform mailer queues the note
     async with _client(us["id"]) as c:
         r = await c.post("/api/me/role-request", json={"role": "broadcaster"})
         assert r.status_code == 200 and r.json()["status"] == "requested"
         assert (await c.get("/api/me")).json()["role_request"] == "broadcaster"
         assert (await c.post("/api/me/role-request", json={"role": "admin"})).status_code == 400
-    assert sent == [("admin@example.com", "Fluxbridge: Broadcaster request")]     # only the admin hears it
+    queued = [(r["to"], r["kind"]) for r in db.outbox_list()]
+    assert queued == [("admin@example.com", "role_request")]                      # only the admin hears it
     async with _client(bc["id"]) as c:
         assert (await c.post("/api/me/role-request", json={})).status_code == 400  # already a broadcaster
     async with _client(admin["id"]) as c:

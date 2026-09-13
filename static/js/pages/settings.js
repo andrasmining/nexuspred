@@ -325,6 +325,35 @@ function pushPanel() {
   return el;
 }
 
+/* alpha.95: per channel, when the last alert was delivered and whether the
+   channel keeps failing (three failures in a row = degraded). */
+function channelHealthPanel() {
+  const box = h("div", { class: "callout", style: "display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center" }, h("span", { class: "muted" }, t("Loading…")));
+  const LABEL = { push: t("Push"), email: t("Email"), discord: t("Discord") };
+  const ago = (iso) => { const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000); return s < 90 ? t("{n} s ago", { n: Math.round(s) }) : s < 5400 ? t("{n} min ago", { n: Math.round(s / 60) }) : s < 172800 ? t("{n} h ago", { n: Math.round(s / 3600) }) : t("{n} d ago", { n: Math.round(s / 86400) }); };
+  let alive = true, timer = null;
+  async function paint() {
+    try {
+      const r = await api.get("/api/alerts/deliveries?limit=1");
+      if (!alive) return;
+      clear(box);
+      let degraded = false;
+      for (const ch of ["push", "email", "discord"]) {
+        const c = r.channels[ch] || {};
+        degraded = degraded || c.degraded;
+        box.append(h("span", { style: "display:inline-flex;gap:6px;align-items:center" }, h("strong", null, LABEL[ch]),
+          c.degraded ? h("span", { title: c.last_error ? c.last_error.error : "" }, tag(t("{n} failures in a row", { n: c.failures }), "off"))
+            : c.last_ok ? tag(t("delivered {when}", { when: ago(c.last_ok) }), "on")
+            : c.last_error ? h("span", { title: c.last_error.error }, tag(t("failed {when}", { when: ago(c.last_error.at) }), "warn"))
+            : tag(t("no delivery yet"), "")));
+      }
+      box.className = `callout ${degraded ? "danger" : "ok"}`;
+    } catch (e) { if (alive) { clear(box); box.append(h("span", { class: "muted" }, errText(e.message))); } }
+  }
+  paint(); timer = setInterval(paint, 30000);
+  return { el: box, cleanup() { alive = false; clearInterval(timer); } };
+}
+
 export const alerts = {
   title: t("Alerts"),
   render(root) {
@@ -385,9 +414,10 @@ export const alerts = {
         ], after: heartbeatPanel() },
       ],
     });
-    root.append(pageHead(t("Alerts"), t("Notify a Discord channel, an email address and/or your phone when something happens. ") + lead()), form.el);
+    const health = channelHealthPanel();
+    root.append(pageHead(t("Alerts"), t("Notify a Discord channel, an email address and/or your phone when something happens. ") + lead()), health.el, form.el);
     const unsub = store.subscribe("settings", (s) => { if (!form.isDirty()) form.setValues(s); });
-    return () => { unsub(); if (accountsPanel.cleanup) accountsPanel.cleanup(); root.querySelectorAll("[data-heartbeat]").forEach((p) => p.cleanup && p.cleanup()); };
+    return () => { unsub(); health.cleanup(); if (accountsPanel.cleanup) accountsPanel.cleanup(); root.querySelectorAll("[data-heartbeat]").forEach((p) => p.cleanup && p.cleanup()); };
   },
 };
 

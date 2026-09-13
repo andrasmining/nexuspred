@@ -4,6 +4,27 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.95
+Package 1 of the operations roadmap: reliable delivery.
+- **Platform mailer.** The bridge has its own sender for transactional mail — invites, password-reset
+  links, the Broadcaster request to the admins, role notices — configured by an admin under
+  Settings → Platform (SMTP, Resend or Postmark) or pinned by `NEXUSPRED_MAIL_*` environment
+  variables. A workspace's own SMTP stays the user's channel for trade alerts and is the fallback when
+  the platform sender is off. Before this every platform mail went through the SMTP of whichever
+  workspace was active: a User's Broadcaster request tried the User's (usually missing) SMTP and the
+  admin never heard about it.
+- **Templates in the recipient's language.** HTML with a plain-text twin, Fluxbridge header, one
+  button, German or English from the recipient's workspace language, an unsubscribe link where a mail
+  is not transactional.
+- **Outbox with retry and mail log.** Every mail is a row first; a worker delivers it and retries a
+  failure after 1, 5, 15, 60 and 360 minutes, then marks it failed with the error. Settings → Platform
+  shows the log (pending / sent / failed, route, attempts) with a retry button and a "send test e-mail
+  to me" button. An address that fails five times in a row is flagged on that user's dashboard.
+  `GET /api/mail/config|log`, `PUT /api/mail/config`, `POST /api/mail/test|retry/{id}` (admin).
+- **Alert delivery log.** Every push, e-mail and Discord delivery attempt is recorded per workspace;
+  Settings → Alerts shows per channel "delivered 4 min ago", "failed …" or "3 failures in a row" (the
+  channel counts as degraded from three consecutive failures). `GET /api/alerts/deliveries`.
+
 ## 5.0.0-alpha.94
 - **Copy groups for every role.** A User creates and runs their own copy groups (a leader account
   mirrored onto their own follower accounts); only publishing a group on the marketplace and managing

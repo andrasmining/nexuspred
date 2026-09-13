@@ -37,15 +37,31 @@ def alert_accounts(accounts: list[str], settings: dict[str, Any] | None = None) 
     return [a for a in accounts if account_alerts_on(a, s)]
 
 
+def _record(channel: str, ok: bool, title: str, error: str = "") -> None:
+    """alpha.95: every delivery attempt in the workspace's delivery log (off the
+    event-loop thread; a failure to log is itself swallowed)."""
+    area = context.get_area()
+    try:
+        asyncio.get_running_loop().run_in_executor(None, db.record_delivery, area, channel, ok, push.strip_markdown(title)[:120], error)
+    except RuntimeError:
+        db.record_delivery(area, channel, ok, title[:120], error)
+
+
 async def _send_push(title: str, message: str, *, url: str = "/", settings: dict[str, Any] | None = None) -> None:
     """Web Push to the area's installed apps (see :mod:`app.push`)."""
     s = settings if settings is not None else config.load_settings()
     if not s.get("alert_push_enabled", True) or not push.available():
         return
     try:
-        await push.send_current_area(title, push.strip_markdown(message), url=url)
+        r = await push.send_current_area(title, push.strip_markdown(message), url=url)
     except Exception as exc:  # noqa: BLE001 - never let a notification failure escalate
         state.log_event("warn", f"Push alert failed: {exc}")
+        _record("push", False, title, str(exc))
+        return
+    if isinstance(r, dict) and r.get("sent", 0) == 0 and r.get("failed", 0) > 0:
+        _record("push", False, title, f"{r.get('failed')} device(s) rejected the push")
+    elif not isinstance(r, dict) or r.get("sent", 0) > 0 or r.get("total", 1) == 0:
+        _record("push", True, title)
 
 
 async def _send_discord(message: str, *, settings: dict[str, Any] | None = None) -> None:
@@ -58,6 +74,7 @@ async def _send_discord(message: str, *, settings: dict[str, Any] | None = None)
     problem = await asyncio.to_thread(security.check_outbound_url, url)     # what it resolves to *now*, not at save time
     if problem:
         state.log_event("warn", f"Discord alert not sent — target rejected: {problem}")
+        _record("discord", False, message, f"target rejected: {problem}")
         return
     try:
         resp = await http.client("outbound").post(
@@ -66,8 +83,12 @@ async def _send_discord(message: str, *, settings: dict[str, Any] | None = None)
             json={"content": content, "allowed_mentions": {"parse": ["everyone"] if everyone else []}}, timeout=10.0)
         if resp.status_code >= 400:
             state.log_event("warn", f"Discord alert failed: {resp.status_code} {resp.text}")
+            _record("discord", False, message, f"{resp.status_code} {resp.text[:200]}")
+        else:
+            _record("discord", True, message)
     except Exception as exc:  # noqa: BLE001 - never let a notification failure escalate
         state.log_event("warn", f"Discord alert failed: {exc}")
+        _record("discord", False, message, str(exc))
 
 
 def _check_smtp_target(host: str, port: int) -> None:
@@ -102,10 +123,16 @@ def _send_email_sync(subject: str, body: str) -> None:
 
 
 async def _send_email(subject: str, body: str) -> None:
+    s = config.load_settings()
+    if not s.get("alert_email_enabled") or not s.get("alert_email_to") or not s.get("alert_smtp_username") or not s.get("alert_smtp_password"):
+        return                                      # channel off or incomplete: nothing attempted, nothing logged
     try:
         await asyncio.to_thread(_send_email_sync, subject, body)
     except Exception as exc:  # noqa: BLE001
         state.log_event("warn", f"Email alert failed: {exc}")
+        _record("email", False, subject, str(exc))
+        return
+    _record("email", True, subject)
 
 
 def smtp_configured() -> bool:
@@ -462,12 +489,16 @@ def _register() -> None:
 _register()
 
 
-async def notify_admins(title: str, message: str) -> None:
-    """A short note to every admin's alert e-mail (best effort)."""
-    from . import db
+async def notify_admins(kind: str, ctx: dict[str, Any]) -> int:
+    """Queue a template mail (see app.mailer.TEMPLATES) to every admin, each in
+    their own language, through the platform mailer. Returns how many were queued."""
+    from . import mailer
+    n = 0
     for u in db.list_users():
         if u.get("role") == "admin" or u.get("is_admin"):
-            try:
-                await send_email_to(u["email"], f"Fluxbridge: {title}", message)
-            except Exception:  # noqa: BLE001
-                pass
+            area = db.user_primary_area(u["id"])
+            if not mailer.can_send(area):
+                continue
+            mailer.send_template(u["email"], kind, ctx, lang=mailer.lang_for_area(area), area_id=area)
+            n += 1
+    return n

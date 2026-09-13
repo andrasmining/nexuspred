@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, automations, config, context, copy, crypto, db, drawdown, health, history, http, journal, metrics, news, pnl, push, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
+from . import auth, automations, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
 from .discord_signals.routes import router as discord_router
 from .routers import ROUTERS
 from . import web
@@ -86,7 +86,8 @@ async def _startup() -> None:
                       asyncio.create_task(copy.copy_loop(), name="copy-loop"),
                       asyncio.create_task(news.news_loop(), name="news-loop"),
                       asyncio.create_task(watchdog.heartbeat_loop(), name="heartbeat-loop"),
-                      asyncio.create_task(signals.persist_loop(), name="active-trades-loop")]
+                      asyncio.create_task(signals.persist_loop(), name="active-trades-loop"),
+                      asyncio.create_task(mailer.outbox_loop(), name="outbox-loop")]
     health.start_discord_listeners()     # the health loop keeps them alive from here on
 
 
@@ -96,6 +97,8 @@ async def _history_prune_loop() -> None:
         try:
             await asyncio.to_thread(history.prune)
             await asyncio.to_thread(db.prune_copy_events)
+            await asyncio.to_thread(db.outbox_prune)
+            await asyncio.to_thread(db.prune_deliveries)
         except Exception as exc:  # noqa: BLE001
             state.log_event("warn", f"history prune failed: {exc}")
 

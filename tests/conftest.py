@@ -28,6 +28,7 @@ from app import auth, config, context, crypto, db, health, history, http, push, 
 from app import copy as copy_mod  # noqa: E402
 from app import automations, events, metrics, risk, track_record  # noqa: E402
 from app import payments as payments_mod  # noqa: E402
+from app import mailer as mailer_mod  # noqa: E402
 from app import pnl as pnl_mod  # noqa: E402
 from app import drawdown as drawdown_mod  # noqa: E402
 from app import news as news_mod  # noqa: E402
@@ -82,6 +83,7 @@ def _reset_runtime() -> None:
     automations.reset()
     track_record.reset()
     payments_mod.reset()
+    mailer_mod.reset()
     metrics.reset()
     events.reset()
     pnl_mod.reset()

@@ -42,6 +42,15 @@ function paintSidebar() {
 
 /* ------------------------------------------------------------- support view */
 let supportBanner = null;
+let mailBanner = null;
+function paintMailBanner() {
+  const me = store.get("me");
+  if (mailBanner) { mailBanner.remove(); mailBanner = null; }
+  if (!me || !me.mail_blocked) return;
+  mailBanner = h("div", { class: "support-banner warn", role: "status" },
+    h("strong", null, t("E-mail not reaching you")), " ", t("Several messages to {email} could not be delivered. Check the address under Settings → Account or ask your admin to look at the mail log.", { email: me.email }));
+  shell.prepend(mailBanner);
+}
 function paintSupportBanner() {
   const me = store.get("me");
   if (supportBanner) { supportBanner.remove(); supportBanner = null; }
@@ -108,6 +117,7 @@ async function boot() {
     return;
   }
   paintSupportBanner();
+  paintMailBanner();
   // Data the shell and most pages need right away.
   await Promise.all([actions.loadSettings().catch(() => null), actions.refreshStatus(), actions.loadWebhooks(), actions.loadTradeAccounts()]);
   window.addEventListener("hashchange", render);

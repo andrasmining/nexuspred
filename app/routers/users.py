@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import alerts, config, context, db, state
+from .. import alerts, config, context, db, mailer, state
 from ..discord_signals import listener as discord_listener
 from .. import roles, web
 from ..web import base_url, require_admin, require_role, set_session_cookie
@@ -30,7 +30,8 @@ async def api_me(request: Request) -> dict[str, Any]:
             "role_request": u.get("role_request") or "", "capabilities": web.capabilities(u),
             "features": db.user_features(u["id"]),
             "support": {"area_id": support["area_id"], "email": support["email"]} if support else None,
-            "totp_enabled": bool(u.get("totp_enabled")), "totp_required": bool(u.get("totp_required"))}
+            "totp_enabled": bool(u.get("totp_enabled")), "totp_required": bool(u.get("totp_required")),
+            "mail_blocked": mailer.address_blocked(u["email"])}
 
 
 @router.post("/me/role-request")
@@ -47,7 +48,7 @@ async def api_role_request(request: Request) -> dict[str, Any]:
     with context.use_area(context.DEFAULT_AREA_ID):                       # the operator's workspace hears it too
         state.log_event("info", f"{user['email']} asked for the Broadcaster role — approve it under Settings → Users")
     try:
-        await alerts.notify_admins("Broadcaster request", f"{user['email']} asked for the Broadcaster role. Approve it under Settings → Users.")
+        await alerts.notify_admins("role_request", {"email": user["email"], "url": base_url(request) + "/#/settings/users"})
     except Exception:  # noqa: BLE001 - an alert channel must never fail the request
         pass
     return {"status": "requested", "role": "broadcaster"}
@@ -87,6 +88,10 @@ async def api_set_role(request: Request, user_id: int) -> dict[str, Any]:
         if area:
             effects = await roles.demote_publisher(area)
     db.set_role(user_id, role)
+    if mailer.can_send(context.get_area()):
+        lang = mailer.lang_for_user(user_id)
+        mailer.send_template(target["email"], "role_changed", {**mailer.role_ctx(role, lang, admin["email"]), "url": base_url(request) + "/"},
+                             lang=lang, area_id=context.get_area())
     db.log_action(admin["id"], admin["email"], "role_set", target["email"], f"{before} → {role}"
                   + (f" ({effects['listings']} listings unpublished, {effects['groups']} groups disabled)" if effects else ""))
     state.log_event("info", f"Role of {target['email']} set to {role} by {admin['email']}")
@@ -185,12 +190,14 @@ async def api_create_invite(request: Request) -> dict[str, Any]:
                   f"{role} invite" if role != "user" else "")
     url = f"{base_url(request)}/register?code={code}"
     emailed = False
-    if email and "@" in email and bool(body.get("send_email")):
-        emailed = await alerts.send_email_to(
-            email, "You're invited to Fluxbridge",
-            f"You've been invited to Fluxbridge. Create your account here:\n\n{url}\n\n"
-            "This link is single-use. If you didn't expect this, you can ignore it.")
-    return {"code": code, "url": url, "role": role, "emailed": emailed, "smtp_configured": alerts.smtp_configured()}
+    area = context.get_area()
+    if email and "@" in email and bool(body.get("send_email")) and mailer.can_send(area):
+        lang = mailer.lang_for_area(area)
+        note = {"en": {"broadcaster": " as a Broadcaster", "admin": " as an administrator"}, "de": {"broadcaster": " als Broadcaster", "admin": " als Administrator"}}
+        mailer.send_template(email, "invite", {"inviter": admin["email"], "url": url, "expiry": "",
+                                               "role_note": note.get(lang, note["en"]).get(role, "")}, lang=lang, area_id=area)
+        emailed = True
+    return {"code": code, "url": url, "role": role, "emailed": emailed, "smtp_configured": mailer.can_send(area)}
 
 
 @router.get("/invites")
@@ -292,11 +299,12 @@ async def api_create_reset(request: Request, user_id: int) -> dict[str, Any]:
     token = db.create_password_reset(user_id)
     db.log_action(admin["id"], admin["email"], "password_reset", target["email"])
     url = f"{base_url(request)}/reset?token={token}"
-    emailed = await alerts.send_email_to(
-        target["email"], "Reset your Fluxbridge password",
-        f"An administrator started a password reset for your Fluxbridge account.\n\n"
-        f"Set a new password here (single-use, expires in 24 hours):\n\n{url}\n\n"
-        "If you didn't expect this, contact your administrator.")
+    area = context.get_area()
+    emailed = mailer.can_send(area)
+    if emailed:
+        lang = mailer.lang_for_user(user_id)
+        who = {"en": "An administrator", "de": "Ein Administrator"}.get(lang, "An administrator")
+        mailer.send_template(target["email"], "password_reset", {"who": who, "url": url}, lang=lang, area_id=area)
     # The link is a login: hand it to the admin only when it could not be mailed
-    # to the user (no SMTP) and they have to pass it on out of band.
-    return {"user_id": user_id, "url": "" if emailed else url, "emailed": emailed, "smtp_configured": alerts.smtp_configured()}
+    # to the user (no mail route) and they have to pass it on out of band.
+    return {"user_id": user_id, "url": "" if emailed else url, "emailed": emailed, "smtp_configured": emailed}

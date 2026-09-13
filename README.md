@@ -571,6 +571,29 @@ path with a one-year immutable cache (a deploy changes every URL), the German di
 fetched only for German, and uvicorn's per-request access log is off unless
 `NEXUSPRED_ACCESS_LOG=1` (the bridge keeps its own signal, order and event logs).
 
+## Platform mailer (transactional e-mail)
+
+Invites, password-reset links, the Broadcaster request to the admins and role notices are sent by
+the **platform mailer**, not by a user's own SMTP. An admin sets it up under **Settings → Platform**
+(SMTP with STARTTLS/TLS, or the Resend / Postmark API) or pins it with environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `NEXUSPRED_MAIL_PROVIDER` | `smtp`, `resend`, `postmark` or `off` |
+| `NEXUSPRED_MAIL_HOST` / `NEXUSPRED_MAIL_PORT` | SMTP host and port (587 STARTTLS, 465 TLS) |
+| `NEXUSPRED_MAIL_USERNAME` / `NEXUSPRED_MAIL_PASSWORD` | SMTP login |
+| `NEXUSPRED_MAIL_API_KEY` | Resend API key or Postmark server token |
+| `NEXUSPRED_MAIL_FROM` / `NEXUSPRED_MAIL_FROM_NAME` / `NEXUSPRED_MAIL_REPLY_TO` | Sender |
+
+Mails are queued in an **outbox** and delivered by a worker with retries (1, 5, 15, 60, 360 minutes);
+the admin sees every row (pending / sent / failed with the error) under Settings → Platform, can
+retry, and can send a test mail. Templates are HTML + plain text in the recipient's language. When
+the platform mailer is off, a mail falls back to the SMTP of the workspace that sends it — a user
+without their own SMTP then sends nothing, and the response says so (`emailed: false`).
+
+Every alert delivery (push, e-mail, Discord) is logged per workspace; Settings → Alerts shows when
+each channel last delivered and flags a channel with three failures in a row.
+
 ## Alerts
 
 **Settings → Alerts** — three channels, each with its own on/off switch:

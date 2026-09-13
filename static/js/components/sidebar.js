@@ -30,6 +30,7 @@ export const NAV = [
       { path: "/settings/account", label: t("Account") },
       { path: "/settings/users", label: t("Users"), gate: "admin" },
       { path: "/settings/payments", label: t("Payments"), gate: "admin" },
+      { path: "/settings/platform", label: t("Platform"), gate: "admin" },
       { path: "/settings/agents", label: t("Execution Agents") },
       { path: "/settings/news", label: t("News & Calendar"), gate: "admin" },
       { path: "/settings/updates", label: t("Updates"), gate: "admin" },
