@@ -101,9 +101,9 @@ def build_trade_payload(sig: dict[str, Any], *, received_at: str, source: str) -
 def find_channel(channel_id: str) -> Optional[dict[str, Any]]:
     """Return the live config for a channel id (string compare), or None."""
     cid = str(channel_id)
-    for c in config.load_settings().get("discord_channels") or []:
+    for c in config.peek("discord_channels") or []:
         if str(c.get("id")) == cid:
-            return c
+            return dict(c)
     return None
 
 
@@ -111,7 +111,7 @@ def watched_channel_ids() -> set[str]:
     """The set of channel ids we currently care about (enabled channels)."""
     return {
         str(c.get("id"))
-        for c in (config.load_settings().get("discord_channels") or [])
+        for c in (config.peek("discord_channels") or [])      # every message of every guild passes here: no settings copy per message
         if c.get("enabled") and c.get("id")
     }
 
@@ -201,7 +201,7 @@ async def process_embed(
 
     # Latency = reception -> the moment we fire the webhook POSTs.
     event["latency_ms"] = round((time.monotonic() - received_monotonic) * 1000, 1)
-    results = await dispatcher.dispatch(active_targets, payload)
+    results = await dispatcher.dispatch(active_targets, payload, forward=source != "test")   # a test embed stays in this workspace
     event["targets"] = results
     dispatcher.log_dispatch_summary(channel_label, results)
     return hub.record(event)

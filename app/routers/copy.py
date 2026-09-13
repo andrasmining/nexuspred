@@ -144,6 +144,7 @@ async def api_group_remove_subscriber(group_id: str, sub_id: int, request: Reque
     db.log_action(user["id"], user["email"], "subscriber_remove", email, f"copy group {group_id}")
     state.log_event("info", f"Subscriber {email} removed from copy group {group_id}")
     await copy.release_followers(context.get_area(), group_id, copy._enabled_specs(removed.get("accounts")))
+    await payments.cancel_for_listing(context.get_area(), f"copy:{group_id}", area_id=int(removed["area_id"]))   # a kicked subscriber must not keep paying
     await copy.sync_area(context.get_area())
     return {"status": "deleted", "id": sub_id}
 
@@ -158,7 +159,7 @@ async def api_create_group(request: Request) -> dict[str, Any]:
         g = _apply(copy.new_group(str(body.get("name") or "Copy group")), body)
         g["enabled"] = False if "leader" not in body else bool(body.get("enabled", False))
         if "leader" in body:
-            copy.validate_group(g, groups, trade_accounts_overview())
+            copy.validate_group(g, groups, trade_accounts_overview(), copy.subscribed_specs())
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid copy group: {exc}") from exc
     copy.save_groups([*groups, g])
@@ -174,7 +175,7 @@ async def api_update_group(group_id: str, request: Request) -> dict[str, Any]:
     try:
         g = _apply(dict(groups[i]), body)
         if g.get("enabled") or any(k in body for k in ("leader", "followers", "feed_loss_flatten_s")):
-            copy.validate_group(g, groups, trade_accounts_overview())
+            copy.validate_group(g, groups, trade_accounts_overview(), copy.subscribed_specs())
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid copy group: {exc}") from exc
     groups[i] = g
@@ -195,6 +196,7 @@ async def api_delete_group(group_id: str) -> dict[str, Any]:
     await copy.sync_area(context.get_area())
     history.defer(db.delete_copy_state, context.get_area(), group_id)   # behind the runner's queued state writes
     db.delete_copy_twins(context.get_area(), group_id)
+    await payments.cancel_for_listing(context.get_area(), f"copy:{group_id}")                # nobody pays for a listing that is gone
     dropped = db.delete_subscriptions_for_webhook(context.get_area(), f"copy:{group_id}")
     state.log_event("info", f"Copy group '{removed.get('name')}' deleted" + (f" ({dropped} subscription(s) removed)" if dropped else ""))
     return {"status": "deleted", "id": group_id}
@@ -206,7 +208,7 @@ async def _set_enabled(group_id: str, enabled: bool) -> dict[str, Any]:
     g["enabled"] = enabled
     if enabled:
         try:
-            copy.validate_group(g, groups, trade_accounts_overview())
+            copy.validate_group(g, groups, trade_accounts_overview(), copy.subscribed_specs())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     groups[i] = g
@@ -265,6 +267,7 @@ async def api_sync_group(group_id: str) -> dict[str, Any]:
 async def api_flatten_group(group_id: str) -> dict[str, Any]:
     """Close every mirrored position on the followers and pause the group."""
     r = _runner_or_409(group_id)
+    r.paused, r.pause_reason = True, "flattening…"      # paused first: a reconcile in the meantime must not re-open what closes here
     n = await r.flatten_followers(reason="flattened by user")
     r.paused, r.pause_reason = True, "flattened by user — resume to mirror again"
     r._record("paused", detail=r.pause_reason)

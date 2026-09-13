@@ -482,6 +482,10 @@ def init() -> None:
                     UNIQUE(area_id, publisher_area_id, webhook_id)
                 )""")
             pay_cols = {r["name"] for r in c.execute("PRAGMA table_info(payments)").fetchall()}
+            if "revoked_until" not in pay_cols:
+                # alpha.90: a refund / dispute withdraws the period it hit; a routine
+                # subscription update in that period must not re-grant access
+                c.execute("ALTER TABLE payments ADD COLUMN revoked_until TEXT NOT NULL DEFAULT ''")
             if "last_event_created" not in pay_cols:
                 # alpha.80: Stripe events are applied in order and only once
                 c.execute("ALTER TABLE payments ADD COLUMN last_event_id TEXT NOT NULL DEFAULT ''")

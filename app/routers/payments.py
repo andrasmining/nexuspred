@@ -75,7 +75,8 @@ async def api_list(request: Request) -> list[dict[str, Any]]:
     user = getattr(request.state, "user", None) or {}
     if int(user.get("id") or 0) == OPERATOR_USER_ID and user.get("is_admin"):
         return db.list_payments()
-    return db.list_payments(publisher_area_id=context.get_area())
+    keep = ("id", "email", "webhook_id", "status", "price_cents", "currency", "current_period_end", "trial_end", "created_at", "updated_at")
+    return [{k: p.get(k) for k in keep} for p in db.list_payments(publisher_area_id=context.get_area())]   # the subscriber's Stripe ids and checkout link stay theirs
 
 
 @router.get("/mine")

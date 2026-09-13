@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any, Optional
-from .. import context, db, state
+from .. import context, db, state, config
 from . import feed as leader_feed
 from .groups import _runners, external_followers, load_groups, masked_status
 from .group_runner import GroupRunner
@@ -33,6 +33,12 @@ async def release_followers(publisher_area_id: int, group_id: str, specs: Any) -
                 n += await r.orders.cancel_all(reason="follower left the group", spec=spec)
             except Exception as exc:  # noqa: BLE001
                 r.error = f"release {spec}: {exc}"[:200]
+            held = [(cid, net) for (sp, cid), net in r.follower_pos.items() if sp == spec and net]
+            if held:
+                # the mirror stops here; the position does not — the follower must hear that
+                what = ", ".join(f"{net:+d} {r.contract_names.get(cid, cid)}" for cid, net in held)
+                r._alert("Copy mirroring stopped", f"{spec} left the copy group and still holds {what} — it is no longer managed: close it yourself or re-subscribe",
+                         email=True, area_id=r._area_by_spec.get(spec, r.area_id))
     return n
 
 
@@ -94,6 +100,8 @@ async def copy_loop() -> None:
     while True:
         try:
             for aid in db.all_area_ids():
+                if not config.peek("copy_groups", aid) and not any(k[0] == aid for k in _runners):
+                    continue                                    # nothing to run, nothing to stop: no settings copy every 5 s
                 with context.use_area(aid):
                     await sync_area(aid)
             async def guard(r: GroupRunner) -> None:

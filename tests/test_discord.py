@@ -125,7 +125,7 @@ async def test_process_embed_dry_run_records_without_dispatch(channel, monkeypat
 async def test_process_embed_dispatches_translated_payload(channel, monkeypatch):
     seen = {}
 
-    async def fake_dispatch(targets, payload):
+    async def fake_dispatch(targets, payload, **kw):
         seen["targets"], seen["payload"] = targets, payload
         return [{"label": t["label"], "url": t["url"], "ok": True, "status": 202, "ms": 1.0} for t in targets]
 

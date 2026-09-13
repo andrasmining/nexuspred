@@ -1,6 +1,7 @@
 """GroupRunner: the live feed (REST poll + WebSocket accelerator), the position mirror, reconcile and the feed-loss watchdog of one enabled group."""
 from __future__ import annotations
 import asyncio
+import re
 import json
 import time
 from datetime import datetime, timezone
@@ -61,6 +62,9 @@ ORDER_SETTLE_S = 5.0         # …and this long after a successful one (the fill
 
 
 FOLLOWER_RESEED_S = 60.0     # followers' positions are re-read at most this often while the leader seed fails
+
+
+_LOGIN_PREFIX = re.compile(r"\[[^\]]{1,80}\]")
 
 
 class GroupRunner:
@@ -256,6 +260,25 @@ class GroupRunner:
                 pass
         tradovate._fire(run())
 
+    def _is_external(self, spec: str) -> bool:
+        return any(f["spec"] == spec and f.get("external") for f in self.followers)
+
+    def _ferr(self, spec: str, exc: Any, *, prefix: str = "") -> str:
+        """Remember a follower's broker error. A marketplace subscriber's raw
+        error (it starts with their login name) stays in their own workspace;
+        the publisher-visible status carries a generic text. Returns the raw
+        text for the row written to the follower's area."""
+        raw = f"{prefix}{exc}"[:200]
+        self.follower_err[spec] = "broker error in the subscriber's workspace" if self._is_external(spec) else raw
+        self.follower_err_at[spec] = time.monotonic()
+        return raw
+
+    @staticmethod
+    def _redact(detail: str, follower: str, alias: str) -> str:
+        """The publisher's copy of a follower row: no account name, no login name
+        (broker errors are prefixed ``[login]``)."""
+        return _LOGIN_PREFIX.sub("[login]", detail.replace(follower, alias))
+
     def _record(self, kind: str, *, follower: str = "", symbol: str = "", detail: str = "",
                 latency_ms: Optional[int] = None) -> None:
         rec = {"group_id": self.id, "kind": kind, "leader": self.group["leader"]["spec"],
@@ -267,7 +290,7 @@ class GroupRunner:
             # (broker errors start with the account name: masked in the detail too)
             alias = f"subscriber #{next((f.get('sub_id') for f in self.followers if f['spec'] == follower), '?')}"
             history.defer(db.insert_copy_event, farea, {**rec, "leader": "leader"})
-            history.defer(db.insert_copy_event, self.area_id, {**rec, "follower": alias, "detail": rec["detail"].replace(follower, alias)})
+            history.defer(db.insert_copy_event, self.area_id, {**rec, "follower": alias, "detail": self._redact(rec["detail"], follower, alias)})
             return
         history.defer(db.insert_copy_event, self.area_id, rec)        # off the loop: a WAL commit never delays a mirror
 
@@ -303,6 +326,9 @@ class GroupRunner:
                 await t                                   # a twin placed under the cancel is still recorded (shielded)
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        inflight = [f for f in getattr(self.orders, "_inflight", ()) if not f.done()]
+        if inflight:                                      # placements shielded from the cancel: recorded before a successor runner loads
+            await asyncio.gather(*inflight, return_exceptions=True)
 
     async def refresh_followers(self, external: list[dict[str, Any]]) -> None:
         """Adopt a changed marketplace follower list without restarting the feed.
@@ -347,22 +373,29 @@ class GroupRunner:
                 raw = await s.positions_snapshot()
             except Exception as exc:  # noqa: BLE001
                 for f in fs:
-                    self.follower_err[f["spec"]] = f"positions: {exc}"
+                    self._ferr(f["spec"], exc, prefix="positions: ")
                 continue
             if not isinstance(raw, list):
                 continue
             to_leader, readable = await self._to_leader_cids(s)
-            for key in [k for k in self.follower_pos if k[0] in ids.values() and (readable is None or k[1] in readable)]:
-                self.follower_pos.pop(key, None)              # retain exposure whose contract could not be resolved
-            if readable is not None:
-                for spec in ids.values():
-                    for cid in readable:
-                        self.follower_pos[(spec, cid)] = 0    # confirmed absent from this readable snapshot
+            known = set(readable) if readable is not None else set(self.contract_names)
+            seen: dict[tuple[str, int], int] = {}
             for p in raw:
                 spec = ids.get(int(p.get("accountId") or 0))
                 cid = to_leader(int(p.get("contractId") or 0))
                 if spec and cid is not None and int(p.get("netPos") or 0):
-                    self.follower_pos[(spec, cid)] = int(p.get("netPos") or 0)
+                    seen[(spec, cid)] = int(p.get("netPos") or 0)
+            for spec in ids.values():
+                if time.monotonic() - self.last_order_at.get(spec, -1e9) < ORDER_SETTLE_S:
+                    continue                                  # an order just went out: this snapshot may predate its fill — memory stays
+                async with self.locks.setdefault(spec, asyncio.Lock()):    # never under a mirror in flight
+                    for key in [k for k in self.follower_pos if k[0] == spec and (readable is None or k[1] in readable)]:
+                        self.follower_pos.pop(key, None)      # retain exposure whose contract could not be resolved
+                    for cid in known:
+                        self.follower_pos[(spec, cid)] = 0    # confirmed absent from this snapshot
+                    for (sp, cid), net in seen.items():
+                        if sp == spec:
+                            self.follower_pos[(sp, cid)] = net
         self._followers_seeded_at = time.monotonic()
         try:
             await self.orders.load()
@@ -793,7 +826,9 @@ class GroupRunner:
             if reason == "drift" and self.leader_net.get(cid, 0) != net:
                 return                                  # the leader moved while we waited for the lock: the newer event handles it
             if news.flattened_lock(farea):
-                # the follower's workspace is flat for a news event: the reconcile must not re-open it
+                # the follower's workspace is flat for a news event: the reconcile must not re-open it —
+                # and what we remember of the position is no longer true (the flatten closed it)
+                self.follower_pos.pop((spec, cid), None)
                 self._record("skipped", follower=spec, symbol=name, detail=f"{reason}: news lock (flatten) active in the follower's workspace")
                 return
             if self.orders.touched_recently(spec, cid):
@@ -803,14 +838,14 @@ class GroupRunner:
                 actual = await self._broker_net(ex, cid)
                 if actual is not None:
                     self.follower_pos[(spec, cid)] = actual
-            if ((spec, cid) not in self.follower_pos
-                    and str(getattr(ex.session, "kind", "tradovate") or "tradovate") != self._leader_kind()):
-                # The startup follower seed precedes the leader's contract
-                # names. A new cross-broker contract is unknown, not flat;
-                # establish its actual exposure once before the first delta.
+            if (spec, cid) not in self.follower_pos:
+                # Unknown is not flat: a contract the seed did not know yet, or memory
+                # dropped after a lock / flatten / reject. The broker is asked once
+                # before the first delta (the seed marks known contracts, so the
+                # established path stays read-free).
                 actual = await self._broker_net(ex, cid)
                 if actual is None:
-                    self.follower_err[spec] = "position unreadable — cross-broker contract not seeded"
+                    self.follower_err[spec] = "position unreadable — not mirrored until it can be read"
                     self._record("skipped", follower=spec, symbol=name, detail=f"{reason}: position unreadable")
                     return
                 self.follower_pos[(spec, cid)] = actual
@@ -825,17 +860,15 @@ class GroupRunner:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - a follower failure must be visible, never swallowed
-                    err = f"{exc}" if isinstance(exc, TradovateError) else f"{type(exc).__name__}: {exc}"
-                    self.follower_err[spec] = err[:200]
-                    self.follower_err_at[spec] = time.monotonic()
+                    err = self._ferr(spec, exc if isinstance(exc, TradovateError) else f"{type(exc).__name__}: {exc}")
+                    self.follower_pos.pop((spec, cid), None)      # a reject (a risk lock, a closed account) may mean the position changed under us
                     self._record("reject", follower=spec, symbol=name, detail=f"{reason}: {err}")
                     self._alert(f"Copy reject: {spec}", f"{name} {reason}: {err}", area_id=farea)
                     return
             if not isinstance(res, dict) or res.get("status") != "submitted":
                 raw = res.get("raw") if isinstance(res, dict) else None
-                err = str((raw or {}).get("errorText") or (res.get("status") if isinstance(res, dict) else res))
-                self.follower_err[spec] = err[:200]
-                self.follower_err_at[spec] = time.monotonic()
+                err = self._ferr(spec, str((raw or {}).get("errorText") or (res.get("status") if isinstance(res, dict) else res)))
+                self.follower_pos.pop((spec, cid), None)
                 self._record("reject", follower=spec, symbol=name, detail=f"{reason}: {err}")
                 self._alert(f"Copy reject: {spec}", f"{name} {reason}: {err}", area_id=farea)
                 return
@@ -922,6 +955,8 @@ class GroupRunner:
                 if time.monotonic() - self.follower_err_at.get(spec, -1e9) < REJECT_HOLDOFF_S:
                     continue                                    # just rejected: don't hammer the broker
                 if risk.is_locked(farea, spec) or news.flattened_lock(farea):
+                    for k in [k for k in self.follower_pos if k[0] == spec]:
+                        self.follower_pos.pop(k, None)          # the guard flattened it: memory is stale until re-read
                     continue                                    # the risk guard (or a news flatten) closed this account for now
                 for cid, net in list(self.leader_net.items()):
                     if readable is not None and cid not in readable:

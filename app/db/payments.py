@@ -7,7 +7,7 @@ from .core import _connect, _now, init
 STATUSES = ("pending", "trialing", "active", "past_due", "canceled", "unpaid")
 PAID = frozenset({"trialing", "active"})
 LIVE = frozenset({"trialing", "active", "past_due"})      # a Stripe subscription still exists for these
-_COLS = ("stripe_customer", "stripe_subscription", "checkout_session", "status", "price_cents", "currency", "current_period_end", "trial_end",
+_COLS = ("stripe_customer", "stripe_subscription", "checkout_session", "status", "price_cents", "currency", "current_period_end", "trial_end", "revoked_until",
          "last_event_id", "last_event_created", "checkout_url")
 
 

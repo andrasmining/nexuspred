@@ -217,6 +217,7 @@ async def test_copy_engine_polls_a_rithmic_leader(rsess, monkeypatch):
     await s.connect()
     ex = FakeExecutor("F1")
     ex.session = s
+    ex.id = 777                         # a follower without a broker account id is never assumed flat: it is read first
 
     class Mgr:
         def all(self): return [s]

@@ -151,9 +151,11 @@ def subscription_gate(view: dict[str, Any], root: str, action: str, *, area_id: 
         return False, "subscription_symbols", f"{root} is not in the subscription's symbols ({', '.join(c['symbols'])})"
     cap = int(c.get("max_signals_per_day") or 0)
     if cap and action in ("buy", "sell"):
-        n = signals_today(area_id, str(view.get("id") or ""))
+        wid = str(view.get("id") or "")
+        n = signals_today(area_id, wid)
         if n >= cap:
             return False, "subscription_daily_cap", f"{n} signal(s) already today (cap {cap})"
+        _daily[(area_id, wid, _day_start(area_id))] = n + 1      # reserved here: two entries in one tick cannot both pass a cap of one
     return True, "", ""
 
 
@@ -185,13 +187,18 @@ def signals_today(area_id: int, webhook_id: str) -> int:
     return n
 
 
-def note_outcome(view: dict[str, Any], area_id: int, status: str) -> None:
+def note_outcome(view: dict[str, Any], area_id: int, status: str, action: str = "") -> None:
     """A subscription's signal finished: count it towards today's cap (skips do
-    not count, exactly like the database query)."""
-    if status == "skipped":
-        return
+    not count, exactly like the database query). An entry was reserved by the
+    gate already: a skipped entry gives its slot back, an executed one is counted."""
     key = (area_id, str(view.get("id") or ""), _day_start(area_id))
-    if key in _daily:
+    if key not in _daily:
+        return
+    if action in ("buy", "sell"):
+        if status == "skipped":
+            _daily[key] = max(0, _daily[key] - 1)
+        return
+    if status != "skipped":
         _daily[key] += 1
 
 

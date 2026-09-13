@@ -178,6 +178,7 @@ def _apply_webhook_edit(webhooks: list[dict[str, Any]], i: int, body: dict[str, 
 @router.delete("/api/webhooks/{webhook_id}")
 async def api_delete_webhook(webhook_id: str) -> dict[str, Any]:
     removed = _edit_webhook(webhook_id, lambda webhooks, i: webhooks.pop(i))
+    await payments.cancel_for_listing(context.get_area(), webhook_id)                          # nobody pays for a listing that is gone
     dropped = db.delete_subscriptions_for_webhook(context.get_area(), webhook_id)
     state.log_event("info", f"Webhook '{removed.get('name')}' deleted"
                     + (f" ({dropped} subscription(s) removed)" if dropped else ""))
@@ -258,6 +259,7 @@ async def api_remove_subscriber(webhook_id: str, sub_id: int, request: Request) 
         raise HTTPException(status_code=404, detail="Subscriber not found")
     email = db.area_owner_email(removed["area_id"]) or str(removed["area_id"])
     db.log_action(user["id"], user["email"], "subscriber_remove", email, f"webhook {webhook_id}")
+    await payments.cancel_for_listing(context.get_area(), webhook_id, area_id=int(removed["area_id"]))   # a kicked subscriber must not keep paying
     state.log_event("info", f"Subscriber {email} removed from webhook {webhook_id}")
     return {"status": "deleted", "id": sub_id}
 

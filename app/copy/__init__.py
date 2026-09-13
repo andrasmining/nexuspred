@@ -34,6 +34,7 @@ from .groups import (  # noqa: F401
     load_groups,
     save_groups,
     validate_group,
+    subscribed_specs,
     _round_half_up,
     target_qty,
     parse_frames,

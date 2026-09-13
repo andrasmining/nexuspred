@@ -149,7 +149,11 @@ async def test_mirror_skips_a_workspace_flattened_for_news(admin, monkeypatch):
         config.save_settings({"trading_enabled": True})
     r = cp.GroupRunner(1, g)
     ex = FakeExecutor("F1")
-    ex.session = SimpleNamespace(kind="tradovate")
+    ex.id = 2
+
+    async def flat_positions():
+        return []                                          # after the news flatten the broker shows the account flat
+    ex.session = SimpleNamespace(kind="tradovate", positions_snapshot=flat_positions)
     monkeypatch.setattr(r, "_executor", lambda f: ex)
     monkeypatch.setattr(news, "flattened_lock", lambda area_id: {"title": "CPI"})
     r.leader_net[5] = 2

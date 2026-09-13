@@ -236,6 +236,29 @@ async def cancel_stripe_subscription(p: Optional[dict[str, Any]]) -> bool:
     return True
 
 
+async def cancel_for_listing(publisher_area_id: int, key: str, *, area_id: Optional[int] = None) -> int:
+    """The publisher removed a subscriber or the listing itself: the live Stripe
+    subscriptions behind it are cancelled (one subscriber's with ``area_id``,
+    every subscriber's without). A failure is logged for the operator; it never
+    blocks the removal. Returns how many were cancelled."""
+    rows = [p for p in db.list_payments(publisher_area_id=publisher_area_id)
+            if p.get("webhook_id") == key and p.get("stripe_subscription") and p.get("status") in db.payments.LIVE
+            and (area_id is None or int(p.get("area_id") or 0) == area_id)]
+    n = 0
+    for p in rows:
+        try:
+            ok = await cancel_stripe_subscription(p)
+        except Exception as exc:  # noqa: BLE001
+            ok, err = False, str(exc)
+        else:
+            err = "Stripe refused"
+        if ok:
+            n += 1
+        else:
+            state.log_event("error", f"Stripe subscription {p['stripe_subscription']} of subscriber area {p['area_id']} could not be cancelled ({err}) — cancel it in the Stripe dashboard, they would keep paying")
+    return n
+
+
 async def create_portal(area_id: int, base_url: str) -> str:
     """A Stripe customer-portal link for the subscriber (cancel, invoices, card)."""
     mine = [p for p in db.list_payments(area_id) if p.get("stripe_customer")]
@@ -382,9 +405,16 @@ async def handle_event(event: dict[str, Any]) -> str:
         elif _stale(p, event):
             return "stale subscription event ignored"
         status = "canceled" if kind.endswith("deleted") else _STATUS_MAP.get(str(obj.get("status") or ""), "unpaid")
+        period_end = _iso(obj.get("current_period_end"))
+        revoked_until = str(p.get("revoked_until") or "")
+        if revoked_until and status in db.payments.PAID:
+            if period_end and period_end > revoked_until:
+                revoked_until = ""                         # a new, paid period: the refund's withdrawal is over
+            else:
+                status = "unpaid"                          # the same period was refunded / disputed: a routine update does not re-grant it
         p = db.update_payment(p["id"], status=status, stripe_customer=str(obj.get("customer") or p.get("stripe_customer") or ""),
-                              current_period_end=_iso(obj.get("current_period_end")), trial_end=_iso(obj.get("trial_end")) or p.get("trial_end") or "",
-                              **_stamp(event))
+                              current_period_end=period_end, trial_end=_iso(obj.get("trial_end")) or p.get("trial_end") or "",
+                              revoked_until=revoked_until, **_stamp(event))
         await _apply(p)
         return f"subscription {sid}: {status}"
     if kind == "invoice.payment_failed":
@@ -403,7 +433,7 @@ async def handle_event(event: dict[str, Any]) -> str:
             return f"{kind} for an unknown subscription ignored"
         if _stale(p, event):
             return f"stale {kind} ignored"
-        p = db.update_payment(p["id"], status="unpaid", **_stamp(event))
+        p = db.update_payment(p["id"], status="unpaid", revoked_until=str(p.get("current_period_end") or "9999-12-31T00:00:00+00:00"), **_stamp(event))
         await _apply(p)
         return f"{kind}: access withdrawn"
     return f"{kind} ignored"

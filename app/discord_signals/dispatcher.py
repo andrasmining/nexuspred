@@ -28,22 +28,22 @@ def _ms(started: float) -> float:
     return round((time.monotonic() - started) * 1000, 1)
 
 
-def _dispatch_local(target: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def _dispatch_local(target: dict[str, Any], payload: dict[str, Any], *, forward: bool = True) -> dict[str, Any]:
     """Accept the payload on one of this area's own webhooks (no HTTP)."""
     label = target.get("label") or "webhook"
     started = time.monotonic()
     wid = target.get("webhook_id")
-    wh = next((w for w in (config.load_settings().get("webhooks") or []) if w.get("id") == wid), None)
+    wh = next((w for w in (config.peek("webhooks") or []) if w.get("id") == wid), None)
     if not wh or not wh.get("enabled"):
         return {"label": label, "url": "", "ok": False, "status": 403, "error": "HTTP 403", "ms": _ms(started)}
-    signals.accept(dict(payload), wh)
+    signals.accept(dict(payload), dict(wh), forward=forward)
     return {"label": label, "url": "", "ok": True, "status": 202, "ms": _ms(started)}
 
 
-async def _post_one(target: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+async def _post_one(target: dict[str, Any], payload: dict[str, Any], *, forward: bool = True) -> dict[str, Any]:
     """Deliver the payload to a single target; return a per-target result record."""
     if target.get("webhook_id"):
-        return _dispatch_local(target, payload)
+        return _dispatch_local(target, payload, forward=forward)
 
     label = target.get("label") or target.get("url") or "target"
     url = target.get("url") or ""
@@ -71,17 +71,19 @@ async def _post_one(target: dict[str, Any], payload: dict[str, Any]) -> dict[str
         return {"label": label, "url": url, "ok": False, "error": str(exc), "ms": _ms(started)}
 
 
-async def dispatch(targets: list[dict[str, Any]], payload: dict[str, Any]) -> list[dict[str, Any]]:
+async def dispatch(targets: list[dict[str, Any]], payload: dict[str, Any], *, forward: bool = True) -> list[dict[str, Any]]:
     """Deliver ``payload`` to every ENABLED target concurrently.
 
     Disabled targets are skipped entirely (they get no request). Returns a list
     of per-target result records (label, ok, status/error, latency ms).
+    ``forward=False`` (the test embed) keeps a local webhook's signal off the
+    marketplace fan-out.
     """
     active = [t for t in targets if t.get("enabled") and (t.get("url") or t.get("webhook_id"))]
     if not active:
         return []
     results = await asyncio.gather(
-        *(_post_one(t, payload) for t in active), return_exceptions=True
+        *(_post_one(t, payload, forward=forward) for t in active), return_exceptions=True
     )
     out: list[dict[str, Any]] = []
     for t, r in zip(active, results):

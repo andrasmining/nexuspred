@@ -59,7 +59,19 @@ def save_groups(groups: list[dict[str, Any]], area_id: Optional[int] = None) -> 
     track_record.invalidate(context.get_area() if area_id is None else area_id)
 
 
-def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts: list[dict[str, Any]]) -> None:
+def subscribed_specs(area_id: Optional[int] = None) -> set[str]:
+    """Accounts of this area that already follow a marketplace copy group."""
+    from .. import context, db
+    aid = area_id if area_id is not None else context.get_area()
+    out: set[str] = set()
+    for sub in db.list_subscriptions(aid):
+        if str(sub.get("webhook_id") or "").startswith("copy:") and sub.get("status") in ("active", "pending"):
+            out |= {str(a.get("spec")) for a in sub.get("accounts") or [] if isinstance(a, dict) and a.get("spec") and a.get("enabled", True)}
+    return out
+
+
+def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts: list[dict[str, Any]],
+                   subscribed: Optional[set[str]] = None) -> None:
     """Raise ValueError on an inconsistent group (unknown accounts, leader among
     followers, a chain that would feed a leader from its own followers)."""
     idx_to_lid = {int(a["token_idx"]): str(a.get("lid") or "") for a in accounts if a.get("lid")}
@@ -98,6 +110,9 @@ def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts
         clash = [f["spec"] for f in g["followers"] if f.get("enabled", True) and key(f) in theirs]
         if clash:
             raise ValueError(f"Follower {clash[0]} already follows {og.get('leader', {}).get('spec', '?')} in group '{og.get('name', '?')}' — an account can follow one leader only")
+    taken = [f["spec"] for f in g["followers"] if f.get("enabled", True) and str(f["spec"]) in (subscribed or set())]
+    if taken:
+        raise ValueError(f"Follower {taken[0]} already follows a marketplace copy group through a subscription — an account can follow one leader only")
     # cycle check across groups: leader → followers edges
     edges: dict[tuple[int, str], set[tuple[int, str]]] = {}
     for og in [*(x for x in all_groups if x.get("id") != g.get("id")), g]:
@@ -330,10 +345,15 @@ def external_followers(area_id: int, group_id: str, *, group: Optional[dict[str,
 def effective_followers(area_id: int, group: dict[str, Any], external: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Own followers plus external ones — an external account that is the leader
     or already an own follower is left out (one mirror per account)."""
+    from .. import state
     own = [dict(f) for f in group.get("followers") or []]
     taken = {str(f["spec"]) for f in own} | {str((group.get("leader") or {}).get("spec") or "")}
     for f in external:
         if str(f["spec"]) in taken:
+            # two subscribers with the same account name (demo names repeat across
+            # brokers): the second is left out — said, never silently
+            state.log_event("warn", f"copy group '{group.get('name', '?')}': subscriber #{f.get('sub_id', '?')}'s account {f['spec']} "
+                                    "has the same name as an account already in the mirror and is not mirrored — rename the login or the account")
             continue
         taken.add(str(f["spec"]))
         own.append(dict(f))

@@ -29,7 +29,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
-from .. import config, context, db
+from .. import config, context, db, history
 from . import feed as leader_feed
 from ..tradovate import WORKING_STATUSES, RateLimited, TradovateError
 
@@ -67,6 +67,7 @@ class OrderMirror:
         self._apply_lock = asyncio.Lock()                      # poll, socket and reconcile never diff concurrently
         self._dirty = False                                    # socket events arrived while an apply ran
         self._done_at: dict[tuple[str, int], float] = {}       # (spec, leader order id) → twin found done (monotonic)
+        self._inflight: set[asyncio.Future] = set()            # shielded placements a stop() waits for
 
     # ------------------------------------------------------------ helpers
     def _twin_key(self, spec: str, leader_order_id: int) -> tuple[str, int]:
@@ -121,6 +122,7 @@ class OrderMirror:
         if not self.enabled or self._seeded:
             return
         self._seeded = True
+        await asyncio.to_thread(history.flush, 2.0)          # a predecessor's queued twin writes land first
         rows = db.list_copy_twins(self.r.area_id, self.r.id)
         if not rows:
             return
@@ -139,12 +141,12 @@ class OrderMirror:
 
     def _save(self, spec: str, t: dict[str, Any]) -> None:
         self.twins[self._twin_key(spec, t["leader_order_id"])] = t
-        db.save_copy_twin(self.r.area_id, self.r.id, spec, t["leader_order_id"], t["follower_order_id"],
-                          **{k: t.get(k) for k in ("contract_id", "symbol", "action", "qty", "order_type", "price", "stop_price", "version_id", "oco_with")})
+        history.defer(db.save_copy_twin, self.r.area_id, self.r.id, spec, t["leader_order_id"], t["follower_order_id"],   # off the loop, in order
+                      **{k: t.get(k) for k in ("contract_id", "symbol", "action", "qty", "order_type", "price", "stop_price", "version_id", "oco_with")})
 
     def _drop(self, spec: str, leader_order_id: int) -> None:
         self.twins.pop(self._twin_key(spec, leader_order_id), None)
-        db.delete_copy_twin(self.r.area_id, self.r.id, spec, leader_order_id)
+        history.defer(db.delete_copy_twin, self.r.area_id, self.r.id, spec, leader_order_id)
 
     async def _follower_working(self) -> dict[str, set[int]]:
         """spec → ids of the follower's working orders (specs whose login failed
@@ -339,8 +341,8 @@ class OrderMirror:
             changed = [now[i] for i in now if i in prev and (now[i]["version_id"] != prev[i]["version_id"]
                                                              or (now[i]["qty"], now[i]["price"], now[i]["stop_price"]) != (prev[i]["qty"], prev[i]["price"], prev[i]["stop_price"]))]
             self.leader_orders = now
-            for oid in gone_ids:
-                await self.cancel_twins(oid, reason="leader order gone")
+            if gone_ids:
+                await asyncio.gather(*(self.cancel_twins(oid, reason="leader order gone") for oid in gone_ids))
             self.prune_entities()
             if not prev and not self.r._leader_seeded:
                 return
@@ -434,7 +436,10 @@ class OrderMirror:
                 return 0                            # placed by a concurrent pass while we waited
             # shielded: a runner stop (group edit, restart of the feed) must not cancel
             # the request after the broker accepted it and before the twin is recorded
-            return await asyncio.shield(self._place_twin(f, o, partner, name, ex, farea, qty, pq if partner is not None else 0))
+            fut = asyncio.ensure_future(self._place_twin(f, o, partner, name, ex, farea, qty, pq if partner is not None else 0))
+            self._inflight.add(fut)
+            fut.add_done_callback(self._inflight.discard)
+            return await asyncio.shield(fut)
 
     async def _place_twin(self, f: dict[str, Any], o: dict[str, Any], partner: Optional[dict[str, Any]], name: str,
                           ex: Any, farea: int, qty: int, pq: int) -> int:
@@ -479,18 +484,19 @@ class OrderMirror:
 
     async def _modify(self, o: dict[str, Any]) -> None:
         name = self.r.contract_names.get(o["contract_id"], str(o["contract_id"]))
-        for f in self.r.followers:
+
+        async def one(f: dict[str, Any]) -> None:
             spec = f["spec"]
             t = self.twins.get(self._twin_key(spec, o["id"]))
             if t is None:
-                continue
+                return
             qty = self.twin_qty(f, o) or t["qty"]
             if (qty, o["price"], o["stop_price"]) == (t["qty"], t["price"], t["stop_price"]):
                 t["version_id"] = o["version_id"]
-                continue
+                return
             ex = self.r._executor(f)
             if ex is None:
-                continue
+                return
             with context.use_area(self.r._area_of(f)):
                 try:
                     await ex.modify_order(t["follower_order_id"], qty=qty, order_type=o["order_type"], price=o["price"], stop_price=o["stop_price"])
@@ -498,7 +504,7 @@ class OrderMirror:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     self._record("order_reject", follower=spec, symbol=name, detail=f"modify {t['action']} {o['order_type']}: {exc}")
-                    continue
+                    return
             t.update({"qty": qty, "price": o["price"], "stop_price": o["stop_price"], "version_id": o["version_id"]})
             self._save(spec, t)
             self._touch(spec, o["contract_id"])
@@ -506,25 +512,30 @@ class OrderMirror:
             sp = f" stop {o['stop_price']}" if o["stop_price"] is not None else ""
             self._record("order_modify", follower=spec, symbol=name, detail=f"{t['action']} {qty} {o['order_type']}{px}{sp}")
 
+        # every follower's modify at once: a leader stop move reaches 20 followers in one round trip, not 20
+        results = await asyncio.gather(*(one(f) for f in self.r.followers), return_exceptions=True)
+        for r in results:
+            if isinstance(r, asyncio.CancelledError):
+                raise r
+
     async def cancel_twins(self, leader_order_id: int, *, reason: str, spec_only: Optional[str] = None) -> int:
-        """Cancel every follower twin of one leader order. Returns cancels sent."""
-        n = 0
-        for f in self.r.followers:
+        """Cancel every follower twin of one leader order — all followers at
+        once. Returns cancels sent."""
+        async def one(f: dict[str, Any]) -> int:
             spec = f["spec"]
-            if spec_only and spec != spec_only:
-                continue
             t = self.twins.get(self._twin_key(spec, leader_order_id))
             if t is None:
-                continue
+                return 0
             ex = self.r._executor(f)
             if ex is None:
                 self._record("order_reject", follower=spec, symbol=t["symbol"],
                              detail=f"{t['action']} {t['qty']} {t['order_type']}: login disabled — the twin stays at the broker until the login is back")
-                continue
+                return 0
+            sent = 0
             with context.use_area(self.r._area_of(f)):
                 try:
                     await ex.cancel_order(t["follower_order_id"])
-                    n += 1
+                    sent = 1
                     self._record("order_cancel", follower=spec, symbol=t["symbol"], detail=f"{t['action']} {t['qty']} {t['order_type']}: {reason}")
                 except asyncio.CancelledError:
                     raise
@@ -533,14 +544,23 @@ class OrderMirror:
                     # still working must not be forgotten (a stray order would sit at the broker)
                     still = await self._still_working(ex, t["follower_order_id"])
                     if still is not False:
-                        self.r.follower_err[spec] = f"cancel failed: {exc}"[:200]
-                        self.r.follower_err_at[spec] = time.monotonic()
+                        self.r._ferr(spec, exc, prefix="cancel failed: ")
                         self._record("order_reject", follower=spec, symbol=t["symbol"],
                                      detail=f"{t['action']} {t['qty']} {t['order_type']}: cancel failed ({exc}) — order still working, retrying")
-                        continue
+                        return 0
                     self._record("order_cancel", follower=spec, symbol=t["symbol"], detail=f"{t['action']} {t['qty']} {t['order_type']}: {reason} (broker: {exc})")
             self._drop(spec, leader_order_id)
             self._touch(spec, t["contract_id"])
+            return sent
+
+        targets = [f for f in self.r.followers if not spec_only or f["spec"] == spec_only]
+        results = await asyncio.gather(*(one(f) for f in targets), return_exceptions=True)
+        n = 0
+        for r in results:
+            if isinstance(r, asyncio.CancelledError):
+                raise r
+            if isinstance(r, int):
+                n += r
         return n
 
     @staticmethod

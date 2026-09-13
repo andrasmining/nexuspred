@@ -241,7 +241,9 @@ def forward_to_subscribers(payload: dict[str, Any], webhook: dict[str, Any],
         view = marketplace.subscription_view(webhook, sub, aid)
         with context.use_area(sub["area_id"]):
             state.log_signal(dict(shared), result="received", webhook=view.get("name", ""), webhook_id=str(view.get("id") or ""))
-            _spawn(process_background(dict(shared), view, trusted=True, accepted_at=accepted_at))
+            # the subscriber's settings as a read-only view: 500 subscribers must not
+            # cost 500 deep copies on the loop before the last order leaves
+            _spawn(process_background(dict(shared), view, trusted=True, accepted_at=accepted_at, settings=config.view(sub["area_id"])))
         dispatched += 1
     if revoked:
         state.log_event("warn", f"[{webhook.get('name', '?')}] {revoked} subscription(s) skipped: no longer on the listing's user list")
@@ -263,7 +265,7 @@ async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *
         state.log_signal(payload, result=result.get("status", "ok"), webhook=name, webhook_id=wid, latency_ms=ms())
         if webhook.get("subscription"):
             from . import marketplace
-            marketplace.note_outcome(webhook, context.get_area(), result.get("status", "ok"))
+            marketplace.note_outcome(webhook, context.get_area(), result.get("status", "ok"), str(payload.get("action") or "").lower())
         events.emit("signal.done", webhook=name, status=result.get("status", "ok"), reason=result.get("reason", ""), action=result.get("action", ""),
                     seconds=time.perf_counter() - started)
         await _after_subscription_outcome(webhook, None, result)
@@ -272,7 +274,7 @@ async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *
         state.log_signal(payload, result=f"error: {exc}", webhook=name, webhook_id=wid, latency_ms=ms())
         if webhook.get("subscription"):
             from . import marketplace
-            marketplace.note_outcome(webhook, context.get_area(), "error")
+            marketplace.note_outcome(webhook, context.get_area(), "error", str(payload.get("action") or "").lower())
         events.emit("signal.done", webhook=name, status="error", reason=str(exc)[:200], action="", seconds=time.perf_counter() - started)
         await events.emit_async("signal.failed", webhook=name, reason=str(exc), settings=settings)
         await _after_subscription_outcome(webhook, exc, None)
@@ -281,7 +283,7 @@ async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *
         state.log_signal(payload, result=f"error: {exc}", webhook=name, webhook_id=wid, latency_ms=ms())
         if webhook.get("subscription"):
             from . import marketplace
-            marketplace.note_outcome(webhook, context.get_area(), "error")
+            marketplace.note_outcome(webhook, context.get_area(), "error", str(payload.get("action") or "").lower())
         events.emit("signal.done", webhook=name, status="error", reason=str(exc)[:200], action="", seconds=time.perf_counter() - started)
         await events.emit_async("signal.failed", webhook=name, reason=str(exc), settings=settings)
         await _after_subscription_outcome(webhook, exc, None)

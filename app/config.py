@@ -368,6 +368,19 @@ def load_settings(area_id: int | None = None, force: bool = False) -> dict[str, 
         return _copy_of(aid)
 
 
+def view(area_id: int | None = None) -> dict[str, Any]:
+    """The cached settings of an area **without a copy** — for the signal
+    pipeline's read-only use (the marketplace fan-out runs one signal per
+    subscriber). Never mutate the result; a writer takes ``load_settings``."""
+    aid = _resolve_area(area_id)
+    with _lock:
+        if aid in _cache:
+            return _cache[aid]
+    load_settings(area_id=aid)
+    with _lock:
+        return _cache.get(aid) or load_settings(area_id=aid)
+
+
 def peek(key: str, area_id: int | None = None) -> Any:
     """The cached value of one key WITHOUT copying — for readers that only
     look (the automation rules on every bus event). Never mutate the result."""
