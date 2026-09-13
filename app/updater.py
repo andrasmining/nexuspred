@@ -108,6 +108,18 @@ def _pip_install() -> tuple[bool, str]:
     return _run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], timeout=PIP_TIMEOUT_S)
 
 
+def _tracked_runtime_db() -> str:
+    """Return the repo-relative active DB path when git tracks it."""
+    from . import db
+
+    try:
+        rel = db.DB_FILE.resolve().relative_to(config.ROOT_DIR.resolve())
+    except ValueError:
+        return ""                         # an external data dir cannot be reset by git
+    ok, _ = _run(["git", "ls-files", "--error-unmatch", "--", rel.as_posix()])
+    return rel.as_posix() if ok else ""
+
+
 _apply_lock = asyncio.Lock()
 
 
@@ -138,6 +150,15 @@ async def _apply_update() -> dict[str, Any]:
                 "in the install folder once to enable one-click updates."
             ),
         }
+
+    tracked_db = await asyncio.to_thread(_tracked_runtime_db)
+    if tracked_db:
+        message = (
+            f"Update refused: the active runtime database ({tracked_db}) is tracked by git. "
+            "Stop Fluxbridge, back up that database and move runtime data outside tracked files before updating."
+        )
+        state.log_event("error", message)
+        return {"success": False, "message": message}
 
     old_version = config.get_version()
     # the revision to fall back to, verified before anything moves: a message

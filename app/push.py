@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 from cryptography.hazmat.primitives import serialization
 
-from . import config, context, crypto, db, state
+from . import config, context, crypto, db, security, state
 
 log = logging.getLogger(__name__)
 
@@ -154,8 +154,12 @@ def _no_redirect_session():
 
 def _send_one(sub: dict[str, Any], payload: dict[str, Any]) -> tuple[bool, int, str]:
     """Deliver one push (blocking). Returns (ok, status, error)."""
+    endpoint = str(sub["endpoint"])
+    problem = security.check_outbound_url(endpoint)
+    if problem:
+        return False, 0, f"endpoint rejected: {problem}"
     from pywebpush import WebPushException, webpush
-    info = {"endpoint": sub["endpoint"], "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]}}
+    info = {"endpoint": endpoint, "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]}}
     try:
         resp = webpush(subscription_info=info, data=json.dumps(payload), vapid_private_key=_load(),
                        vapid_claims=dict(_claims()), ttl=600, timeout=15, requests_session=_no_redirect_session())

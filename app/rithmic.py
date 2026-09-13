@@ -718,10 +718,19 @@ class RithmicSession(broker.BrokerSessionBase):
         if order_type in ("Stop", "StopLimit") and stop_price is not None:
             kw["trigger_price"] = float(stop_price)
         failure, raw = "", None
+        name = account_name or self.name
+        client = await self._ensure()                    # connect failure means the mutation was not sent
         try:
-            client = await self._ensure()
             raw = await client.modify_order(**kw)
             failure = _rp_error(raw)
+        except asyncio.TimeoutError:
+            unknown = f"{name}: modify order {order_id} timed out — outcome unknown, CHECK THE ACCOUNT"
+            state.log_order({"action": "Modify", "symbol": "", "account": name, "qty": qty, "order_type": order_type,
+                             "price": kw.get("price"), "stop_price": kw.get("trigger_price"), "order_id": order_id,
+                             "status": "unknown", "raw": {"errorText": "timeout"}})
+            state.log_event("error", unknown)
+            events.emit("execution.problem", title=f"Order outcome unknown on {name}", message=unknown)
+            raise OrderOutcomeUnknown(unknown) from None
         except Exception as exc:  # noqa: BLE001
             failure = f"{type(exc).__name__}: {exc}"[:200]
         state.log_order({"action": "Modify", "symbol": "", "account": account_name or self.name, "qty": qty, "order_type": order_type,
@@ -749,9 +758,16 @@ class RithmicSession(broker.BrokerSessionBase):
 
     async def cancel_order(self, order_id: int, *, account_id: int | None = None, account_spec: str | None = None) -> dict[str, Any]:
         basket, spec = self._basket(order_id, account_spec, account_id)
-        client = await self._ensure()
+        client = await self._ensure()                    # connect failure means the mutation was not sent
         try:
             raw = await client.cancel_order(basket_id=basket, account_id=spec)
+        except asyncio.TimeoutError:
+            unknown = f"{self.name}: cancel order {order_id} timed out — outcome unknown, CHECK THE ACCOUNT"
+            state.log_order({"action": "Cancel", "symbol": "", "account": self.name, "order_id": order_id,
+                             "status": "unknown", "raw": {"errorText": "timeout"}})
+            state.log_event("error", unknown)
+            events.emit("execution.problem", title=f"Order outcome unknown on {self.name}", message=unknown)
+            raise OrderOutcomeUnknown(unknown) from None
         except Exception as exc:  # noqa: BLE001
             raise TradovateError(f"cancel order {order_id} rejected — {exc}") from exc
         failure = _rp_error(raw)
@@ -767,14 +783,22 @@ class RithmicSession(broker.BrokerSessionBase):
                                  account_name: str | None = None, account_spec: str | None = None) -> dict[str, Any]:
         spec, aid = self._acct(account_spec, account_id)
         sym = str(symbol).upper()
-        client = await self._ensure()
+        client = await self._ensure()                    # connect failure means the mutation was not sent
         failure, raw = "", None
+        name = account_name or self.name
         try:
             raw = await client.exit_position(account_id=spec, symbol=sym, exchange=self._exchange(sym))
             failure = _rp_error(raw)
+        except asyncio.TimeoutError:
+            unknown = f"{name}: liquidate {sym} timed out — outcome unknown, CHECK THE ACCOUNT"
+            state.log_order({"action": "Liquidate", "symbol": sym, "account": name, "account_id": aid, "qty": 0,
+                             "order_type": "Market", "status": "unknown", "raw": {"errorText": "timeout"}})
+            state.log_event("error", unknown)
+            events.emit("execution.problem", title=f"Liquidation outcome unknown on {name}", message=unknown)
+            raise OrderOutcomeUnknown(unknown) from None
         except Exception as exc:  # noqa: BLE001
             failure = f"{type(exc).__name__}: {exc}"[:200]
-        state.log_order({"action": "Liquidate", "symbol": sym, "account": account_name or self.name, "account_id": aid, "qty": 0,
+        state.log_order({"action": "Liquidate", "symbol": sym, "account": name, "account_id": aid, "qty": 0,
                          "order_type": "Market", "status": "rejected" if failure else "submitted", "raw": _plain(raw)})
         if failure:
             raise TradovateError(f"{account_name or self.name}: liquidate {sym} rejected — {failure}")

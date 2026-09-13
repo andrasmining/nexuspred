@@ -232,3 +232,41 @@ async def test_copy_engine_polls_a_rithmic_leader(rsess, monkeypatch):
     rsess["made"][0].positions["APEX-123"] = [NS(symbol="MESZ6", exchange="CME", net_quantity=1, buy_qty=1, sell_qty=0, avg_open_fill_price=5600.0, open_position_pnl=0)]
     await r._poll_once(s, s.accounts[0]["id"])
     assert [(c["action"], c["qty"], c["symbol"]) for c in ex.of("place")] == [("Buy", 1, "MESZ6")]
+
+async def test_rithmic_mutation_timeouts_are_unknown_outcomes(rsess, monkeypatch):
+    import asyncio
+
+    s = rsess["s"]
+    await s.connect()
+    client = rsess["made"][0]
+    ex = tradovate.AccountExecutor(s, {"spec": "APEX-123", "id": s.accounts[0]["id"], "enabled": True})
+    with context.use_area(1):
+        placed = await ex.place_order(symbol="MNQZ6", action="Sell", qty=2, order_type="Stop", stop_price=20900.0)
+
+    calls = {"modify": 0, "cancel": 0, "exit": 0}
+
+    async def timeout_modify(**_kw):
+        calls["modify"] += 1
+        raise asyncio.TimeoutError()
+
+    async def timeout_cancel(**_kw):
+        calls["cancel"] += 1
+        raise asyncio.TimeoutError()
+
+    async def timeout_exit(**_kw):
+        calls["exit"] += 1
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(client, "modify_order", timeout_modify)
+    with context.use_area(1), pytest.raises(tradovate.OrderOutcomeUnknown, match="outcome unknown"):
+        await ex.modify_order(placed["order_id"], qty=1, order_type="Stop", stop_price=20950.0)
+
+    monkeypatch.setattr(client, "cancel_order", timeout_cancel)
+    with context.use_area(1), pytest.raises(tradovate.OrderOutcomeUnknown, match="outcome unknown"):
+        await ex.cancel_order(placed["order_id"])
+
+    monkeypatch.setattr(client, "exit_position", timeout_exit)
+    with context.use_area(1), pytest.raises(tradovate.OrderOutcomeUnknown, match="outcome unknown"):
+        await ex.liquidate_position("MNQZ6")
+
+    assert calls == {"modify": 1, "cancel": 1, "exit": 1}

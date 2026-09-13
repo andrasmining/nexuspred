@@ -211,8 +211,11 @@ class GateMiddleware:
             if wants_html(request):
                 return RedirectResponse("/2fa/setup", status_code=302)
             return JSONResponse({"detail": "Two-factor setup required"}, status_code=403)
+        area_id = db.user_primary_area(user["id"])
+        if not area_id:
+            return JSONResponse({"detail": "No workspace membership"}, status_code=403)
         scope["state"]["user"] = user
-        scope["state"]["area_id"] = db.user_primary_area(user["id"]) or context.DEFAULT_AREA_ID
+        scope["state"]["area_id"] = area_id
         return None
 
 

@@ -21,7 +21,7 @@ import ssl
 from email.mime.text import MIMEText
 from typing import Any
 
-from . import config, context, db, http, push, state
+from . import config, context, db, http, push, security, state
 
 
 def account_alerts_on(spec: str, settings: dict[str, Any] | None = None) -> bool:
@@ -54,15 +54,33 @@ async def _send_discord(message: str, *, settings: dict[str, Any] | None = None)
         return
     everyone = bool(s.get("alert_discord_mention_everyone"))
     content = (f"@everyone {message}" if everyone else message)[:2000]          # Discord refuses longer bodies
+    url = str(s["alert_discord_webhook_url"])
+    problem = await asyncio.to_thread(security.check_outbound_url, url)
+    if problem:
+        state.log_event("warn", f"Discord alert target rejected: {problem}")
+        return
     try:
         resp = await http.client("outbound").post(
-            s["alert_discord_webhook_url"],
+            url,
             # only the configured @everyone may ping: a webhook name or an error text carrying @here does not
             json={"content": content, "allowed_mentions": {"parse": ["everyone"] if everyone else []}}, timeout=10.0)
         if resp.status_code >= 400:
             state.log_event("warn", f"Discord alert failed: {resp.status_code} {resp.text}")
     except Exception as exc:  # noqa: BLE001 - never let a notification failure escalate
         state.log_event("warn", f"Discord alert failed: {exc}")
+
+
+def _smtp_target_url(host: str, port: int) -> str:
+    host = str(host).strip()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"https://{host}:{int(port)}/"
+
+
+def _check_smtp_target(host: str, port: int) -> None:
+    problem = security.check_outbound_url(_smtp_target_url(host, port))
+    if problem:
+        raise ValueError(f"SMTP target rejected: {problem}")
 
 
 def _send_email_sync(subject: str, body: str) -> None:
@@ -78,6 +96,7 @@ def _send_email_sync(subject: str, body: str) -> None:
     msg["To"] = to_addr
     host = s.get("alert_smtp_host") or "smtp.gmail.com"
     port = int(s.get("alert_smtp_port") or 587)
+    _check_smtp_target(host, port)
     with smtplib.SMTP(host, port, timeout=15) as server:
         server.starttls(context=ssl.create_default_context())  # verified TLS: credentials never go to an impostor
         server.login(username, password)
@@ -109,6 +128,7 @@ def _send_to_sync(to_addr: str, subject: str, body: str) -> None:
     msg["To"] = to_addr
     host = s.get("alert_smtp_host") or "smtp.gmail.com"
     port = int(s.get("alert_smtp_port") or 587)
+    _check_smtp_target(host, port)
     with smtplib.SMTP(host, port, timeout=15) as server:
         server.starttls(context=ssl.create_default_context())  # verified TLS: credentials never go to an impostor
         server.login(username, password)

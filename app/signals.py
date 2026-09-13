@@ -91,26 +91,19 @@ _active: dict[int, dict[str, dict[str, Any]]] = {}
 _sim_active: dict[int, dict[str, dict[str, Any]]] = {}
 
 
-ACTIVE_TTL_S = 14 * 24 * 3600     # a record whose position closed without a signal (stop hit) is forgotten after this
-_sweep_n = 0
-
-
 def _map_for(simulate: bool) -> dict[str, dict[str, Any]]:
-    """The active-trade map for the current area (live or simulated)."""
-    global _sweep_n
+    """The active-trade map for the current area (live or simulated).
+
+    Active execution state is never expired by age alone. A stale record may be
+    cleared only after broker reconciliation proves the account flat and without
+    working orders (see :func:`_guard_existing_trade`).
+    """
     reg = _sim_active if simulate else _active
     aid = context.get_area()
     with _lock:
         m = reg.get(aid)
         if m is None:
             m = reg[aid] = {}
-        _sweep_n += 1
-        if _sweep_n % 200 == 0 and len(m) > 50:
-            # TS-Hunter keys every trade by its own id: records whose position
-            # was closed at the broker (stop / target hit) would otherwise stay forever
-            cutoff = time.time() - ACTIVE_TTL_S
-            for key in [k for k, rec in m.items() if 0 < float(rec.get("ts") or 0) < cutoff]:
-                m.pop(key, None)
         return m
 
 
@@ -141,6 +134,96 @@ def _webhook_executors(webhook: dict[str, Any]) -> list[Any]:
             continue
         out.append(ex)
     return out
+
+
+async def _tracked_account_open(ex: Any, info: dict[str, Any]) -> bool | None:
+    """Whether broker truth still shows this tracked account live.
+
+    ``False`` means confirmed flat with no working order for the tracked
+    contract; ``None`` means reconciliation could not establish a safe answer.
+    """
+    contract = str(info.get("contract") or "")
+    if not contract:
+        return None
+    try:
+        positions, orders = await asyncio.gather(ex.positions(), ex.working_orders())
+    except Exception as exc:  # noqa: BLE001 - inability to reconcile must fail closed
+        state.log_event("error", f"Cannot reconcile tracked trade on {ex.name}/{contract}: {exc}")
+        return None
+
+    for pos in positions:
+        symbol = str(pos.get("symbol") or pos.get("contract") or "")
+        if not symbol:
+            if pos.get("netPos"):
+                return None
+            continue
+        if symbol != contract:
+            continue
+        try:
+            if float(pos.get("netPos") or 0) != 0:
+                return True
+        except (TypeError, ValueError):
+            return None
+
+    contract_id: int | None = None
+    for order in orders:
+        symbol = str(order.get("symbol") or order.get("contract") or "")
+        if symbol:
+            if symbol == contract:
+                return True
+            continue
+        raw_id = order.get("contractId")
+        if raw_id in (None, ""):
+            return None
+        if contract_id is None:
+            try:
+                contract_id = int(await ex.contract_id(contract))
+            except Exception as exc:  # noqa: BLE001
+                state.log_event("error", f"Cannot resolve tracked contract {contract} on {ex.name}: {exc}")
+                return None
+        try:
+            if int(raw_id) == contract_id:
+                return True
+        except (TypeError, ValueError):
+            return None
+    return False
+
+
+async def _guard_existing_trade(active_map: dict[str, dict[str, Any]], key: str,
+                                executors: list[Any], root: str, tag: str) -> dict[str, Any] | None:
+    """Refuse to overwrite active tracking until broker truth proves it stale."""
+    with _lock:
+        active = active_map.get(key)
+    accounts = active.get("accounts") if isinstance(active, dict) else None
+    if not isinstance(accounts, dict) or not accounts:
+        return None
+
+    by_name = {ex.name: ex for ex in executors}
+    live: list[str] = []
+    unresolved: list[str] = []
+    for name, info in accounts.items():
+        ex = by_name.get(name)
+        if ex is None or not isinstance(info, dict):
+            unresolved.append(str(name))
+            continue
+        status = await _tracked_account_open(ex, info)
+        if status is True:
+            live.append(str(name))
+        elif status is None:
+            unresolved.append(str(name))
+
+    if live:
+        state.log_event("warn", f"{tag}Entry for {root} ignored — an existing tracked trade is still live on {', '.join(live)}")
+        return {"status": "skipped", "reason": "active_trade_exists", "accounts": live}
+    if unresolved:
+        state.log_event("error", f"{tag}Entry for {root} blocked — existing tracked trade could not be reconciled on {', '.join(unresolved)}")
+        return {"status": "skipped", "reason": "active_trade_unresolved", "accounts": unresolved}
+
+    with _lock:
+        if active_map.get(key) is active:
+            active_map.pop(key, None)
+    state.log_event("info", f"{tag}{root}: broker confirmed the prior tracked trade flat; stale tracking cleared")
+    return None
 
 
 # ------------------------------------------------------------- acceptance
@@ -425,6 +508,10 @@ async def process(
                 # the switch may have been flipped while this signal waited for the trade lock
                 state.log_event("warn", f"Trading disabled — signal '{action}' for {root} not executed")
                 return {"status": "skipped", "reason": "trading_disabled", "action": action}
+            guard = await _guard_existing_trade(active_map, _trade_key(webhook["id"], root), executors, root, tag)
+            if guard is not None:
+                guard["action"] = action
+                return guard
             if strategy == "simple":
                 return await simple.handle_entry(payload, action, root, target, executors, active_map, tag, webhook, settings=s)
             return await bracket.handle_entry(payload, action, root, target, executors, active_map, tag, webhook, settings=s)
@@ -513,6 +600,10 @@ async def _process_ts_hunter(payload, webhook, active_map, simulate, s):
             if not simulate and not config.setting("trading_enabled"):
                 state.log_event("warn", f"Trading disabled — TS-Hunter signal for {root} (trade {trade_id}) not executed")
                 return {"status": "skipped", "reason": "trading_disabled"}
+            # TS-Hunter trade ids are explicit idempotency keys. Its handler
+            # rejects an already tracked id unconditionally; do not reconcile
+            # and clear that record here, because a flat Fake/broker snapshot
+            # is not permission to replay an already accepted trade id.
             return await ts_hunter.handle_entry(
                 payload, side, root, target, trade_id, executors, active_map, tag, webhook, settings=s
             )

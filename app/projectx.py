@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import broker, config, events, http, state
+from . import broker, config, events, http, security, state
 from .tradovate import OrderOutcomeUnknown, RateLimited, TradovateError
 
 SNAPSHOT_TTL_S = 3.0              # one Position/searchOpen and Account/search per login per P&L tick, not per account
@@ -129,6 +129,7 @@ class ProjectXSession(broker.BrokerSessionBase):
         firm = str(entry.get("px_firm") or "topstep").strip()
         # a custom gateway must be https (a plain-http or non-URL value would send the API key in clear / nowhere)
         self.base_url = (FIRMS.get(firm.lower()) or (firm if firm.startswith("https://") else FIRMS["topstep"])).rstrip("/")
+        self._custom_gateway = firm.lower() not in FIRMS
         self.firm = firm
         self.account_spec = entry.get("account_spec") or ""
         self.account_id = int(entry.get("account_id") or 0)
@@ -179,6 +180,13 @@ class ProjectXSession(broker.BrokerSessionBase):
     def _client(self) -> Any:
         return http.client("outbound")
 
+    async def _validate_base_url(self) -> None:
+        if not self._custom_gateway:
+            return
+        problem = await asyncio.to_thread(security.check_outbound_url, self.base_url)
+        if problem:
+            raise TradovateError(f"[{self.name}] ProjectX gateway rejected: {problem}")
+
     async def _get_token(self, force: bool = False, *, stale: str | None = None) -> str:
         """``stale`` names the token a 401 came back for: a re-login happens once
         for it, concurrent callers that hit the same 401 reuse the fresh token."""
@@ -188,6 +196,7 @@ class ProjectXSession(broker.BrokerSessionBase):
             fresh = bool(self._token) and time.monotonic() - self._token_at < TOKEN_TTL_S
             if self._token and fresh and not force and (stale is None or stale != self._token):
                 return self._token
+            await self._validate_base_url()
             r = await self._client().post(f"{self.base_url}/api/Auth/loginKey", json={"userName": self.user, "apiKey": self.api_key}, timeout=20.0)
             data = r.json() if r.content else {}
             if r.status_code != 200 or not data.get("success") or not data.get("token"):
@@ -218,6 +227,7 @@ class ProjectXSession(broker.BrokerSessionBase):
                 if wait > 0:
                     await asyncio.sleep(wait)
                 self._last_sent = time.monotonic()
+        await self._validate_base_url()
         try:
             r = await self._client().post(f"{self.base_url}{path}", json=body, headers={"Authorization": f"Bearer {token}"}, timeout=20.0)
         except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError) as exc:

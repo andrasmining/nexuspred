@@ -225,3 +225,18 @@ async def test_copy_engine_polls_a_projectx_leader(px, monkeypatch):
     gw.positions[101] = [{"id": 2, "accountId": 101, "contractId": "CON.F.US.ENQ.Z25", "type": 2, "size": 1, "averagePrice": 21000.0}]
     await r._poll_once(s, 101)
     assert [(c["action"], c["qty"], c["symbol"]) for c in ex.of("place")] == [("Sell", 1, "NQZ5")]                       # the alias shown in the bridge form
+
+async def test_custom_gateway_is_revalidated_before_credentials_are_sent(px, monkeypatch):
+    custom = projectx.ProjectXSession(0, {
+        "name": "Custom", "enabled": True, "px_user": "user", "px_api_key": "secret",
+        "px_firm": "https://gateway.example.com", "accounts": [],
+    }, area_id=1)
+    monkeypatch.setattr(projectx.security, "check_outbound_url", lambda _url: "internal address")
+
+    class NeverClient:
+        async def post(self, *args, **kwargs):
+            raise AssertionError("credentials must not be sent")
+
+    monkeypatch.setattr(custom, "_client", lambda: NeverClient())
+    with pytest.raises(tradovate.TradovateError, match="gateway rejected"):
+        await custom._get_token(force=True)

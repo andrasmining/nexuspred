@@ -19,7 +19,7 @@ import asyncio
 import time
 from typing import Any
 
-from .. import config, http, signals, state
+from .. import config, http, security, signals, state
 
 _TIMEOUT_SECONDS = 5.0
 
@@ -50,6 +50,10 @@ async def _post_one(target: dict[str, Any], payload: dict[str, Any]) -> dict[str
     started = time.monotonic()
     if not url:
         return {"label": label, "url": url, "ok": False, "error": "no url", "ms": 0}
+
+    problem = await asyncio.to_thread(security.check_outbound_url, url)
+    if problem:
+        return {"label": label, "url": url, "ok": False, "error": f"target rejected: {problem}", "ms": _ms(started)}
 
     headers = {"Content-Type": "application/json"}
     secret = target.get("secret")

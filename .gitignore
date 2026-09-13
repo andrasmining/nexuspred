@@ -2,6 +2,7 @@
 data/settings.json
 data/*.log
 data/*.db
+app/data/*.db
 
 # Local backups (e.g. backup/nexuspred-v4.11.0)
 backup/
