@@ -216,6 +216,7 @@ async def test_copy_engine_polls_a_rithmic_leader(rsess, monkeypatch):
     s = rsess["s"]
     await s.connect()
     ex = FakeExecutor("F1")
+    ex.session = s
 
     class Mgr:
         def all(self): return [s]

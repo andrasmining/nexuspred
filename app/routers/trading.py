@@ -123,13 +123,21 @@ async def api_close_position(request: Request) -> dict[str, Any]:
     live = signals._map_for(False)
     root = _base_root(contract.upper())
     with signals._lock:
-        keys = sorted(k for k, t in live.items() if (t.get("accounts") or {}).get(ex.name)
-                      and str(((t.get("accounts") or {}).get(ex.name) or {}).get("contract") or t.get("contract") or "") == contract)
-    lock_keys = [f"{context.get_area()}:live:{k.split(':', 1)[0]}:{root}" for k in keys] or [f"{context.get_area()}:live:manual:{root}"]
+        trades = {k: t for k, t in live.items() if (t.get("accounts") or {}).get(ex.name)
+                  and str(((t.get("accounts") or {}).get(ex.name) or {}).get("contract") or t.get("contract") or "") == contract}
+    keys = sorted(trades)
+    # Match signals.process exactly: TS-Hunter locks by trade id; other
+    # strategies use the full webhook id and the signal's (possibly aliased)
+    # root, not necessarily the broker contract's root.
+    lock_keys = [f"{context.get_area()}:live:ts:{t['trade_id']}" if t.get("trade_id") else
+                 f"{context.get_area()}:live:{t.get('webhook_id') or k.rsplit(':', 1)[0]}:{t.get('root') or root}"
+                 for k, t in trades.items()] or [f"{context.get_area()}:live:manual:{root}"]
     locks = [signals._trade_lock(k) for k in sorted(set(lock_keys))]
-    for lk in locks:
-        await lk.acquire()
+    acquired = []
     try:
+        for lk in locks:
+            await lk.acquire()
+            acquired.append(lk)
         try:
             cancelled = await _close_contract(ex, "", contract)          # cancel → liquidate → retry cancels; raises when orders remain
         except TradovateError as exc:
@@ -145,8 +153,12 @@ async def api_close_position(request: Request) -> dict[str, Any]:
                 if not accounts:
                     live.pop(key, None)
     finally:
-        for lk in locks:
+        # Cancellation while waiting for another trade must not strand the
+        # locks already acquired and block its subsequent management signals.
+        for lk in reversed(acquired):
             lk.release()
+        for key in lock_keys:
+            signals._release_trade_lock(key)
     state.log_event("info", f"Position closed from the dashboard: {contract} on {ex.name} ({cancelled} order(s) cancelled) by {user.get('email', '?')}")
     if user:
         db.log_action(user["id"], user["email"], "close_position", ex.name, f"{contract}, {cancelled} order(s) cancelled")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -148,6 +149,7 @@ async def test_mirror_skips_a_workspace_flattened_for_news(admin, monkeypatch):
         config.save_settings({"trading_enabled": True})
     r = cp.GroupRunner(1, g)
     ex = FakeExecutor("F1")
+    ex.session = SimpleNamespace(kind="tradovate")
     monkeypatch.setattr(r, "_executor", lambda f: ex)
     monkeypatch.setattr(news, "flattened_lock", lambda area_id: {"title": "CPI"})
     r.leader_net[5] = 2

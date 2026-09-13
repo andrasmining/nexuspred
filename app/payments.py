@@ -152,7 +152,8 @@ async def _stripe(method: str, path: str, data: Optional[dict[str, Any]] = None)
     if not key:
         raise RuntimeError("Stripe is not configured")
     client = http.client("outbound")
-    r = await client.request(method, API + path, data=data or None, auth=(key, ""), timeout=20.0,
+    fields = {"params": data or None} if method == "GET" else {"data": data or None}
+    r = await client.request(method, API + path, **fields, auth=(key, ""), timeout=20.0,
                              headers={"User-Agent": "Fluxbridge/payments"})
     try:
         body = r.json()
@@ -293,23 +294,58 @@ def _stamp(event: dict[str, Any]) -> dict[str, Any]:
     return {"last_event_id": str(event.get("id") or ""), "last_event_created": int(event.get("created") or 0)}
 
 
+def _stripe_id(value: Any) -> str:
+    """Stripe references may be ids or expanded objects."""
+    return str((value.get("id") if isinstance(value, dict) else value) or "")
+
+
+def _invoice_subscription(invoice: dict[str, Any]) -> str:
+    """Support both legacy invoices and the Basil+ parent reference."""
+    sid = _stripe_id(invoice.get("subscription"))
+    parent = invoice.get("parent") or {}
+    if not sid and parent.get("type") == "subscription_details":
+        sid = _stripe_id((parent.get("subscription_details") or {}).get("subscription"))
+    return sid
+
+
 async def _subscription_of_charge(obj: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """The payment row behind a charge / dispute object (via its invoice)."""
-    charge = obj.get("charge") if isinstance(obj.get("charge"), dict) else None
-    inv = obj.get("invoice") or (charge or {}).get("invoice")
-    if isinstance(inv, dict):
-        inv = inv.get("id")
-    if inv:
-        try:
+    """Resolve an invoice/refund/dispute to its exact subscription. A customer
+    can have several subscriptions (and unrelated one-off charges), so their
+    latest payment is never a safe fallback. Lookup failures propagate to the
+    webhook's 5xx response so Stripe can retry without a wrong revocation.
+    """
+    if obj.get("object") == "invoice":
+        invoice = obj
+    else:
+        charge = obj.get("charge")
+        if isinstance(charge, str) and charge:
+            charge = await _stripe("GET", f"/charges/{charge}")
+        if not isinstance(charge, dict):
+            charge = obj
+        inv = charge.get("invoice")
+        if not inv and _stripe_id(charge.get("payment_intent")):
+            # Current Charges no longer embed an invoice reference. Resolve
+            # the payment's invoice, not an arbitrary invoice for its customer.
+            links = await _stripe("GET", "/invoice_payments", {
+                "payment[type]": "payment_intent",
+                "payment[payment_intent]": _stripe_id(charge["payment_intent"]),
+                "limit": 100,
+            })
+            if not isinstance(links.get("data"), list) or links.get("has_more"):
+                raise RuntimeError("Stripe invoice payment lookup is incomplete")
+            invoices = {_stripe_id(row.get("invoice")) for row in links["data"]}
+            invoices.discard("")
+            if len(invoices) > 1:
+                raise RuntimeError("Stripe payment references multiple invoices; reconcile before withdrawing access")
+            inv = next(iter(invoices), None)
+        if isinstance(inv, str) and inv:
             invoice = await _stripe("GET", f"/invoices/{inv}")
-            sid = invoice.get("subscription")
-            sid = sid.get("id") if isinstance(sid, dict) else sid
-            if sid:
-                return db.payment_by("stripe_subscription", str(sid))
-        except RuntimeError as exc:
-            log.warning("invoice lookup for a refund/dispute failed: %s", exc)
-    cust = obj.get("customer") or (charge or {}).get("customer")
-    return db.payment_by("stripe_customer", str(cust)) if cust else None
+        elif isinstance(inv, dict):
+            invoice = inv
+        else:
+            return None
+    sid = _invoice_subscription(invoice)
+    return db.payment_by("stripe_subscription", sid) if sid else None
 
 
 async def handle_event(event: dict[str, Any]) -> str:
@@ -352,8 +388,7 @@ async def handle_event(event: dict[str, Any]) -> str:
         await _apply(p)
         return f"subscription {sid}: {status}"
     if kind == "invoice.payment_failed":
-        sid = obj.get("subscription")
-        sid = str((sid or {}).get("id") if isinstance(sid, dict) else sid or "")
+        sid = _invoice_subscription(obj)
         p = db.payment_by("stripe_subscription", sid) if sid else None
         if p is None:
             return "invoice for unknown subscription ignored"
@@ -365,7 +400,7 @@ async def handle_event(event: dict[str, Any]) -> str:
     if kind in ("charge.refunded", "charge.dispute.created", "invoice.marked_uncollectible"):
         p = await _subscription_of_charge(obj)
         if p is None:
-            return f"{kind} for an unknown customer ignored"
+            return f"{kind} for an unknown subscription ignored"
         if _stale(p, event):
             return f"stale {kind} ignored"
         p = db.update_payment(p["id"], status="unpaid", **_stamp(event))
