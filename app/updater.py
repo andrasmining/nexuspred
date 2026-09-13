@@ -43,10 +43,7 @@ async def _latest_release_tag() -> str | None:
 
 
 async def _version_file_on_branch() -> str | None:
-    url = (
-        f"{RAW}/{config.GITHUB_OWNER}/{config.GITHUB_REPO}/"
-        f"{config.GITHUB_BRANCH}/VERSION"
-    )
+    url = f"{RAW}/{config.GITHUB_OWNER}/{config.GITHUB_REPO}/{config.GITHUB_BRANCH}/VERSION"
     try:
         resp = await http.client("outbound").get(url, timeout=15.0)
         if resp.status_code == 200:
@@ -57,7 +54,6 @@ async def _version_file_on_branch() -> str | None:
 
 
 async def check_for_update() -> dict[str, Any]:
-    """Compare the local version with the latest available on GitHub."""
     local = config.get_version()
     remote = await _latest_release_tag() or await _version_file_on_branch()
 
@@ -77,7 +73,6 @@ async def check_for_update() -> dict[str, Any]:
     try:
         result["update_available"] = Version(_norm(remote)) > Version(_norm(local))
     except InvalidVersion:
-        # Fall back to a plain string comparison if versions aren't semver.
         result["update_available"] = _norm(remote) != _norm(local)
 
     return result
@@ -98,8 +93,7 @@ def _run(cmd: list[str]) -> tuple[bool, str]:
 
 
 async def apply_update() -> dict[str, Any]:
-    """Pull the latest code from GitHub and schedule a restart."""
-    # On managed hosts like Render, deploys are driven by git push, not by us.
+    """Apply an update only when a rollback revision and dependencies are sound."""
     if os.environ.get("RENDER") or os.environ.get("NEXUSPRED_MANAGED_HOST"):
         return {
             "success": False,
@@ -118,31 +112,56 @@ async def apply_update() -> dict[str, Any]:
         }
 
     old_version = config.get_version()
+    old_head_ok, old_head_out = await asyncio.to_thread(_run, ["git", "rev-parse", "HEAD"])
+    old_head = old_head_out.splitlines()[0].strip() if old_head_ok and old_head_out.strip() else ""
+    if not old_head:
+        return {
+            "success": False,
+            "message": f"Could not determine the current git revision; update was not started: {old_head_out}",
+        }
+
     state.log_event("info", f"Applying update from GitHub (current v{old_version})…")
 
-    ok, fetch_out = await asyncio.to_thread(
-        _run, ["git", "fetch", "--all", "--tags", "--prune"]
-    )
+    ok, fetch_out = await asyncio.to_thread(_run, ["git", "fetch", "--all", "--tags", "--prune"])
     if not ok:
         return {"success": False, "message": f"git fetch failed: {fetch_out}"}
 
-    # Hard-reset to the tracked branch. Settings live in data/ (git-ignored) so
-    # they are never touched by the reset.
     ok, pull_out = await asyncio.to_thread(
         _run, ["git", "reset", "--hard", f"origin/{config.GITHUB_BRANCH}"]
     )
     if not ok:
         return {"success": False, "message": f"git update failed: {pull_out}"}
 
-    # Best-effort dependency refresh; ignore failures so a restart still happens.
-    await asyncio.to_thread(
+    dep_ok, dep_out = await asyncio.to_thread(
         _run, [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"]
     )
+    if not dep_ok:
+        # Never restart new source with a dependency set that failed to install.
+        # Restore the exact previous revision and its requirements best-effort.
+        rb_ok, rb_out = await asyncio.to_thread(_run, ["git", "reset", "--hard", old_head])
+        rollback_detail = rb_out
+        if rb_ok:
+            await asyncio.to_thread(
+                _run, [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"]
+            )
+            config.get_version(force=True)
+        else:
+            rollback_detail = f"rollback failed: {rb_out}"
+        state.log_event("error", f"Update dependency install failed; restart cancelled: {dep_out}; {rollback_detail}")
+        return {
+            "success": False,
+            "message": (
+                "Dependency installation failed. The update was rolled back and no restart was scheduled."
+                if rb_ok
+                else "Dependency installation failed and rollback failed. No restart was scheduled; restore the checkout manually."
+            ),
+            "previous_version": old_version,
+            "log": dep_out,
+        }
 
     new_version = config.get_version(force=True)
     state.log_event("info", f"Updated v{old_version} → v{new_version}; restarting…")
 
-    # Restart shortly after responding so the dashboard gets the response first.
     asyncio.get_event_loop().call_later(1.5, _restart)
     return {
         "success": True,
@@ -154,11 +173,9 @@ async def apply_update() -> dict[str, Any]:
 
 
 def _restart() -> None:
-    """Restart so the freshly pulled code runs. Under systemd (deploy/install-server.sh,
-    ``Restart=always``) a clean shutdown is enough — the unit brings the service back
-    with the environment file re-read; elsewhere the process re-execs itself."""
+    """Restart so the freshly pulled code runs. Under systemd a clean shutdown is enough."""
     if os.environ.get("INVOCATION_ID") or os.environ.get("NEXUSPRED_SUPERVISED"):
         import signal
-        os.kill(os.getpid(), signal.SIGTERM)      # graceful: loops stop, state is flushed
+        os.kill(os.getpid(), signal.SIGTERM)
         return
     os.execv(sys.executable, [sys.executable, *sys.argv])

@@ -15,13 +15,13 @@ def new_group(name: str = "Copy group") -> dict[str, Any]:
     return {
         "id": "cg_" + secrets.token_urlsafe(6), "name": name, "enabled": False,
         "leader": {"token_idx": 0, "spec": "", "account_id": 0},
-        "symbols": [],                       # roots (MNQ, ES …); empty = every contract
+        "symbols": [],
         "followers": [],
-        "feed": "auto",                      # auto | websocket | poll
+        "feed": "auto",
         "feed_loss_flatten_s": 30,
-        "copy_adds": True,                   # fixed mode: scale with the leader's adds
-        "copy_orders": True,                 # mirror the leader's working limit / stop orders
-        "on_feed_loss": "flatten",           # flatten | pause — what to do after feed_loss_flatten_s
+        "copy_adds": True,
+        "copy_orders": True,
+        "on_feed_loss": "flatten",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -60,12 +60,9 @@ def save_groups(groups: list[dict[str, Any]], area_id: Optional[int] = None) -> 
 
 
 def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts: list[dict[str, Any]]) -> None:
-    """Raise ValueError on an inconsistent group (unknown accounts, leader among
-    followers, a chain that would feed a leader from its own followers)."""
     idx_to_lid = {int(a["token_idx"]): str(a.get("lid") or "") for a in accounts if a.get("lid")}
 
     def key(entry: dict[str, Any]) -> tuple[str, str]:
-        """(login id, account) — an entry without an id is resolved by its index."""
         idx = int(entry["token_idx"])
         return (str(entry.get("lid") or idx_to_lid.get(idx) or idx), str(entry["spec"]))
     known = {key(a) for a in accounts}
@@ -81,7 +78,6 @@ def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts
         if k not in known:
             raise ValueError(f"Follower {f['spec']} is not a discovered trade account")
         if brokers.get(k) != brokers.get(lead):
-            # positions are matched by the broker's contract ids, which differ between brokers
             raise ValueError(f"Follower {f['spec']} is on {brokers.get(k)} but the leader is on {brokers.get(lead)} — a copy group stays within one broker")
         if k == lead:
             raise ValueError("The leader cannot be its own follower")
@@ -92,7 +88,6 @@ def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts
         raise ValueError("feed-loss flatten must be between 5 and 600 seconds")
     if str(g.get("on_feed_loss") or "flatten") not in ("flatten", "pause"):
         raise ValueError("on_feed_loss must be flatten or pause")
-    # a follower account belongs to one group only: two mirrors on one account fight each other
     for og in all_groups:
         if og.get("id") == g.get("id"):
             continue
@@ -100,7 +95,6 @@ def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts
         clash = [f["spec"] for f in g["followers"] if f.get("enabled", True) and key(f) in theirs]
         if clash:
             raise ValueError(f"Follower {clash[0]} already follows {og.get('leader', {}).get('spec', '?')} in group '{og.get('name', '?')}' — an account can follow one leader only")
-    # cycle check across groups: leader → followers edges
     edges: dict[tuple[int, str], set[tuple[int, str]]] = {}
     for og in [*(x for x in all_groups if x.get("id") != g.get("id")), g]:
         ol = key(og["leader"])
@@ -121,7 +115,6 @@ def _round_half_up(x: float) -> int:
 
 
 def target_qty(f: dict[str, Any], leader_net: float, unit: float, *, copy_adds: bool = True) -> int:
-    """The follower's target net position for a leader net position."""
     net = int(leader_net)
     if net == 0:
         return 0
@@ -142,8 +135,6 @@ def target_qty(f: dict[str, Any], leader_net: float, unit: float, *, copy_adds: 
 
 
 def parse_frames(text: str) -> list[dict[str, Any]]:
-    """Tradovate speaks a SockJS-like framing: ``o`` open, ``h`` heartbeat,
-    ``a[...]`` a JSON array of messages, ``c[...]`` close. Returns the messages."""
     if not text:
         return []
     kind = text[0]
@@ -166,7 +157,6 @@ def sharing_of(g: dict[str, Any]) -> dict[str, Any]:
 
 
 def public_view(g: dict[str, Any], area_id: int, email: Optional[str] = None) -> dict[str, Any]:
-    """What a subscriber may see of a published group: no accounts, no logins."""
     from .. import marketplace
     sh = sharing_of(g)
     lead_idx = int((g.get("leader") or {}).get("token_idx") or 0)
@@ -209,7 +199,6 @@ def find_published(publisher_area_id: int, group_id: str) -> tuple[Optional[dict
 
 
 def leader_broker(publisher_area_id: int, group_id: str) -> str:
-    """The broker of a published group's leader login (``tradovate`` when unknown)."""
     g, _ = find_published(publisher_area_id, group_id)
     if not g:
         return "tradovate"
@@ -227,10 +216,6 @@ def leader_broker(publisher_area_id: int, group_id: str) -> str:
 
 def clean_subscriber_accounts(raw: Any, area_id: int, *, exclude_sub_id: Optional[int] = None,
                               broker_kind: Optional[str] = None) -> list[dict[str, Any]]:
-    """A subscriber's follower accounts (their own logins, resolved by login id),
-    validated: discovered accounts only, on the leader's broker (``broker_kind``)
-    when given, no account that already follows a leader through an own group or
-    another subscription. Raises ValueError."""
     from ..routers.accounts import trade_accounts_overview
     with context.use_area(area_id):
         known = trade_accounts_overview()
@@ -265,8 +250,6 @@ def clean_subscriber_accounts(raw: Any, area_id: int, *, exclude_sub_id: Optiona
 
 
 def following_status(area_id: int) -> list[dict[str, Any]]:
-    """The subscriber's view: every copy subscription of this workspace with the
-    live picture of *their* accounts (never the leader's account details)."""
     out = []
     for sub in db.list_subscriptions(area_id):
         if not sub["webhook_id"].startswith("copy:"):
@@ -290,7 +273,6 @@ def following_status(area_id: int) -> list[dict[str, Any]]:
 
 
 def masked_status(st: dict[str, Any]) -> dict[str, Any]:
-    """A group's status for the publisher: subscribers' accounts are never shown."""
     followers = []
     for f in st.get("followers", []):
         if f.get("external"):
@@ -306,15 +288,25 @@ def masked_status(st: dict[str, Any]) -> dict[str, Any]:
 
 
 def external_followers(area_id: int, group_id: str, *, group: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
-    """Followers that subscribed to this group on the marketplace: every enabled
-    account of every enabled subscription, stamped with the subscriber's area
-    (their logins, trading switch, risk locks, logs) and subscription id.
-    ``group`` is the already loaded group (saves a settings read)."""
+    """Enabled marketplace followers that remain authorised *now*.
+
+    Persisted copy subscriptions do not keep execution authority after a
+    selected-user ACL revocation. Paid/status checks remain in
+    ``db.active_subscriptions``; this adds the current publisher ACL boundary.
+    """
+    from .. import marketplace
     out: list[dict[str, Any]] = []
-    sh = sharing_of(group) if group is not None else find_published(area_id, group_id)[1]
-    if not sh.get("enabled") or sh.get("paused"):       # the publisher's pause takes every marketplace follower out of the mirror
-        return out                                   # unpublished: subscribers' accounts leave the mirror
+    listing = group
+    if listing is None:
+        listing, _ = find_published(area_id, group_id)
+    if listing is None:
+        return out
+    sh = sharing_of(listing)
+    if not sh.get("enabled") or sh.get("paused"):
+        return out
     for sub in db.active_subscriptions(area_id, f"copy:{group_id}"):
+        if not marketplace.subscription_allowed(listing, sub):
+            continue
         for a in sub.get("accounts") or []:
             if not isinstance(a, dict) or not a.get("enabled", True):
                 continue
@@ -327,8 +319,6 @@ def external_followers(area_id: int, group_id: str, *, group: Optional[dict[str,
 
 
 def effective_followers(area_id: int, group: dict[str, Any], external: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Own followers plus external ones — an external account that is the leader
-    or already an own follower is left out (one mirror per account)."""
     own = [dict(f) for f in group.get("followers") or []]
     taken = {str(f["spec"]) for f in own} | {str((group.get("leader") or {}).get("spec") or "")}
     for f in external:

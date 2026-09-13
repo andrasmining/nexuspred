@@ -26,7 +26,7 @@ or immediately after *Sync now*.
 """
 from __future__ import annotations
 
-from . import feed, groups, group_runner, manager, orders  # noqa: F401
+from . import feed, groups, group_runner, manager, orders, safety_runner  # noqa: F401
 from .groups import (  # noqa: F401
     _runners,
     new_group,

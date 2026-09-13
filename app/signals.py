@@ -47,6 +47,7 @@ from .engine import bracket, manage, simple, ts_hunter
 from .engine.common import (  # noqa: F401 - re-exported for callers/tests
     SignalError,
     _cancel_working,
+    _flatten_account,
     _lock,
     _resolve_symbol,
     _trade_key,
@@ -105,8 +106,6 @@ def _map_for(simulate: bool) -> dict[str, dict[str, Any]]:
             m = reg[aid] = {}
         _sweep_n += 1
         if _sweep_n % 200 == 0 and len(m) > 50:
-            # TS-Hunter keys every trade by its own id: records whose position
-            # was closed at the broker (stop / target hit) would otherwise stay forever
             cutoff = time.time() - ACTIVE_TTL_S
             for key in [k for k, rec in m.items() if 0 < float(rec.get("ts") or 0) < cutoff]:
                 m.pop(key, None)
@@ -114,8 +113,6 @@ def _map_for(simulate: bool) -> dict[str, dict[str, Any]]:
 
 
 def _synthetic_bracket_webhook(s: dict[str, Any]) -> dict[str, Any]:
-    """A stand-in webhook used only for ``simulate=True`` calls (no real webhook
-    context needed — the Simulator tab rehearses the bracket lifecycle)."""
     return {
         "id": "sim", "name": "Simulator", "strategy": "bracket",
         "default_qty": s.get("default_qty", 3), "tp_qty": s.get("tp_qty", 1),
@@ -133,10 +130,7 @@ def _webhook_executors(webhook: dict[str, Any]) -> list[Any]:
             a.get("token_idx"), a.get("spec"), a.get("qty_multiplier", 1), sizing=a.get("sizing"), lid=a.get("lid")
         )
         if ex is None:
-            state.log_event(
-                "warn", f"Webhook '{webhook.get('name')}': account '{a.get('spec')}' "
-                "not found (deleted login/account?)"
-            )
+            state.log_event("warn", f"Webhook '{webhook.get('name')}': account '{a.get('spec')}' not found (deleted login/account?)")
             continue
         out.append(ex)
     return out
@@ -148,7 +142,6 @@ _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn(coro: Any) -> asyncio.Task:
-    """Run a coroutine in the background; the current context (area) is inherited."""
     task = asyncio.get_running_loop().create_task(coro)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_done)
@@ -162,10 +155,6 @@ def _bg_done(task: asyncio.Task) -> None:
 
 
 def passphrase_ok(payload: dict[str, Any], settings: dict[str, Any] | None = None) -> bool:
-    """Whether the signal carries the area's webhook passphrase (True when none
-    is configured). Checked at the ingress *before* anything is executed or
-    forwarded — a wrong passphrase must not reach marketplace subscribers,
-    whose executions skip the check (``trusted=True``)."""
     s = settings if settings is not None else config.load_settings()
     want = str(s.get("webhook_passphrase") or "")
     if not want:
@@ -175,16 +164,8 @@ def passphrase_ok(payload: dict[str, Any], settings: dict[str, Any] | None = Non
 
 
 def accept(payload: dict[str, Any], webhook: dict[str, Any], *, forward: bool = True) -> None:
-    """Acknowledge a signal for an enabled webhook and execute it in the
-    background (the caller's area context is inherited by the task). Shared by
-    the TradingView ingress and the in-process Discord dispatch. A published
-    webhook's signal is also forwarded to its marketplace subscribers.
-
-    The passphrase is verified here, before either happens: subscribers execute
-    with ``trusted=True``, so a fan-out ahead of the check would let anyone who
-    merely knows the URL trade on every subscriber's accounts."""
     name = webhook.get("name", "")
-    s = config.load_settings()                       # one settings copy per signal, handed all the way down
+    s = config.load_settings()
     state.log_signal(payload, result="received", webhook=name, webhook_id=str(webhook.get("id") or ""))
     if not passphrase_ok(payload, s):
         state.log_event("error", "Signal rejected: invalid passphrase", payload=payload)
@@ -197,12 +178,22 @@ def accept(payload: dict[str, Any], webhook: dict[str, Any], *, forward: bool = 
         forward_to_subscribers(payload, webhook, accepted_at=accepted)
 
 
+def _publisher_entry(payload: dict[str, Any], webhook: dict[str, Any]) -> bool:
+    """Whether this payload creates new exposure under the publisher strategy."""
+    if webhook.get("strategy") == "ts_hunter":
+        return str(payload.get("event") or "").lower().strip() == "signal"
+    return str(payload.get("action") or "").lower().strip() in ("buy", "sell")
+
+
 def forward_to_subscribers(payload: dict[str, Any], webhook: dict[str, Any],
                            publisher_area: int | None = None, accepted_at: float | None = None) -> int:
-    """Fan a published webhook's signal out to every enabled subscription, each
-    executed in the subscriber's own area (their accounts, trading switch,
-    symbol map, alerts and logs). Returns how many subscribers were dispatched.
-    Failures are isolated per subscriber and never affect the publisher."""
+    """Fan out only to subscriptions authorised by the publisher *now*.
+
+    Persisted subscription rows are not authorization leases: selected-user ACL
+    changes take effect before the next financial action. The publisher's own
+    entry window is also checked in the publisher workspace before fan-out;
+    subscriber controls remain an additional gate in the subscriber workspace.
+    """
     from . import db, marketplace
 
     sh = marketplace.sharing_of(webhook)
@@ -212,26 +203,43 @@ def forward_to_subscribers(payload: dict[str, Any], webhook: dict[str, Any],
         state.log_event("info", f"[{webhook.get('name', '?')}] not forwarded: sharing is paused by the publisher")
         return 0
     aid = publisher_area if publisher_area is not None else context.get_area()
+
+    if _publisher_entry(payload, webhook):
+        publisher_settings = config.load_settings(area_id=aid)
+        opened, why = trade_window.is_open(
+            webhook.get("trade_window"),
+            default_tz=str(publisher_settings.get("journal_timezone") or ""),
+        )
+        if not opened:
+            state.log_event("info", f"[{webhook.get('name', '?')}] not forwarded: publisher trading window closed — {why}")
+            return 0
+
     subs = db.active_subscriptions(aid, webhook.get("id", ""))
-    random.shuffle(subs)                    # fairness: no subscriber is systematically first in the queue
+    random.shuffle(subs)
     shared = {k: v for k, v in payload.items() if not (isinstance(k, str) and "passphrase" in k.lower())}
+    dispatched = 0
+    revoked = 0
     for sub in subs:
+        if not marketplace.subscription_allowed(webhook, sub):
+            revoked += 1
+            continue
         view = marketplace.subscription_view(webhook, sub, aid)
         with context.use_area(sub["area_id"]):
             state.log_signal(dict(shared), result="received", webhook=view.get("name", ""), webhook_id=str(view.get("id") or ""))
             _spawn(process_background(dict(shared), view, trusted=True, accepted_at=accepted_at))
-    if subs:
-        state.log_event("info", f"[{webhook.get('name', '?')}] forwarded to {len(subs)} subscriber(s)")
-    return len(subs)
+        dispatched += 1
+    if revoked:
+        state.log_event("warn", f"[{webhook.get('name', '?')}] skipped {revoked} marketplace subscription(s) no longer authorised")
+    if dispatched:
+        state.log_event("info", f"[{webhook.get('name', '?')}] forwarded to {dispatched} subscriber(s)")
+    return dispatched
 
 
 async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *, trusted: bool = False,
                              settings: dict[str, Any] | None = None, accepted_at: float | None = None) -> None:
-    """Run the pipeline for an already-accepted signal: log the outcome, alert on
-    failure, never raise (a background task must not die silently)."""
     name = webhook.get("name", "?")
     wid = str(webhook.get("id") or "")
-    started = accepted_at if accepted_at is not None else time.perf_counter()    # latency = acceptance → broker answer, queueing included
+    started = accepted_at if accepted_at is not None else time.perf_counter()
     ms = lambda: int((time.perf_counter() - started) * 1000)  # noqa: E731
     try:
         result = await process(payload, webhook, trusted=trusted, settings=settings)
@@ -253,7 +261,7 @@ async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *
         await _after_subscription_error(webhook, exc)
 
 
-_sub_errors: dict[tuple[int, int], int] = {}      # (area, subscription id) → consecutive errors
+_sub_errors: dict[tuple[int, int], int] = {}
 
 
 async def _after_subscription_error(webhook: dict[str, Any], exc: Exception) -> None:
@@ -261,7 +269,6 @@ async def _after_subscription_error(webhook: dict[str, Any], exc: Exception) -> 
 
 
 async def _after_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, result: dict[str, Any] | None) -> None:
-    """Bookkeeping must never turn an executed signal into a reported failure."""
     try:
         coro = _note_subscription_outcome(webhook, exc, result)
         if coro is not None:
@@ -271,18 +278,13 @@ async def _after_subscription_outcome(webhook: dict[str, Any], exc: Exception | 
 
 
 def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, result: dict[str, Any] | None = None) -> Any:
-    """Subscriber control "pause after N consecutive errors": count the streak
-    per subscription and switch the subscription off when it is reached. An
-    error is an exception, an ``error`` result, or an entry that reached no
-    account (every routed account failed). Skips do not count either way.
-    Returns a coroutine (the alert) when it paused, else None."""
     sub = webhook.get("subscription") if isinstance(webhook.get("subscription"), dict) else None
     if not sub or not sub.get("id"):
         return None
     limit = int((webhook.get("controls") or {}).get("pause_after_errors") or 0)
     key = (context.get_area(), int(sub["id"]))
     if not limit:
-        _sub_errors.pop(key, None)                    # control off: keep no streak at all
+        _sub_errors.pop(key, None)
         return None
     why = ""
     if exc is not None:
@@ -293,13 +295,13 @@ def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, r
         if result.get("status") == "error":
             why = str(result.get("reason") or result.get("detail") or "error")[:160]
         elif str(result.get("action") or "") in ("buy", "sell", "signal") and isinstance(result.get("accounts"), list) and not result["accounts"]:
-            why = "no account executed the entry"      # management actions report a count, never a list
+            why = "no account executed the entry"
     if not why:
         _sub_errors.pop(key, None)
         return None
     n = _sub_errors.get(key, 0) + 1
     _sub_errors[key] = n
-    if len(_sub_errors) > 5000:                       # bounded: an old streak is worth less than the memory
+    if len(_sub_errors) > 5000:
         _sub_errors.pop(next(iter(_sub_errors)))
     if n < limit:
         return None
@@ -317,17 +319,6 @@ async def process(
     payload: dict[str, Any], webhook: dict[str, Any] | None = None, *,
     simulate: bool = False, trusted: bool = False, settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate, authorise and execute a webhook payload. Returns a summary dict.
-
-    ``webhook`` is the routing config (name/strategy/accounts) resolved by the
-    caller from the URL token; required unless ``simulate`` is True, in which
-    case a synthetic bracket webhook + the in-memory sim account is used.
-
-    When ``simulate`` is True, orders are filled in memory (no Tradovate calls) and
-    the live-only guards (trading switch, passphrase) are skipped. ``trusted``
-    skips only the passphrase check — used for marketplace subscriptions, whose
-    signal was already authenticated by the publisher's webhook.
-    """
     s = settings if settings is not None else config.load_settings()
     active_map = _map_for(simulate)
 
@@ -337,8 +328,6 @@ async def process(
         webhook = _synthetic_bracket_webhook(s)
 
     if not simulate and not trusted:
-        # Defence in depth on top of the URL secret. The ingress (accept) already
-        # checked this before forwarding; direct callers land here.
         if not passphrase_ok(payload, s):
             raise SignalError("Invalid passphrase")
 
@@ -355,9 +344,7 @@ async def process(
         raise SignalError(f"Symbol '{tv_symbol}' not mapped / not in allowed list")
 
     if not simulate and not s.get("trading_enabled"):
-        state.log_event(
-            "warn", f"Trading disabled — signal '{action}' for {root} not executed"
-        )
+        state.log_event("warn", f"Trading disabled — signal '{action}' for {root} not executed")
         return {"status": "skipped", "reason": "trading_disabled", "action": action}
     if webhook.get("subscription"):
         from . import marketplace
@@ -377,10 +364,7 @@ async def process(
 
     executors = [_sim_for(context.get_area())] if simulate else _webhook_executors(webhook)
     if not executors:
-        state.log_event(
-            "warn", f"No enabled accounts on webhook '{webhook.get('name')}' — "
-            f"signal '{action}' ignored"
-        )
+        state.log_event("warn", f"No enabled accounts on webhook '{webhook.get('name')}' — signal '{action}' ignored")
         return {"status": "skipped", "reason": "no_enabled_accounts", "action": action}
 
     tag = "[SIM] " if simulate else ""
@@ -389,7 +373,6 @@ async def process(
     async def run() -> dict[str, Any]:
         if action in ("buy", "sell"):
             if not simulate and not config.setting("trading_enabled"):
-                # the switch may have been flipped while this signal waited for the trade lock
                 state.log_event("warn", f"Trading disabled — signal '{action}' for {root} not executed")
                 return {"status": "skipped", "reason": "trading_disabled", "action": action}
             if strategy == "simple":
@@ -401,10 +384,7 @@ async def process(
             return await manage.handle_set_sl_tp(payload, root, target, executors, active_map, tag, webhook, settings=s)
         if action == "move_sl":
             if strategy == "simple":
-                # A 'simple' webhook has no tracked bracket to move — skip cleanly
-                # (not an error) so a stop/target-move signal doesn't spam failures.
-                state.log_event("info", f"{tag}move_sl ignored for {root} — 'simple' "
-                                "strategy has no bracket to move")
+                state.log_event("info", f"{tag}move_sl ignored for {root} — 'simple' strategy has no bracket to move")
                 return {"status": "skipped", "reason": "move_sl_unsupported_simple", "action": action}
             return await bracket.handle_move_sl(payload, root, executors, active_map, tag, webhook, settings=s)
         if action == "trail_active":
@@ -414,13 +394,11 @@ async def process(
             return await bracket.handle_trail_active(payload, root, executors, active_map, tag, webhook)
         raise SignalError(f"Unknown action '{action}'")
 
-    # Serialise all signals for this webhook+symbol so concurrent events (e.g. two
-    # TP moves arriving together) don't race on the shared active-trade state.
     lock_key = f"{context.get_area()}:{'sim' if simulate else 'live'}:{webhook['id']}:{root}"
     async with _trade_lock(lock_key):
         result = await run()
     if action == "close_all" or _trade_key(webhook["id"], root) not in active_map:
-        _release_trade_lock(lock_key)                # nothing tracked: the lock must not outlive the trade
+        _release_trade_lock(lock_key)
     return result
 
 
@@ -445,9 +423,7 @@ async def _process_ts_hunter(payload, webhook, active_map, simulate, s):
         raise SignalError(f"Invalid/missing side '{side}'")
 
     if not simulate and not s.get("trading_enabled"):
-        state.log_event(
-            "warn", f"Trading disabled — TS-Hunter signal for {root} (trade {trade_id}) not executed"
-        )
+        state.log_event("warn", f"Trading disabled — TS-Hunter signal for {root} (trade {trade_id}) not executed")
         return {"status": "skipped", "reason": "trading_disabled"}
     if webhook.get("subscription"):
         from . import marketplace
@@ -467,10 +443,7 @@ async def _process_ts_hunter(payload, webhook, active_map, simulate, s):
 
     executors = [_sim_for(context.get_area())] if simulate else _webhook_executors(webhook)
     if not executors:
-        state.log_event(
-            "warn", f"No enabled accounts on webhook '{webhook.get('name')}' — "
-            f"TS-Hunter signal ignored"
-        )
+        state.log_event("warn", f"No enabled accounts on webhook '{webhook.get('name')}' — TS-Hunter signal ignored")
         return {"status": "skipped", "reason": "no_enabled_accounts"}
 
     mgmt_action = str(payload.get("action", "")).lower().strip() if event == "management" else ""
@@ -480,39 +453,30 @@ async def _process_ts_hunter(payload, webhook, active_map, simulate, s):
             if not simulate and not config.setting("trading_enabled"):
                 state.log_event("warn", f"Trading disabled — TS-Hunter signal for {root} (trade {trade_id}) not executed")
                 return {"status": "skipped", "reason": "trading_disabled"}
-            return await ts_hunter.handle_entry(
-                payload, side, root, target, trade_id, executors, active_map, tag, webhook, settings=s
-            )
+            return await ts_hunter.handle_entry(payload, side, root, target, trade_id, executors, active_map, tag, webhook, settings=s)
         if event == "management":
             if mgmt_action == "partial_close_percent":
-                return await ts_hunter.handle_partial_close(
-                    payload, trade_id, executors, active_map, tag
-                )
+                return await ts_hunter.handle_partial_close(payload, trade_id, executors, active_map, tag)
             if mgmt_action == "full_close":
-                return await ts_hunter.handle_full_close(
-                    payload, trade_id, target, executors, active_map, tag
-                )
+                return await ts_hunter.handle_full_close(payload, trade_id, target, executors, active_map, tag)
             raise SignalError(f"Unknown TS-Hunter management action '{mgmt_action}'")
         raise SignalError(f"Unknown TS-Hunter event '{event}'")
 
-    # Serialise all events for this trade_id so two TP/management signals arriving
-    # together can't race on the trade's shared remaining-qty state.
     lock_key = f"{context.get_area()}:{'sim' if simulate else 'live'}:ts:{trade_id}"
     async with _trade_lock(lock_key):
         result = await run()
     if mgmt_action == "full_close" or trade_id not in active_map:
-        _release_trade_lock(lock_key)  # the trade is over (or was never tracked): its id must not keep a lock
+        _release_trade_lock(lock_key)
     return result
 
 
 # --------------------------------------------------------------- flatten
 async def flatten_all() -> dict[str, Any]:
-    """EMERGENCY kill-switch: cancel every working order and flatten every open
-    position on **all** trade accounts under **all** enabled logins in the current
-    area — regardless of per-account execution toggles or webhook routing.
+    """Emergency kill-switch reconciled against broker truth.
 
-    Independent of the Trading switch: an emergency flatten must work even when
-    trading is paused. Never raises; returns a summary of what it did.
+    Every observed position is submitted for liquidation at most once. A lost
+    broker answer is never blindly replayed; a position counts as flattened only
+    after a broker position read confirms it is flat.
     """
     mgr = manager()
     mgr.reload()
@@ -527,51 +491,28 @@ async def flatten_all() -> dict[str, Any]:
         state.log_event("warn", "🆘 SOS flatten-all: no trade accounts found")
         return {"status": "ok", "accounts": 0, "cancelled": 0, "flattened": 0, "errors": []}
 
-    async def flatten(ex: AccountExecutor) -> tuple[int, int, list[str]]:
-        errors: list[str] = []
-        # 1) Cancel every working order first (so stops/targets don't re-fill).
-        cancelled = await _cancel_working(ex, "", errors)
-        # 2) Flatten every open position (any symbol) on this account — all at once.
-        flattened = 0
-        try:
-            positions = await ex.positions()
-        except TradovateError as exc:
-            errors.append(f"list positions: {exc}")
-            positions = []
-        symbols = [p.get("symbol") for p in positions if p.get("symbol")]
-        results = await asyncio.gather(*(ex.liquidate_position(s) for s in symbols),
-                                       return_exceptions=True)
-        for sym, r in zip(symbols, results):
-            if isinstance(r, TradovateError):
-                errors.append(f"flatten {sym}: {r}")
-            elif isinstance(r, BaseException):
-                raise r
-            else:
-                flattened += 1
-        return cancelled, flattened, errors
-
-    results = await asyncio.gather(*(flatten(ex) for ex in executors), return_exceptions=True)
+    results = await asyncio.gather(*(_flatten_account(ex, "") for ex in executors), return_exceptions=True)
 
     cancelled = flattened = 0
     all_errors: list[str] = []
-    for ex, r in zip(executors, results):
-        if isinstance(r, Exception):
-            all_errors.append(f"{ex.name}: {r}")
-            state.log_event("error", f"🆘 SOS flatten failed for {ex.name}: {r}")
+    for ex, result in zip(executors, results):
+        if isinstance(result, Exception):
+            all_errors.append(f"{ex.name}: {result}")
+            state.log_event("error", f"🆘 SOS flatten failed for {ex.name}: {result}")
             continue
-        c, f, errs = r
+        c, f, errs = result
         cancelled += c
         flattened += f
         all_errors += [f"{ex.name}: {e}" for e in errs]
 
     state.log_event(
-        "warn",
-        f"🆘 SOS flatten-all: {flattened} position(s) flattened, {cancelled} order(s) "
+        "error" if all_errors else "warn",
+        f"🆘 SOS flatten-all: {flattened} broker-confirmed-flat position(s), {cancelled} order(s) "
         f"cancelled across {len(executors)} account(s)"
-        + (f"; {len(all_errors)} error(s)" if all_errors else ""),
+        + (f"; {len(all_errors)} unresolved/error(s)" if all_errors else ""),
     )
-    return {"status": "ok", "accounts": len(executors), "cancelled": cancelled,
-            "flattened": flattened, "errors": all_errors}
+    return {"status": "error" if all_errors else "ok", "accounts": len(executors),
+            "cancelled": cancelled, "flattened": flattened, "errors": all_errors}
 
 
 # ------------------------------------------------------------- inspection
@@ -588,6 +529,5 @@ def active_trades_for(area_id: int) -> dict[str, Any]:
 
 
 def reset_simulation() -> None:
-    """Clear simulated positions, working orders and tracked trades (this area)."""
     _sim_for(context.get_area()).reset()
     _map_for(True).clear()

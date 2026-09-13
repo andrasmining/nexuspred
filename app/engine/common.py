@@ -8,7 +8,7 @@ import threading
 from typing import Any
 
 from .. import events, state
-from ..tradovate import TradovateError
+from ..tradovate import OrderOutcomeUnknown, TradovateError
 
 
 class SignalError(Exception):
@@ -68,7 +68,8 @@ async def _orders_for_contract(ex: Any, orders: list[dict[str, Any]], contract: 
     positions in other symbols on the same account. Tradovate orders carry a
     numeric ``contractId``; the simulator's carry the contract ``symbol``. When
     neither can be matched the order is left alone (and reported), because
-    cancelling it could unprotect an unrelated position."""
+    cancelling it could unprotect an unrelated position.
+    """
     try:
         cid = int(await ex.contract_id(contract))
     except (TradovateError, AttributeError, TypeError, ValueError):
@@ -84,9 +85,6 @@ async def _orders_for_contract(ex: Any, orders: list[dict[str, Any]], contract: 
         if (name and name == contract) or (cid and has_id and oid == cid):
             mine.append(o)
     if orders and not identifiable:
-        # Nothing about these orders says which contract they belong to (no
-        # contractId, no symbol). Cancelling them all could strip the stops of
-        # unrelated positions, so they are left alone and reported loudly.
         state.log_event("error", f"{tag}Working orders on {ex.name} carry no contract — none cancelled; "
                                  f"check the account for stops / targets left on {contract}")
         return []
@@ -176,6 +174,8 @@ def _collect_entries(executors: list[Any], results: list[Any], *, tag: str, labe
 
 
 STOP_PENALTY_WAIT_S = 30.0        # the longest a protective stop waits for a 429 penalty before its retry
+FLATTEN_VERIFY_DELAY_S = 0.25     # short broker-settlement wait; mutations are never replayed
+FLATTEN_VERIFY_READS = 3
 
 
 class StopFailed(TradovateError):
@@ -188,51 +188,45 @@ async def _place_stop_with_retry(ex: Any, *, symbol: str, action: str, qty: int,
                                  stop_price: float, tag: str, what: str = "stop",
                                  cancel_ids: list[int] | None = None,
                                  resting_entry_id: int | None = None) -> dict[str, Any] | None:
-    """Place a protective stop; one retry on failure. When it still fails the
-    entry is **closed again**: the trade's own orders (``cancel_ids``, the
-    bracket's targets) are cancelled — every working order of the contract when
-    the stop's outcome is unknown, since a stop that did reach the broker would
-    open a reverse trade on a flat account — then ``qty`` is flattened at
-    market, the operator is alerted and ``StopFailed`` is raised so the caller
-    drops the account from the trade. Only when that close fails too does the
-    position stay live: reported at error level and on every alert channel.
-    ``resting_entry_id`` names a limit entry that may not have filled: it is
-    cancelled and only what the broker shows as filled is closed (a blind market
-    order on an unfilled limit would open the opposite position).
-    Returns the stop order."""
-    from ..tradovate import OrderOutcomeUnknown, RateLimited
+    """Place a protective stop; retry only a confirmed failure once.
+
+    ``OrderOutcomeUnknown`` is not a rejection: the first stop may already be
+    working. It is propagated immediately so callers can keep the confirmed
+    entry tracked and reconcile deliberately instead of placing a duplicate.
+
+    A known failure is retried once. If it fails again the trade's known orders
+    are cancelled and the confirmed/filled entry is closed again at market.
+    """
+    from ..tradovate import RateLimited
     last: Exception | None = None
     for attempt in (1, 2):
         try:
             return await ex.place_order(symbol=symbol, action=action, qty=qty, order_type=order_type, stop_price=stop_price)
         except asyncio.CancelledError:
             raise
+        except OrderOutcomeUnknown:
+            raise
         except Exception as exc:  # noqa: BLE001
             last = exc
             if attempt == 1:
-                # a 429 penalty set by some poll must not leave the entry naked: the
-                # stop is protective, not latency-critical, so it waits the penalty out
                 wait = min(float(getattr(exc, "retry_after", 0) or 0) + 0.2, STOP_PENALTY_WAIT_S) if isinstance(exc, RateLimited) else 0.5
                 await asyncio.sleep(wait)
+
     state.log_event("error", f"{tag}{what} for {ex.name} on {symbol} FAILED twice ({last}) — closing the entry again")
     errors: list[str] = []
-    if isinstance(last, OrderOutcomeUnknown):
-        # the stop may be working after all: it must not survive on a flat account
-        await _cancel_working(ex, tag, errors, contract=symbol)
-    else:
-        ids = [o for o in [*(cancel_ids or []), resting_entry_id] if o]
-        results = await asyncio.gather(*(ex.cancel_order(oid) for oid in ids), return_exceptions=True)
-        errors += [f"cancel {oid}: {r}" for oid, r in zip(ids, results) if isinstance(r, Exception)]
+    ids = [o for o in [*(cancel_ids or []), resting_entry_id] if o]
+    results = await asyncio.gather(*(ex.cancel_order(oid) for oid in ids), return_exceptions=True)
+    errors += [f"cancel {oid}: {r}" for oid, r in zip(ids, results) if isinstance(r, Exception)]
+
     close_qty = qty
     if resting_entry_id:
-        # a limit entry: close only the part that filled (sign must be the entry's)
         try:
             rows = await ex.positions()
             net = sum(int(p.get("netPos") or 0) for p in rows or [] if str(p.get("symbol") or "") == symbol)
-        except Exception as exc:  # noqa: BLE001 - unknown fill state → treat as filled (the safer error)
+        except Exception as exc:  # noqa: BLE001 - unknown fill state -> close the full confirmed risk amount
             state.log_event("warn", f"{tag}{ex.name}: position on {symbol} could not be read after the failed {what} ({exc}) — closing the full entry")
             net = qty if action == "Sell" else -qty
-        filled = net if action == "Sell" else -net                 # exit Sell means the entry went long
+        filled = net if action == "Sell" else -net
         close_qty = max(0, min(qty, filled))
     if close_qty <= 0:
         state.log_event("error", f"{tag}{ex.name}: entry on {symbol} cancelled — the {what} could not be placed and nothing had filled")
@@ -307,6 +301,117 @@ async def _close_untracked(executors: list[Any], tracked_names: set[str], tag: s
         elif r:
             closed.append(ex.name)
     return closed, failed
+
+
+async def _flatten_account(ex: Any, tag: str = "") -> tuple[int, int, list[str]]:
+    """Emergency flatten reconciled against broker truth.
+
+    Each observed symbol is liquidated at most once. Lost liquidation answers
+    are never replayed: subsequent calls are reads only. A position counts as
+    flattened only when the broker later reports it flat. Working orders are
+    re-read after liquidation, and only orders still reported working are
+    cancelled again. Returns ``(cancelled, confirmed_flattened, errors)``.
+    """
+    pre_errors: list[str] = []
+    try:
+        cancelled = await _cancel_working(ex, tag, pre_errors)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - emergency path still attempts the positions
+        cancelled = 0
+        pre_errors.append(f"working-order cleanup: {type(exc).__name__}: {exc}")
+
+    try:
+        positions = await ex.positions()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        positions = []
+        position_read_error = f"list positions: {exc}"
+    else:
+        position_read_error = ""
+
+    symbols = list(dict.fromkeys(
+        str(p.get("symbol")) for p in positions or [] if p.get("symbol") and p.get("netPos")
+    ))
+    attempts: dict[str, BaseException | None] = {}
+    if symbols:
+        results = await asyncio.gather(*(ex.liquidate_position(symbol) for symbol in symbols), return_exceptions=True)
+        for symbol, result in zip(symbols, results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            attempts[symbol] = result if isinstance(result, BaseException) else None
+
+    errors: list[str] = list(pre_errors)
+    if position_read_error:
+        errors.append(position_read_error)
+
+    flattened = 0
+    after: list[dict[str, Any]] | None = None
+    if symbols:
+        for read_no in range(FLATTEN_VERIFY_READS):
+            try:
+                after = await ex.positions()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"post-close list positions: {exc}")
+                after = None
+                break
+            residual_now = {
+                str(p.get("symbol"))
+                for p in after or []
+                if p.get("symbol") and int(p.get("netPos") or 0)
+            }
+            if not any(symbol in residual_now for symbol in symbols):
+                break
+            if read_no + 1 < FLATTEN_VERIFY_READS:
+                await asyncio.sleep(FLATTEN_VERIFY_DELAY_S)
+
+    if after is not None:
+        residual: dict[str, int] = {}
+        for p in after or []:
+            symbol = str(p.get("symbol") or "")
+            net = int(p.get("netPos") or 0)
+            if symbol and net:
+                residual[symbol] = residual.get(symbol, 0) + net
+        for symbol in symbols:
+            result = attempts.get(symbol)
+            net = residual.get(symbol, 0)
+            if net == 0:
+                flattened += 1
+                if isinstance(result, BaseException):
+                    state.log_event("warn", f"{tag}{ex.name}: liquidation of {symbol} returned {type(result).__name__}, but broker reconciliation confirms the position is flat")
+                continue
+            if isinstance(result, OrderOutcomeUnknown):
+                errors.append(f"flatten {symbol}: outcome unknown; broker still reports position {net:+d}")
+            elif isinstance(result, TradovateError):
+                errors.append(f"flatten {symbol}: {result}")
+            elif isinstance(result, BaseException):
+                errors.append(f"flatten {symbol}: {type(result).__name__}: {result}")
+            else:
+                errors.append(f"flatten {symbol}: broker still reports position {net:+d} after submitted liquidation")
+    elif symbols:
+        for symbol in symbols:
+            result = attempts.get(symbol)
+            if isinstance(result, OrderOutcomeUnknown):
+                errors.append(f"flatten {symbol}: outcome unknown and broker position could not be reconciled")
+            elif isinstance(result, TradovateError):
+                errors.append(f"flatten {symbol}: {result}")
+            elif isinstance(result, BaseException):
+                errors.append(f"flatten {symbol}: {type(result).__name__}: {result}")
+            else:
+                errors.append(f"flatten {symbol}: liquidation submitted but broker-flat state could not be confirmed")
+
+    post_errors: list[str] = []
+    try:
+        cancelled += await _cancel_working(ex, tag, post_errors)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        post_errors.append(f"working-order reconciliation: {type(exc).__name__}: {exc}")
+    errors.extend(f"post-close {err}" for err in post_errors)
+    return cancelled, flattened, errors
 
 
 async def _cancel_working(ex: Any, tag: str, errors: list[str] | None = None,

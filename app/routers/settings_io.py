@@ -5,7 +5,12 @@ Discord user token, the webhook passphrase, the heartbeat ping URL). The webhook
 tokens *do* travel (they are the URLs TradingView already points at) — the file
 is a capability to fire signals and must be stored like one. Meant for
 backups of the configuration and for moving a workspace to another bridge; the
-database backup (Settings → Updates) is the full copy including secrets."""
+database backup (Settings → Updates) is the full copy including secrets.
+
+Marketplace publication/ACL state is installation-local: portable exports keep
+listing metadata as a disabled draft but never carry live publication or numeric
+user authorization ids into another Fluxbridge database.
+"""
 from __future__ import annotations
 
 import secrets
@@ -22,17 +27,35 @@ router = APIRouter(prefix="/api/settings", tags=["settings-io"])
 
 FORMAT = 1
 MAX_WEBHOOKS = 200
-# keys that travel; everything else (token_accounts, secrets, runtime state,
-# copy groups bound to this bridge's login ids) stays behind
-# what travels: every key the schema marks portable and not secret (see app/settings_schema.py)
 EXPORT_KEYS = settings_schema.PORTABLE_KEYS
 SECRET_KEYS = set(config.SECRET_FIELDS) | {"webhook_secret", "discord_user_token", "heartbeat_url"}
 _PORTABLE_KEYS = tuple(k for k in EXPORT_KEYS if k in config.DEFAULT_SETTINGS and k not in SECRET_KEYS)
 
 
+def _portable_sharing(raw: Any) -> dict[str, Any]:
+    """A listing draft that cannot authorize/execute on another installation."""
+    sh = dict(raw) if isinstance(raw, dict) else {}
+    sh["enabled"] = False
+    sh["allowed_user_ids"] = []
+    sh["published_at"] = ""
+    sh["paused"] = False
+    return sh
+
+
+def _portable_webhook(raw: Any) -> dict[str, Any]:
+    wh = dict(raw) if isinstance(raw, dict) else {}
+    if isinstance(wh.get("accounts"), list):
+        wh["accounts"] = [dict(a) for a in wh["accounts"] if isinstance(a, dict)]
+    if isinstance(wh.get("sharing"), dict):
+        wh["sharing"] = _portable_sharing(wh["sharing"])
+    return wh
+
+
 def export_settings(area_id: int) -> dict[str, Any]:
     s = config.load_settings(area_id=area_id)
     out = {k: s[k] for k in _PORTABLE_KEYS if k in s}
+    if isinstance(out.get("webhooks"), list):
+        out["webhooks"] = [_portable_webhook(w) for w in out["webhooks"] if isinstance(w, dict)]
     return {"fluxbridge_settings": FORMAT, "exported_at": datetime.now(timezone.utc).isoformat(),
             "version": config.get_version(), "settings": out}
 
@@ -40,7 +63,9 @@ def export_settings(area_id: int) -> dict[str, Any]:
 def _import_webhook(w: dict[str, Any], current: dict[str, Any], area_id: int) -> dict[str, Any]:
     """A webhook from the file, normalised like the create/edit endpoints do.
     Routing survives only for logins that exist here (matched by login id);
-    a token already used by another workspace is replaced."""
+    a token already used by another workspace is replaced. Marketplace state is
+    always imported disabled with its installation-local user ACL cleared.
+    """
     try:
         wh = config.new_webhook(name=str(w.get("name") or "Imported webhook")[:80],
                                 strategy=str(w.get("strategy") or "simple"),
@@ -59,14 +84,14 @@ def _import_webhook(w: dict[str, Any], current: dict[str, Any], area_id: int) ->
                 continue
             idx = config.login_index(current, str(a.get("lid") or ""))
             if idx is None:
-                continue                                  # that login is not on this bridge
+                continue
             sz = sizing.normalize(a)
             accounts.append({"token_idx": idx, "lid": str(a["lid"]), "spec": str(a["spec"])[:64],
                              "enabled": bool(a.get("enabled")), "qty_multiplier": sizing.effective_multiplier(sz),
                              "sizing": sz})
         wh["accounts"] = accounts
         if isinstance(w.get("sharing"), dict):
-            wh["sharing"] = marketplace.normalize_sharing(w["sharing"])
+            wh["sharing"] = marketplace.normalize_sharing(_portable_sharing(w["sharing"]))
         if w.get("trade_window"):
             wh["trade_window"] = trade_window.normalize(w["trade_window"])
     except (TypeError, ValueError, AttributeError) as exc:
@@ -109,11 +134,11 @@ async def _validate(doc: Any, area_id: int) -> dict[str, Any]:
         sm = incoming["symbol_map"]
         if not isinstance(sm, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in sm.items()):
             raise HTTPException(status_code=400, detail="symbol_map must map symbol names to contracts")
-    try:                                                  # the schema types and bounds every key (webhooks / news_lock were normalised above)
+    try:
         incoming.update(settings_schema.coerce({k: v for k, v in incoming.items() if k not in ("webhooks", "news_lock", "automations")}, allow_protected=True))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    await validate_settings(incoming)                     # the same checks the settings form runs
+    await validate_settings(incoming)
     return incoming
 
 
@@ -128,10 +153,6 @@ async def api_export(request: Request) -> JSONResponse:
 
 @router.post("/import")
 async def api_import(request: Request) -> dict[str, Any]:
-    """Replace the exported keys with the file's values (keys absent from the
-    file stay as they are). Webhook tokens travel with the file so TradingView
-    alerts pointing at the old bridge keep working on the new one; routing is
-    kept only for logins present here."""
     user = request.state.user
     area = context.get_area()
     incoming = await _validate(await request.json(), area)

@@ -5,7 +5,8 @@
 
 Per workspace: ``heartbeat_url`` (empty = off) pinged every
 ``heartbeat_interval`` seconds with a GET; the last outcome is shown under
-Settings → Alerts."""
+Settings → Alerts.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -14,14 +15,14 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from . import config, db, http
+from . import config, db, http, security
 
 log = logging.getLogger("nexuspred.watchdog")
 
 LOOP_TICK_S = 15.0
 MIN_INTERVAL_S = 30
 MAX_INTERVAL_S = 3600
-_last: dict[int, dict[str, Any]] = {}       # area → {"at", "ok", "error", "url"}
+_last: dict[int, dict[str, Any]] = {}
 _next_due: dict[int, float] = {}
 
 
@@ -43,10 +44,24 @@ def normalize_interval(v: Any) -> int:
 
 
 async def ping(area_id: int, url: str) -> bool:
-    """One heartbeat; records the outcome. Never raises."""
+    """One heartbeat; records the outcome and never raises.
+
+    The destination is resolved and validated immediately before the network
+    request. This closes the gap between save-time validation and use-time DNS
+    state; redirects are disabled so a public URL cannot bounce the request to
+    a private/link-local target.
+    """
     ok, error = False, ""
     try:
-        r = await http.client("outbound").get(url, headers={"User-Agent": "Fluxbridge/heartbeat"}, timeout=10.0)
+        blocked = await asyncio.to_thread(security.check_outbound_url, url)
+        if blocked:
+            raise ValueError(blocked)
+        r = await http.client("outbound").get(
+            url,
+            headers={"User-Agent": "Fluxbridge/heartbeat"},
+            timeout=10.0,
+            follow_redirects=False,
+        )
         ok = r.status_code < 400
         if not ok:
             error = f"HTTP {r.status_code}"
@@ -79,7 +94,7 @@ async def heartbeat_loop() -> None:
     while True:
         try:
             ids = db.all_area_ids()
-            results = await asyncio.gather(*(tick_area(aid) for aid in ids), return_exceptions=True)   # one slow target never delays the others
+            results = await asyncio.gather(*(tick_area(aid) for aid in ids), return_exceptions=True)
             for aid, r in zip(ids, results):
                 if isinstance(r, asyncio.CancelledError):
                     raise r

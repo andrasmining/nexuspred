@@ -28,7 +28,6 @@ MAX_MAX_SUBSCRIBERS = 10_000
 
 
 def sharing_of(webhook: dict[str, Any]) -> dict[str, Any]:
-    """The normalised sharing config of a webhook (defaults: not shared)."""
     s = webhook.get("sharing") or {}
     allowed: list[int] = []
     for x in s.get("allowed_user_ids") or []:
@@ -56,19 +55,17 @@ def sharing_of(webhook: dict[str, Any]) -> dict[str, Any]:
         "description": str(s.get("description") or "").strip(),
         "visibility": s.get("visibility") if s.get("visibility") in VISIBILITIES else "all",
         "allowed_user_ids": sorted(set(allowed)),
-        # publisher controls (alpha.78)
-        "max_subscribers": max_subs,                    # 0 = unlimited
-        "approval": bool(s.get("approval")),            # new subscriptions wait for the publisher's OK
-        "paused": bool(s.get("paused")),                # forwarding stopped for everyone, listing stays
+        "max_subscribers": max_subs,
+        "approval": bool(s.get("approval")),
+        "paused": bool(s.get("paused")),
         "tags": tags[:MAX_TAGS],
         "published_at": str(s.get("published_at") or ""),
-        "price_cents": price,                           # monthly, 0 = free (alpha.79)
+        "price_cents": price,
         "trial_days": trial,
     }
 
 
 def normalize_sharing(body: dict[str, Any], current: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Merge a sharing update (from the API) over the current config, coercing types."""
     merged = dict(current or {})
     for key in ("enabled", "title", "description", "visibility", "allowed_user_ids", "max_subscribers", "approval", "paused", "tags"):
         if key in body:
@@ -89,7 +86,6 @@ def normalize_sharing(body: dict[str, Any], current: Optional[dict[str, Any]] = 
     return out
 
 
-# ------------------------------------------------------- subscriber controls
 DEFAULT_CONTROLS: dict[str, Any] = {"symbols": [], "trade_window": None, "max_qty": 0, "max_signals_per_day": 0, "pause_after_errors": 0}
 
 
@@ -99,7 +95,6 @@ def _root(symbol: str) -> str:
 
 
 def normalize_controls(raw: Any) -> dict[str, Any]:
-    """A subscriber's controls typed and bounded (ValueError on bad input)."""
     if raw in (None, ""):
         return dict(DEFAULT_CONTROLS)
     if not isinstance(raw, dict):
@@ -144,8 +139,6 @@ def controls_of(sub: dict[str, Any]) -> dict[str, Any]:
 
 
 def subscription_gate(view: dict[str, Any], root: str, action: str, *, area_id: int) -> tuple[bool, str, str]:
-    """Whether a subscription may run this signal: ``(ok, reason, detail)``.
-    Symbols apply to every action; the daily cap to entries only."""
     c = view.get("controls") or {}
     if c.get("symbols") and root.upper() not in c["symbols"]:
         return False, "subscription_symbols", f"{root} is not in the subscription's symbols ({', '.join(c['symbols'])})"
@@ -171,9 +164,22 @@ def visible_to(sharing: dict[str, Any], user_id: int) -> bool:
     return True
 
 
+def subscription_allowed(webhook: dict[str, Any], sub: dict[str, Any]) -> bool:
+    """Re-check a persisted subscription against the publisher's current ACL.
+
+    Creation-time authorization is not a lease. Removing a user from a selected
+    listing must stop future financial fan-out immediately even while the
+    subscription row remains enabled/paid.
+    """
+    try:
+        owner = db.area_owner(int(sub.get("area_id") or 0))
+    except (TypeError, ValueError):
+        owner = None
+    return bool(owner and visible_to(sharing_of(webhook), int(owner)))
+
+
 def public_view(webhook: dict[str, Any], publisher_area_id: int,
                 publisher_email: Optional[str] = None) -> dict[str, Any]:
-    """What a subscriber may see of a published webhook (no token, no accounts)."""
     sh = sharing_of(webhook)
     return {
         "publisher_area_id": publisher_area_id,
@@ -201,8 +207,6 @@ def _price_view(sh: dict[str, Any]) -> dict[str, Any]:
 
 def published_webhooks(*, user_id: Optional[int] = None,
                        exclude_area: Optional[int] = None) -> list[dict[str, Any]]:
-    """Every published webhook (optionally only those visible to ``user_id``),
-    across all areas except ``exclude_area`` (a user can't subscribe to their own)."""
     out: list[dict[str, Any]] = []
     for aid in db.all_area_ids():
         if exclude_area is not None and aid == exclude_area:
@@ -221,7 +225,6 @@ def published_webhooks(*, user_id: Optional[int] = None,
 
 
 def find_published(publisher_area_id: int, webhook_id: str) -> tuple[Optional[dict[str, Any]], dict[str, Any]]:
-    """(webhook, sharing) for a published webhook, or (None, {}) if it isn't published."""
     for wh in config.load_settings(area_id=publisher_area_id).get("webhooks") or []:
         if wh.get("id") == webhook_id:
             sh = sharing_of(wh)
@@ -230,8 +233,6 @@ def find_published(publisher_area_id: int, webhook_id: str) -> tuple[Optional[di
 
 
 def clean_accounts(raw: Any) -> list[dict[str, Any]]:
-    """Coerce a subscriber's routed-accounts list (same shape as a webhook's):
-    known accounts only, one entry per account, at most MAX_ROUTED."""
     out: list[dict[str, Any]] = []
     s0 = config.load_settings()
     known = {str(acc.get("spec") or "") for t in (s0.get("token_accounts") or []) for acc in (t.get("accounts") or [])}
@@ -268,10 +269,6 @@ def clean_accounts(raw: Any) -> list[dict[str, Any]]:
 
 
 def subscription_view(webhook: dict[str, Any], sub: dict[str, Any], publisher_area_id: int) -> dict[str, Any]:
-    """The webhook as seen by the signal engine when executing a subscription:
-    the publisher's strategy/qty settings with the subscriber's accounts. Its id
-    is unique per publisher webhook so tracked trades never collide with the
-    subscriber's own webhooks."""
     sh = sharing_of(webhook)
     c = controls_of(sub)
     accounts = []
@@ -279,7 +276,7 @@ def subscription_view(webhook: dict[str, Any], sub: dict[str, Any], publisher_ar
         if not isinstance(a, dict):
             continue
         a = dict(a)
-        if c["max_qty"]:                                  # the subscriber's cap over their per-account sizing
+        if c["max_qty"]:
             try:
                 sz = dict(a.get("sizing") or sizing.normalize(a))
             except (TypeError, ValueError):
