@@ -178,8 +178,11 @@ async def handle_move_sl(payload, root, executors, active_map, tag, webhook, *, 
             return None
         qty = _remaining_qty(info, tp_index)
         if qty <= 0:
-            # A zero-quantity stop is not a safe substitute for retiring it.
-            await ex.cancel_order(info["sl_order_id"])
+            try:
+                await ex.cancel_order(info["sl_order_id"])
+            except TradovateError as exc:
+                state.log_event("error", f"{tag}{ex.name}: stop {info['sl_order_id']} could not be retired after the last target: {exc}")
+                raise
             info["sl_order_id"] = None
             info["qty"] = 0
             return None
@@ -226,7 +229,11 @@ async def handle_trail_active(payload, root, executors, active_map, tag, webhook
             return False
         qty = _remaining_qty(info, tp_index)
         if qty <= 0:
-            await ex.cancel_order(info["sl_order_id"])
+            try:
+                await ex.cancel_order(info["sl_order_id"])
+            except TradovateError as exc:
+                state.log_event("error", f"{tag}{ex.name}: stop {info['sl_order_id']} could not be retired after the last target: {exc}")
+                raise
             info["sl_order_id"] = None
             info["qty"] = 0
             return True
