@@ -4,12 +4,12 @@ from __future__ import annotations
 from . import accounts, agent, auth, copy, core, extension, journal, marketplace, mfa, news, payments, push, settings_io, simulator, trading, updater, users, webhooks
 
 ROUTERS = [
+    webhooks.router,      # first: the ingress is the hot path, and routing tries the routers in order
     auth.router,
     users.router,
     mfa.router,
     core.router,
     accounts.router,
-    webhooks.router,
     marketplace.router,
     copy.router,
     journal.router,

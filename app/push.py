@@ -152,6 +152,17 @@ def _no_redirect_session():
     return _http_session
 
 
+def warm() -> None:
+    """Import the push stack and build its HTTP session now (a thread at
+    startup) instead of on the loop at the first alert (≈200 ms of imports and
+    an SSL context)."""
+    try:
+        import pywebpush  # noqa: F401
+        _no_redirect_session()
+    except Exception:  # noqa: BLE001 - optional dependency
+        pass
+
+
 def _send_one(sub: dict[str, Any], payload: dict[str, Any]) -> tuple[bool, int, str]:
     """Deliver one push (blocking). Returns (ok, status, error)."""
     endpoint = str(sub["endpoint"])

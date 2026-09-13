@@ -7,9 +7,6 @@
    browser, "de" / "en" force one. The resolved choice is cached in localStorage
    (no flash of English before the settings arrive) and mirrored in the fb_lang
    cookie so the server-rendered sign-in pages speak the same language. */
-import { DE } from "./locales/de.js";
-
-const DICTS = { de: DE };
 export const LANGUAGES = [["auto", "Browser default"], ["de", "Deutsch"], ["en", "English"]];
 const PREF_KEY = "fb_lang_pref";
 
@@ -27,6 +24,10 @@ let pref = "auto";
 try { pref = localStorage.getItem(PREF_KEY) || "auto"; } catch (e) { /* ignore */ }
 let current = resolve(pref);
 apply(current);
+// The German dictionary (≈120 KB) is fetched only when German is the language:
+// the module graph waits for it here, so t() is synchronous everywhere else.
+// A language change reloads the page (see adopt), which loads the other dictionary.
+const DICTS = { de: current === "de" ? (await import("./locales/de.js")).DE : null };
 
 function apply(l) {
   try { document.documentElement.lang = l; } catch (e) { /* ignore */ }

@@ -446,7 +446,7 @@ def save_settings(updates: dict[str, Any], area_id: int | None = None) -> dict[s
             if key in DEFAULT_SETTINGS:  # ignore unknown keys
                 current[key] = value
         _persist(aid, current)
-        return copy.deepcopy(current)
+        return _copy_of(aid)                         # the snapshot just persisted, copied in C
 
 
 def update(mutator: Callable[[dict[str, Any]], Any], area_id: int | None = None) -> dict[str, Any]:
@@ -459,7 +459,7 @@ def update(mutator: Callable[[dict[str, Any]], Any], area_id: int | None = None)
         mutator(current)
         current = {k: v for k, v in current.items() if k in DEFAULT_SETTINGS}
         _persist(aid, current)
-        return copy.deepcopy(current)
+        return _copy_of(aid)
 
 
 def invalidate(area_id: int | None = None) -> None:

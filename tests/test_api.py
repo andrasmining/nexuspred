@@ -341,8 +341,9 @@ async def test_streams_require_auth(admin):
         assert (await anon.get("/api/discord/stream")).status_code == 401
 
 
-async def test_event_stream_handshake(admin):
+async def test_event_stream_handshake(admin, monkeypatch):
     from app.routers import core as app_main
+    monkeypatch.setattr(app_main, "SSE_PING_S", 0.05)         # the disconnect probe runs on the idle tick
     with context.use_area(1):
         resp = await app_main.api_stream(_StreamRequest(polls=0))
     assert resp.media_type == "text/event-stream"
@@ -362,10 +363,11 @@ async def test_discord_stream_handshake(admin):
     assert hub._hub(1).subscribers == set()
 
 
-async def test_event_stream_delivers_events(admin):
+async def test_event_stream_delivers_events(admin, monkeypatch):
     from app.routers import core as app_main
+    monkeypatch.setattr(app_main, "SSE_PING_S", 0.05)
     with context.use_area(1):
-        resp = await app_main.api_stream(_StreamRequest(polls=1))   # both messages are queued before the first poll: one batched write
+        resp = await app_main.api_stream(_StreamRequest(polls=0))   # both messages are queued before the first idle tick: one batched write
         state.log_event("info", "hello-stream")   # queued before the generator polls
         state.log_signal({"action": "buy", "symbol": "MNQ"}, "ok")
     text = await _drain(resp)
@@ -429,4 +431,4 @@ async def test_extension_zip(client):
 
 async def test_dashboard_renders(client):
     r = await client.get("/")
-    assert r.status_code == 200 and "app.js?v=" in r.text and config.get_version() in r.text
+    assert r.status_code == 200 and f"/static/v/{config.get_version()}/js/app.js" in r.text     # versioned, immutable assets

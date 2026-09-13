@@ -43,6 +43,19 @@ def _write(kind: str, area_id: int, entry: dict[str, Any]) -> None:
         db.insert_order(area_id, entry)
 
 
+BATCH_MAX = 50
+
+
+def _run_one(item: Any) -> None:
+    try:
+        if item[0] == "call":
+            item[1](*item[2], **item[3])
+        else:
+            _write(*item)
+    except Exception as exc:  # noqa: BLE001 - history must never kill the writer
+        log.error("history write failed (%s row dropped): %s", item[0], exc)
+
+
 def _worker() -> None:
     while True:
         item = _q.get()
@@ -50,13 +63,24 @@ def _worker() -> None:
             _idle.set()
             return
         _idle.clear()
+        items = [item]
+        while len(items) < BATCH_MAX:                 # everything already queued lands in one transaction
+            try:
+                nxt = _q.get_nowait()
+            except queue.Empty:
+                break
+            if nxt is None:
+                _q.put(None)                          # the stop marker stays last
+                break
+            items.append(nxt)
         try:
-            if item[0] == "call":
-                item[1](*item[2], **item[3])
-            else:
-                _write(*item)
-        except Exception as exc:  # noqa: BLE001 - history must never kill the writer
-            log.error("history write failed (%s row dropped): %s", item[0], exc)
+            with db.core.batch():
+                for it in items:
+                    _run_one(it)
+        except Exception as exc:  # noqa: BLE001 - a broken batch is retried row by row, nothing is lost silently
+            log.error("history batch failed (%s rows): %s — retrying one by one", len(items), exc)
+            for it in items:
+                _run_one(it)
         finally:
             if _q.empty():
                 _idle.set()

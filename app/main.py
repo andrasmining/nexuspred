@@ -69,6 +69,7 @@ async def _startup() -> None:
     except Exception as exc:  # noqa: BLE001
         state.log_event("warn", f"history restore failed: {exc}")
     history.start()
+    asyncio.get_running_loop().run_in_executor(None, push.warm)       # first alert must not import aiohttp on the loop
     try:
         restored = signals.hydrate_active(db.all_area_ids())
         if restored:
@@ -138,23 +139,32 @@ async def _lifespan(_app: FastAPI):
 
 
 class _Static(StaticFiles):
-    """Static files whose scripts/styles always revalidate (ETag → 304), so a
-    deploy never leaves a browser with a stale ES module next to a fresh one."""
+    """Static files. The shell loads scripts and styles from the **versioned**
+    mount (``/static/v/<version>/…``): every release changes every URL — the
+    ES modules' relative sibling imports included — so those answers are
+    cached for a year and a deploy still never leaves a browser with a stale
+    module next to a fresh one. The plain mount (icons, manifest, the service
+    worker's assets, anything typed by hand) keeps revalidating."""
+
+    def __init__(self, *a: Any, immutable: bool = False, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.immutable = immutable
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         resp = await super().get_response(path, scope)
-        if path.endswith(".js"):
-            # ES modules import their siblings with plain relative paths (no
-            # version query), and a standalone iOS PWA will serve those from
-            # cache without revalidating even under no-cache — leaving a device
-            # on stale code after a deploy. no-store forces a fresh fetch.
+        if self.immutable:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path.endswith(".js"):
+            # a standalone iOS PWA serves a module from cache without revalidating
+            # even under no-cache: no-store forces a fresh fetch on this mount
             resp.headers["Cache-Control"] = "no-store"
         elif path.endswith(".css"):
-            resp.headers["Cache-Control"] = "no-cache"  # already ?v= busted
+            resp.headers["Cache-Control"] = "no-cache"
         return resp
 
 
 app = FastAPI(title="Fluxbridge", version=config.get_version(), lifespan=_lifespan)
+app.mount(f"/static/v/{config.get_version()}", _Static(directory=str(BASE_DIR / "static"), immutable=True), name="static-versioned")
 app.mount("/static", _Static(directory=str(BASE_DIR / "static")), name="static")
 for _router in ROUTERS:
     app.include_router(_router)

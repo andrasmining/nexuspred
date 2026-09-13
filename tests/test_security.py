@@ -284,6 +284,8 @@ async def test_js_is_never_cached_but_css_may_revalidate(anon_client, admin):
     js = await anon_client.get("/static/js/push.js")
     assert js.status_code == 200 and js.headers["cache-control"] == "no-store"
     css = await anon_client.get("/static/css/base.css")
+    ver = await anon_client.get(f"/static/v/{config.get_version()}/js/push.js")
+    assert ver.status_code == 200 and ver.headers["cache-control"] == "public, max-age=31536000, immutable"
     assert css.status_code == 200 and css.headers["cache-control"] == "no-cache"
     page = await anon_client.get("/login")
     assert 'rel="manifest"' in page.text and "apple-touch-icon" in page.text

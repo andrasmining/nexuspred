@@ -53,7 +53,7 @@ async def api_status() -> dict[str, Any]:
         "sessions": state.session_statuses(),
         "trade_accounts": trade_accounts_overview(),
         "active_trades": signals.active_trades(),
-        "trading_enabled": config.load_settings().get("trading_enabled", False),
+        "trading_enabled": bool(config.peek("trading_enabled")),
         "public_url": config.PUBLIC_URL,
         "rollover": state.rollover_warnings(),
         "pnl": state.pnl(),
@@ -319,6 +319,7 @@ async def api_history_stats(days: int = 7) -> dict[str, Any]:
 
 
 SSE_BATCH_MAX = 64          # frames per write on the live stream: a burst of orders is one send, not a wake per frame
+SSE_PING_S = 10.0           # idle tick: a named heartbeat keeps proxies open, and the disconnect probe runs here
 
 
 @router.get("/api/stream")
@@ -340,10 +341,8 @@ async def api_stream(request: Request) -> StreamingResponse:
             yield ": connected\n\n"  # prime so proxies flush headers
             yield "event: ping\ndata: {}\n\n"
             while True:
-                if await request.is_disconnected():
-                    break
                 try:
-                    frames = [await asyncio.wait_for(sub.queue.get(), timeout=10.0)]
+                    frames = [await asyncio.wait_for(sub.queue.get(), timeout=SSE_PING_S)]
                     while len(frames) < SSE_BATCH_MAX:      # everything already queued goes out in one write
                         try:
                             frames.append(sub.queue.get_nowait())
@@ -354,6 +353,11 @@ async def api_stream(request: Request) -> StreamingResponse:
                         frames.append("event: resync\ndata: {}\n\n")   # messages were lost on a full queue: re-pull
                     yield "".join(frames)             # pre-serialised by state._broadcast
                 except asyncio.TimeoutError:
+                    # the disconnect probe (a cancel scope per call) runs on the idle tick
+                    # only: a gone client fails its next write anyway, and the probe per
+                    # frame was a third of the stream's CPU with 50 dashboards open
+                    if await request.is_disconnected():
+                        break
                     yield "event: ping\ndata: {}\n\n"  # named heartbeat; keeps proxies open
         finally:
             state.unsubscribe(sub, area)

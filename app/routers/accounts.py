@@ -16,7 +16,7 @@ def trade_accounts_overview() -> list[dict[str, Any]]:
     """Flat list of every trade account across all logins, with execution toggle
     and live connection status — powers the Trade Accounts overview."""
     out: list[dict[str, Any]] = []
-    s = config.load_settings()
+    s = config.view()                                # read-only: /api/status asks every 15 s per dashboard
     for idx, t in enumerate(s.get("token_accounts") or []):
         tname = t.get("name") or f"account {idx + 1}"
         env = t.get("environment") or "demo"

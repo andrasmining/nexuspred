@@ -27,7 +27,7 @@ import os
 import tempfile
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -106,15 +106,54 @@ def _now() -> str:
 _local = threading.local()
 
 
+class _Batched:
+    """The thread's connection inside ``batch()``: ``with … as c`` no longer
+    commits per statement block — the batch commits once at its end."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def __enter__(self) -> "_Batched":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+@contextmanager
+def batch():
+    """Run several writes of this thread in one transaction (the history
+    writer drains its queue this way: one fsync-free commit per drain instead
+    of one per row, which is what stalled the loop's own settings writes
+    behind the busy handler)."""
+    conn = _connect()
+    if isinstance(conn, _Batched):                    # already inside a batch
+        yield
+        return
+    _local.batch = True
+    try:
+        yield
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        _local.batch = False
+
+
 def _connect() -> sqlite3.Connection:
     """This thread's connection, (re)opened when ``DB_FILE`` changes.
 
     Callers use it as ``with _connect() as c:`` — that commits / rolls back the
     statement block but never closes, so the connection (and its WAL/pragma
-    setup) is reused for the thread's lifetime."""
+    setup) is reused for the thread's lifetime. Inside ``batch()`` the block
+    joins the batch's transaction instead."""
     conn = getattr(_local, "conn", None)
     if conn is not None and getattr(_local, "path", None) == str(DB_FILE):
-        return conn
+        return _Batched(conn) if getattr(_local, "batch", False) else conn
     if conn is not None:
         try:
             conn.close()
