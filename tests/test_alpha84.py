@@ -387,3 +387,61 @@ async def test_projectx_positions_of_one_account_cost_one_request(admin, monkeyp
     monkeypatch.setattr(sess, "contract_info", lambda cid: asyncio.sleep(0, result={"name": "MNQZ5"}))
     rows = await sess.positions(account_id=2)
     assert posts == [("/api/Position/searchOpen", 2)] and rows[0]["netPos"] == 2 and rows[0]["symbol"] == "MNQZ5"
+
+
+# ================================================================ rithmic connect diagnostics (live report: TGI-BULENOX)
+class _Failing:
+    def __init__(self, exc):
+        self.exc = exc
+
+    async def connect(self, **kw):
+        raise self.exc
+
+    async def disconnect(self, *a, **k):
+        pass
+
+
+def _rsession(monkeypatch, made, exc, *, system="Bulenox", env="demo"):
+    entry = {"name": "TGI-BULENOX", "broker": "rithmic", "environment": env, "enabled": True, "rithmic_user": "u", "rithmic_password": "p",
+             "rithmic_system": system, "rithmic_gateway": "", "lid": "lg_b", "accounts": []}
+    with context.use_area(1):
+        config.save_settings({"token_accounts": [entry]})
+    s = rithmic.RithmicSession(0, entry, area_id=1)
+
+    def factory(self):
+        made.append(1); return _Failing(exc)
+    monkeypatch.setattr(rithmic.RithmicSession, "_make_client", factory)
+    monkeypatch.setattr(rithmic, "_disconnect_later", lambda c: None)
+    return s
+
+
+async def test_unanswered_login_is_explained_with_the_gateways_system_list(admin, monkeypatch):
+    made = []
+    s = _rsession(monkeypatch, made, AttributeError("'NoneType' object has no attribute 'heartbeat_interval'"))
+    rithmic._systems_cache.clear()
+    rithmic._systems_cache[s.gateway] = (1e18, ["Rithmic Paper Trading", "Rithmic Test"])   # what the paper gateway offers
+    with pytest.raises(TradovateError) as ei:
+        await s.connect()
+    msg = str(ei.value)
+    assert "login on system 'Bulenox' was not answered" in msg and "does not offer the system 'Bulenox'" in msg
+    assert "Rithmic Paper Trading, Rithmic Test" in msg and len(made) == 1
+    assert "not answered" in (rithmic.state.session_status("TGI-BULENOX") or {}).get("last_error", "")
+
+
+async def test_handshake_timeout_is_retried_once_and_the_gateway_probed(admin, monkeypatch):
+    made = []
+    s = _rsession(monkeypatch, made, TimeoutError("timed out during handshake"), system="Bulenox", env="live")
+    rithmic._systems_cache.clear()                                    # the probe hits the offline socket → "did not answer"
+    with pytest.raises(TradovateError) as ei:
+        await s.connect()
+    assert len(made) == 2 and "timed out twice" in str(ei.value) and "did not answer a system query" in str(ei.value)
+
+
+async def test_a_valid_system_points_at_credentials(admin, monkeypatch):
+    made = []
+    s = _rsession(monkeypatch, made, RuntimeError("login rejected"), system="Bulenox", env="live")
+    rithmic._systems_cache.clear()
+    rithmic._systems_cache[s.gateway] = (1e18, ["Apex", "Bulenox", "TopstepTrader"])
+    with pytest.raises(TradovateError) as ei:
+        await s.connect()
+    assert "offers 'Bulenox'" in str(ei.value) and "user name and password" in str(ei.value) and len(made) == 1

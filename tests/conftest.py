@@ -101,6 +101,13 @@ def fresh_env(monkeypatch):
     # Copy tests poll every few ms and expect each poll to see the broker; the
     # shared leader feed's reuse window is opted into by the tests that cover it.
     monkeypatch.setattr(leader_feed, "TTL_S", 0.0)
+    # Rithmic gateway queries are offline too (the alpha.83/84 tests patch their own sockets)
+    from app import rithmic as _rithmic
+
+    async def _offline(url):
+        raise OSError("offline test environment")
+    monkeypatch.setattr(_rithmic, "_ws_connect", _offline)
+    monkeypatch.setattr(_rithmic, "CONNECT_RETRY_S", 0.0)
     yield
     _reset_runtime()
 

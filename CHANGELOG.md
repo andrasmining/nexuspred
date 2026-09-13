@@ -4,6 +4,16 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.85
+- **Rithmic connect diagnostics** (from a live report: "timed out during handshake" and
+  "'NoneType' object has no attribute 'heartbeat_interval'"): a handshake timeout is retried once
+  after 1.5 s; every failed connect is explained with what the gateway itself says — whether it
+  answered a system query from this server at all, and whether it offers the configured system
+  (the library's unanswered login is exactly what a system the gateway does not serve looks like:
+  e.g. `Bulenox` asked of the paper gateway). The message names the gateway, the systems it
+  offers, and otherwise points at user name / password / app permission. Shown in the login's
+  status and the event log.
+
 ## 5.0.0-alpha.84
 Sixth review pass, this time over alpha.82/83: three independent read-only audits (order engine
 and parallel path; red-team security; performance with benchmarks), every finding verified before

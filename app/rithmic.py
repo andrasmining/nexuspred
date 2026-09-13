@@ -44,6 +44,12 @@ GATEWAYS: dict[str, str] = {
     "europe": "wss://rprotocol-de.rithmic.com:443",      # live, Frankfurt
 }
 DEFAULT_SYSTEM = {"demo": "Rithmic Paper Trading", "live": ""}
+CONNECT_RETRY_S = 1.5             # one more attempt after a handshake timeout (a transient on the way to the gateway)
+DIAGNOSE_TIMEOUT_S = 8.0          # the system query that explains a failed connect
+
+
+def _is_handshake_timeout(exc: BaseException) -> bool:
+    return isinstance(exc, (TimeoutError, asyncio.TimeoutError)) and "handshake" in str(exc).lower()
 APP_NAME = os.environ.get("NEXUSPRED_RITHMIC_APP_NAME", "Fluxbridge")    # the name registered with Rithmic
 APP_VERSION = config.get_version() if hasattr(config, "get_version") else "5"
 
@@ -352,15 +358,51 @@ class RithmicSession(broker.BrokerSessionBase):
                         return self._client
                 old, self._client = self._client, None
                 _disconnect_later(old)
-            client = self._make_client()
             from async_rithmic import SysInfraType
-            try:
-                await asyncio.wait_for(client.connect(plants=[SysInfraType.ORDER_PLANT, SysInfraType.PNL_PLANT, SysInfraType.TICKER_PLANT]), timeout=45.0)
-            except BaseException:
-                _disconnect_later(client)                 # a half-connected client would hold a login slot
-                raise
-            self._client = client
-            return client
+            plants = [SysInfraType.ORDER_PLANT, SysInfraType.PNL_PLANT, SysInfraType.TICKER_PLANT]
+            for attempt in (1, 2):
+                client = self._make_client()
+                try:
+                    await asyncio.wait_for(client.connect(plants=plants), timeout=45.0)
+                    self._client = client
+                    return client
+                except asyncio.CancelledError:
+                    _disconnect_later(client)
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _disconnect_later(client)             # a half-connected client would hold a login slot
+                    if attempt == 1 and _is_handshake_timeout(exc):
+                        state.log_event("warn", f"[{self.name}] Rithmic handshake with {self.gateway} timed out — one more attempt")
+                        await asyncio.sleep(CONNECT_RETRY_S)
+                        continue
+                    raise TradovateError(await self._explain_connect_failure(exc)) from exc
+            raise TradovateError(f"[{self.name}] Rithmic connect failed")   # pragma: no cover - the loop returns or raises
+
+    async def _explain_connect_failure(self, exc: BaseException) -> str:
+        """The library's connect errors, translated, plus what the gateway itself
+        says: whether it answered from this server at all and whether it offers
+        the configured system. A wrong system name otherwise surfaces as the
+        login response being ``None`` deep inside the library."""
+        text = str(exc)
+        if isinstance(exc, AttributeError) and "heartbeat_interval" in text:
+            what = f"login on system '{self.system_name}' was not answered"
+        elif _is_handshake_timeout(exc):
+            what = f"handshake with the gateway {self.gateway} timed out twice"
+        else:
+            what = f"{type(exc).__name__}: {text}" if not isinstance(exc, TradovateError) else text
+        try:
+            names = await list_systems(self.gateway, environment=self.environment, timeout=DIAGNOSE_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as probe:  # noqa: BLE001
+            return f"[{self.name}] Rithmic connect failed: {what} — the gateway {self.gateway} did not answer a system query from this server either ({probe})"
+        if not names:
+            return f"[{self.name}] Rithmic connect failed: {what} — the gateway {self.gateway} lists no systems"
+        if self.system_name not in names:
+            return (f"[{self.name}] Rithmic connect failed: {what} — the gateway {self.gateway} does not offer the system "
+                    f"'{self.system_name}'; it offers: {', '.join(names)}. Pick the system from the list (and check the gateway / Demo-Live setting)")
+        return (f"[{self.name}] Rithmic connect failed: {what} — the gateway {self.gateway} is reachable and offers '{self.system_name}'; "
+                "check user name and password, and that the app is permitted on this system (Rithmic conformance)")
 
     def _merge_accounts(self, discovered: list[Any]) -> None:
         prev = {a["spec"]: a for a in self.accounts if a.get("spec")}
