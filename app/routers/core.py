@@ -318,6 +318,9 @@ async def api_history_stats(days: int = 7) -> dict[str, Any]:
     return {"days_window": days, **(await asyncio.to_thread(db.history_stats, context.get_area(), since))}
 
 
+SSE_BATCH_MAX = 64          # frames per write on the live stream: a burst of orders is one send, not a wake per frame
+
+
 @router.get("/api/stream")
 async def api_stream(request: Request) -> StreamingResponse:
     """Server-Sent Events: the area's live feed (no polling).
@@ -337,11 +340,16 @@ async def api_stream(request: Request) -> StreamingResponse:
                 if await request.is_disconnected():
                     break
                 try:
-                    frame = await asyncio.wait_for(sub.queue.get(), timeout=10.0)
-                    yield frame                       # pre-serialised by state._broadcast
+                    frames = [await asyncio.wait_for(sub.queue.get(), timeout=10.0)]
+                    while len(frames) < SSE_BATCH_MAX:      # everything already queued goes out in one write
+                        try:
+                            frames.append(sub.queue.get_nowait())
+                        except asyncio.QueueEmpty:
+                            break
                     if sub.dropped:
                         sub.dropped = False
-                        yield "event: resync\ndata: {}\n\n"   # messages were lost on a full queue: re-pull
+                        frames.append("event: resync\ndata: {}\n\n")   # messages were lost on a full queue: re-pull
+                    yield "".join(frames)             # pre-serialised by state._broadcast
                 except asyncio.TimeoutError:
                     yield "event: ping\ndata: {}\n\n"  # named heartbeat; keeps proxies open
         finally:

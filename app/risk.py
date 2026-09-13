@@ -133,7 +133,7 @@ def _state(area_id: int) -> dict[str, Any]:
 def lock_of(area_id: int, spec: str, *, settings: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
     """The account's lock record for today, or None. Runs before every order:
     without ``settings`` only the ``risk_state`` key is read."""
-    raw = settings.get("risk_state") if settings is not None else config.setting("risk_state", area_id=area_id)
+    raw = settings.get("risk_state") if settings is not None else config.peek("risk_state", area_id)   # read-only: no copy per order
     st = raw if isinstance(raw, dict) else {}
     rec = st.get(spec)
     if not isinstance(rec, dict) or rec.get("unlocked"):

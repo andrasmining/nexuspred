@@ -4,6 +4,66 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.84
+Sixth review pass, this time over alpha.82/83: three independent read-only audits (order engine
+and parallel path; red-team security; performance with benchmarks), every finding verified before
+a change. 721 tests, 25 new. Scores after the fixes: security 79 → ~85, trade execution 72 → ~80,
+platform 61 → ~80 (see README → Performance). The Tradovate order lane itself is unchanged.
+
+**Engine (from the engine review)**
+- The close after a failed protective stop and the emergency flatten **wait a 429 penalty out**
+  (bounded, 120 s) instead of giving up: alpha.82's urgent lane refused the resolution's reads
+  at once, so a long penalty could end with a live, unprotected position. Waiting costs nothing
+  when there is no penalty — the broker refuses everything until it ends anyway.
+- An **unprotected** position (stop failed, the close after it failed too) is named in the entry
+  result (`unprotected`) and logged at error level; the marketplace error streak counts it.
+  Before, that outcome looked exactly like success.
+- `set_sl_tp` fallback: a refused cancel of the old stop is **confirmed against the broker** —
+  gone (the usual case: a stale id) is no error; still working is kept in the record
+  (`extra_stop_ids`) and retired by the next stop change and by the close. Old targets are
+  retired together, and a refused target cancel is confirmed the same way before a rollback.
+- A trade whose last target filled and whose stop was retired is **untracked** (a later
+  `close_all` no longer liquidates a flat contract and reports an error).
+- Background tasks (alerts, automations, fan-out) never inherit a close's urgent lane; the
+  reads of `set_sl_tp`, the TS-Hunter untracked report and the copy engine's position checks
+  take the order lane; an unreadable account is reported, not dropped.
+- An unparsable position row is "could not be re-read", never a guessed quantity.
+- Refactoring: one shared entry tail (`_entry_result`), one `_const`, one `_flatten_account`.
+
+**Security (from the red team)**
+- Copy feed-loss status is **tenant-safe**: unresolved follower/contract pairs are stored
+  structured and rendered per viewer — the publisher sees marketplace followers as
+  `subscriber #id`, a subscriber sees only their own accounts, the pause reason carries counts.
+- `GET /api/rithmic/systems` is rate-limited per user (12/min), gateway URLs are hosts only
+  (port 443, no path / query / userinfo), at most four gateway sockets at once, a bounded
+  cache, and a generic error to the client (the detail goes to the log).
+- A subscriber removed from a "selected users" copy listing has their copied orders released
+  like a kick. One update runs at a time; the update check is admin-only.
+- The subscribing **user** is stored on the subscription row (`user_id`) and is the principal
+  the fan-out ACL check uses (falling back to the workspace owner for older rows); the
+  publisher's subscriber list carries the email, not the id.
+
+**Performance (from the benchmarks)**
+- The two `BaseHTTPMiddleware` layers are one **pure-ASGI gate**: `POST /webhook` 2.2 → 1.1 ms
+  p50 (421 → 888 req/s at concurrency 1, 1100 req/s at 10–50); with 50 dashboards on the live
+  stream a webhook cost 32 ms and dropped frames — now 3.3 ms and every frame delivered.
+- The live stream (SSE) batches queued frames into one write and is fed without a callback
+  hop when the producer is on the loop.
+- Login-wide Tradovate list reads of concurrent callers are **coalesced** (never stale: a
+  caller that arrives after a request left gets a fresh read) and contract lookups are
+  single-flight: the kill switch on a 20-account login went from 120 broker calls / 7.2 s
+  (alpha.83) to 44 calls / 2.6 s — the rest is the 60 ms order lane. ProjectX reads one
+  account's positions with one request (was the whole login per account).
+- The daily signal cap keeps its count in memory (seeded once per subscription and day): no
+  SQLite read on the order path (was 5–18 ms with a large signal log). The risk lock check
+  before every order reads without copying.
+- The garbage collector: the startup heap is frozen and gen-0 collections are 70× rarer —
+  the fan-out's p95 to the last of 50 subscribers was the collector (17 → 7 ms).
+- The fan-out runs two loop steps behind the publisher's task so the publisher's per-account
+  tasks start first. Copy watchdogs run concurrently (one group's flatten never delays another's).
+- Not changed (owner decisions, see README → Performance): the 60 ms Tradovate order lane
+  (dominant term for multi-account logins), the bracket's stop-last order and unused OCO.
+
 ## 5.0.0-alpha.83
 - **Rithmic system dropdown**: on Settings → Broker Accounts a Rithmic login picks its system
   from the list the chosen gateway serves (`Rithmic Paper Trading`, `Apex`, `TopstepTrader` …)

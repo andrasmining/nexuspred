@@ -177,6 +177,7 @@ class TradovateSession:
         self._contract_id_cache: dict[str, tuple[int, datetime]] = {}
         self._contract_names: dict[int, str] = {}      # contract id -> name (positions view)
         self._inflight: dict[tuple[str, bool], dict[str, Any]] = {}   # coalesced login-wide list reads (see _coalesced)
+        self._lookups: dict[tuple[str, Any], asyncio.Future] = {}     # contract lookups in flight (see _single_flight)
         self.fingerprint = _fingerprint(entry)
         if self._token_expires:
             state.set_session_status(self.name, token_expires=self._token_expires.isoformat())
@@ -791,12 +792,35 @@ class TradovateSession:
         cached = self._contract_id_cache.get(symbol)
         if cached and datetime.now(timezone.utc) - cached[1] < timedelta(hours=1):
             return cached[0]
-        found = await self._request("GET", "/contract/find", params={"name": symbol})
-        cid = int((found or {}).get("id") or 0)
-        if not cid:
-            raise TradovateError(f"Cannot resolve contract id for {symbol}")
-        self._contract_id_cache[symbol] = (cid, datetime.now(timezone.utc))
-        return cid
+
+        async def lookup() -> int:
+            found = await self._request("GET", "/contract/find", params={"name": symbol})
+            cid = int((found or {}).get("id") or 0)
+            if not cid:
+                raise TradovateError(f"Cannot resolve contract id for {symbol}")
+            self._contract_id_cache[symbol] = (cid, datetime.now(timezone.utc))
+            return cid
+        return await self._single_flight(("contract_id", symbol), lookup)
+
+    async def _single_flight(self, key: tuple[str, Any], run: Any) -> Any:
+        """One lookup at a time per key: five accounts flattening the same contract
+        together resolve its id / name once, not five times (each a lane slot)."""
+        fut = self._lookups.get(key)
+        if fut is not None:
+            return await asyncio.shield(fut)
+        fut = self._lookups[key] = asyncio.get_running_loop().create_future()
+        try:
+            result = await run()
+        except BaseException as exc:
+            self._lookups.pop(key, None)
+            if isinstance(exc, asyncio.CancelledError):
+                fut.cancel()
+            else:
+                fut.set_exception(exc)
+            raise
+        self._lookups.pop(key, None)
+        fut.set_result(result)
+        return result
 
     async def liquidate_position(self, symbol: str, *, account_id: int | None = None,
                                  account_name: str | None = None, account_spec: str | None = None) -> dict[str, Any]:
@@ -819,7 +843,7 @@ class TradovateSession:
         if cached is not None:
             return cached
         try:
-            item = await self._request("GET", "/contract/item", params={"id": contract_id})
+            item = await self._single_flight(("contract_item", contract_id), lambda: self._request("GET", "/contract/item", params={"id": contract_id}))
             name = (item or {}).get("name") or str(contract_id)
         except TradovateError:
             return str(contract_id)              # not cached: the next look retries

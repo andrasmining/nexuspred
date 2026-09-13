@@ -199,7 +199,10 @@ def accept(payload: dict[str, Any], webhook: dict[str, Any], *, forward: bool = 
         # the fan-out (views, per-subscriber logs, task spawns) runs as its own
         # loop step *after* the publisher's task has taken its first step: the
         # publisher's own order never waits for the bookkeeping of others
-        asyncio.get_running_loop().call_soon(_forward_safely, payload, webhook, accepted)
+        # two steps back: the publisher's first step spawns its per-account tasks
+        # (a gather); those must start before the fan-out's bookkeeping does
+        loop = asyncio.get_running_loop()
+        loop.call_soon(loop.call_soon, _forward_safely, payload, webhook, accepted)
 
 
 def _forward_safely(payload: dict[str, Any], webhook: dict[str, Any], accepted_at: float) -> None:
@@ -255,18 +258,27 @@ async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *
     try:
         result = await process(payload, webhook, trusted=trusted, settings=settings)
         state.log_signal(payload, result=result.get("status", "ok"), webhook=name, webhook_id=wid, latency_ms=ms())
+        if webhook.get("subscription"):
+            from . import marketplace
+            marketplace.note_outcome(webhook, context.get_area(), result.get("status", "ok"))
         events.emit("signal.done", webhook=name, status=result.get("status", "ok"), reason=result.get("reason", ""), action=result.get("action", ""),
                     seconds=time.perf_counter() - started)
         await _after_subscription_outcome(webhook, None, result)
     except (SignalError, TradovateError) as exc:
         state.log_event("error", f"Signal error: {exc}", payload=payload)
         state.log_signal(payload, result=f"error: {exc}", webhook=name, webhook_id=wid, latency_ms=ms())
+        if webhook.get("subscription"):
+            from . import marketplace
+            marketplace.note_outcome(webhook, context.get_area(), "error")
         events.emit("signal.done", webhook=name, status="error", reason=str(exc)[:200], action="", seconds=time.perf_counter() - started)
         await events.emit_async("signal.failed", webhook=name, reason=str(exc), settings=settings)
         await _after_subscription_error(webhook, exc)
     except Exception as exc:  # noqa: BLE001
         state.log_event("error", f"Signal failed: {exc}", payload=payload)
         state.log_signal(payload, result=f"error: {exc}", webhook=name, webhook_id=wid, latency_ms=ms())
+        if webhook.get("subscription"):
+            from . import marketplace
+            marketplace.note_outcome(webhook, context.get_area(), "error")
         events.emit("signal.done", webhook=name, status="error", reason=str(exc)[:200], action="", seconds=time.perf_counter() - started)
         await events.emit_async("signal.failed", webhook=name, reason=str(exc), settings=settings)
         await _after_subscription_error(webhook, exc)

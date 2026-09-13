@@ -78,7 +78,14 @@ def _broadcast(st: _AreaState, message: dict[str, Any]) -> None:
     if not st.subscribers:
         return
     frame = f"data: {json.dumps(message, default=str)}\n\n"
+    try:
+        here = asyncio.get_running_loop()
+    except RuntimeError:
+        here = None
     for sub in list(st.subscribers):
+        if sub.loop is here:
+            _safe_put(sub, frame)                    # on the subscriber's own loop: straight into the queue
+            continue
         try:
             sub.loop.call_soon_threadsafe(_safe_put, sub, frame)
         except RuntimeError:  # loop already closed

@@ -365,7 +365,7 @@ async def test_discord_stream_handshake(admin):
 async def test_event_stream_delivers_events(admin):
     from app.routers import core as app_main
     with context.use_area(1):
-        resp = await app_main.api_stream(_StreamRequest(polls=2))
+        resp = await app_main.api_stream(_StreamRequest(polls=1))   # both messages are queued before the first poll: one batched write
         state.log_event("info", "hello-stream")   # queued before the generator polls
         state.log_signal({"action": "buy", "symbol": "MNQ"}, "ok")
     text = await _drain(resp)

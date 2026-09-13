@@ -51,6 +51,7 @@ def test_subscription_gate_symbols_and_daily_cap(admin):
     assert not ok and why == "subscription_symbols" and "ES" in detail
     with context.use_area(1):
         state.log_signal({"action": "buy"}, result="ok", webhook="T", webhook_id="sub1_wh")
+        marketplace.note_outcome(view, 1, "ok")                      # the in-memory count follows the outcome (no read per order)
     ok, why, _ = marketplace.subscription_gate(view, "MNQ", "sell", area_id=1)
     assert not ok and why == "subscription_daily_cap"
     assert marketplace.subscription_gate(view, "MNQ", "close_all", area_id=1)[0] is True   # the cap is for entries only
@@ -248,8 +249,10 @@ def test_daily_cap_ignores_skipped_signals(admin):
     view = {"id": "sub1_wh", "controls": {"max_signals_per_day": 1}}
     with context.use_area(1):
         state.log_signal({"action": "buy"}, result="skipped", webhook="T", webhook_id="sub1_wh")
+        marketplace.note_outcome(view, 1, "skipped")
         assert marketplace.subscription_gate(view, "MNQ", "buy", area_id=1)[0] is True
         state.log_signal({"action": "buy"}, result="ok", webhook="T", webhook_id="sub1_wh")
+        marketplace.reset_daily_counts()                             # a fresh process seeds today's count from the database
         assert marketplace.subscription_gate(view, "MNQ", "buy", area_id=1)[1] == "subscription_daily_cap"
 
 

@@ -151,16 +151,52 @@ def subscription_gate(view: dict[str, Any], root: str, action: str, *, area_id: 
         return False, "subscription_symbols", f"{root} is not in the subscription's symbols ({', '.join(c['symbols'])})"
     cap = int(c.get("max_signals_per_day") or 0)
     if cap and action in ("buy", "sell"):
-        from zoneinfo import ZoneInfo
-        try:
-            zone = ZoneInfo(str(config.load_settings(area_id=area_id).get("journal_timezone") or "Europe/Zurich"))
-        except Exception:  # noqa: BLE001
-            zone = timezone.utc
-        day_start = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
-        n = db.count_signal_outcomes(area_id, str(view.get("id") or ""), day_start)
+        n = signals_today(area_id, str(view.get("id") or ""))
         if n >= cap:
             return False, "subscription_daily_cap", f"{n} signal(s) already today (cap {cap})"
     return True, "", ""
+
+
+_daily: dict[tuple[int, str, str], int] = {}       # (area, subscription webhook id, day start) → outcomes today
+
+
+def _day_start(area_id: int) -> str:
+    from zoneinfo import ZoneInfo
+    try:
+        zone = ZoneInfo(str(config.peek("journal_timezone", area_id) or "Europe/Zurich"))
+    except Exception:  # noqa: BLE001
+        zone = timezone.utc
+    return datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+
+
+def signals_today(area_id: int, webhook_id: str) -> int:
+    """Outcomes (everything but ``received`` and ``skipped``) of one subscription
+    today, in the journal timezone. The database is asked once per subscription
+    and day — the first signal of the day seeds the count, ``note_outcome``
+    keeps it — so the daily cap costs the order path no SQLite read."""
+    key = (area_id, webhook_id, _day_start(area_id))
+    n = _daily.get(key)
+    if n is None:
+        if len(_daily) > 5000:
+            _daily.clear()                             # bounded: a new day re-seeds what is still asked for
+        for k in [k for k in _daily if k[0] == area_id and k[1] == webhook_id]:
+            _daily.pop(k, None)                        # yesterday's count for this subscription
+        n = _daily[key] = db.count_signal_outcomes(area_id, webhook_id, key[2])
+    return n
+
+
+def note_outcome(view: dict[str, Any], area_id: int, status: str) -> None:
+    """A subscription's signal finished: count it towards today's cap (skips do
+    not count, exactly like the database query)."""
+    if status == "skipped":
+        return
+    key = (area_id, str(view.get("id") or ""), _day_start(area_id))
+    if key in _daily:
+        _daily[key] += 1
+
+
+def reset_daily_counts() -> None:
+    _daily.clear()
 
 
 def visible_to(sharing: dict[str, Any], user_id: int) -> bool:

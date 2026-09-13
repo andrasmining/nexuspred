@@ -66,6 +66,8 @@ def _reset_runtime() -> None:
     signals._sim_active.clear()
     signals._trade_locks.clear()
     signals._sub_errors.clear()
+    from app import marketplace as _mp
+    _mp.reset_daily_counts()
     tradovate._managers.clear()
     hub._areas.clear()
     listener._managers.clear()

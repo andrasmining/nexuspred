@@ -527,6 +527,29 @@ ProjectX has the same order lane (100 ms spacing; the polls wait behind it, the 
 budget holds).
 
 ---
+## Performance
+
+Measured on alpha.84 with a fake broker (20 ms per call) and the real request pacing; the
+scripts live outside the repo, the numbers are for orientation:
+
+| Path | Result |
+|---|---|
+| Webhook ingress → first broker call (bridge time) | 0.2–0.5 ms, independent of the number of accounts (all accounts in flight together) |
+| `POST /webhook/{token}` | 1.1 ms p50 at concurrency 1 (~900 req/s), ~1100 req/s at 10–50 |
+| 50 dashboards on the live stream | a webhook costs 3.3 ms, every frame delivered |
+| Fan-out to 50 subscribers | publisher's first order 1.7 ms, last subscriber's 5 ms p50 |
+| Kill switch, 20 accounts on 20 logins | one account's time (325 ms) — logins are independent |
+| Kill switch, 20 accounts on **one** login | 2.6 s: 44 calls through the login's 60 ms order lane |
+| Risk guard, 10 accounts tripping at once | one flatten's time — together, not one after the other |
+
+What is left is by choice, not by accident: Tradovate orders, cancels, liquidations and the
+reads of a close go through one lane per login spaced 60 ms apart (ProjectX 100 ms) so a burst
+never trips the 429 that would refuse the stop of the same bracket; a bracket places the entry,
+then the targets, then the stop (three dependent round trips per account). Shortening the
+lane, sending the stop first or using the broker's OCO would cut a multi-account bracket or a
+one-login kill switch by up to half — both change order-path behaviour and are decisions for
+the operator, not for a review pass.
+
 ## Alerts
 
 **Settings → Alerts** — three channels, each with its own on/off switch:
@@ -662,7 +685,8 @@ An admin can **publish** one of their webhooks; other users find it on the
   marketplace*, with a title, a description and the visibility (**every registered
   user** or **only selected users**). The same tab lists the subscribers (email, on/off,
   routed accounts) with a **Remove** button. The webhook table shows `shared · N`.
-- **Subscribe**: Marketplace → *Subscribe* → route accounts + Qty × → save. Your
+- **Subscribe**: Marketplace → *Subscribe* → route accounts + Qty × → save (the subscribing
+  user is recorded on the subscription). Your
   subscriptions are listed under Webhooks → *Subscribed signals* (toggle, manage,
   unsubscribe).
 - **Execution**: when a TradingView alert hits the published webhook it runs in the

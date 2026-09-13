@@ -269,6 +269,38 @@ def apply_headers(request: Request, response: Response, nonce: str) -> None:
         h.setdefault("Strict-Transport-Security", "max-age=15552000")  # 180 days
 
 
+def security_header_list(request: Request, nonce: str, headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
+    """The security headers as raw ASGI header pairs, added to ``headers`` where
+    the handler did not set them (same rules as :func:`apply_headers`) — for the
+    pure-ASGI gate, which never materialises a Response for the app's answer."""
+    present = {k.lower() for k, _ in headers}
+    path = request.url.path
+    want: list[tuple[str, str]] = [
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "SAMEORIGIN" if path == "/guide" else "DENY"),
+        ("Referrer-Policy", "strict-origin-when-cross-origin"),
+        ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()"),
+        ("Cross-Origin-Opener-Policy", "same-origin"),
+    ]
+    if not path.startswith("/static/"):
+        want.append(("Content-Security-Policy", _csp(nonce, relaxed=path == "/guide")))
+    if path.startswith("/api/") or path in ("/login", "/setup", "/register", "/reset"):
+        want.append(("Cache-Control", "no-store"))
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    if proto == "https":
+        want.append(("Strict-Transport-Security", "max-age=15552000"))     # 180 days
+    out = list(headers)
+    for k, v in want:
+        if k.lower().encode() not in present:
+            out.append((k.lower().encode(), v.encode()))
+    return out
+
+
+def csrf_exempt(path: str) -> bool:
+    """Paths third parties post to without a browser (TradingView, Stripe)."""
+    return path.startswith("/webhook/") or path == "/api/payments/webhook"
+
+
 # ---------------------------------------------------------- the middleware
 async def security_middleware(request: Request, call_next: Callable[..., Any]) -> Response:
     """CSRF origin check → rate limits → handler → security headers."""
