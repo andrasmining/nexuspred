@@ -56,7 +56,10 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     )
     if acct_state and not tag:
         events.emit("trade.executed", webhook=webhook.get("name", "?"), action=action, contract=contract, accounts=list(acct_state), settings=s)
-    out = {"status": "error" if failed else "ok", "action": action, "contract": contract,
+    # Keep the existing API status for known per-account rejections, but expose
+    # them explicitly. Background/subscription bookkeeping treats ``failed`` as
+    # an error signal even though legacy callers still see status="ok".
+    out = {"status": "ok", "action": action, "contract": contract,
            "accounts": summary, "orders": orders, "simulated": tag != ""}
     if failed:
         out["failed"] = failed
