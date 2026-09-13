@@ -1,10 +1,11 @@
 """Regression tests for must-have maintenance fixes on top of current upstream."""
 from __future__ import annotations
 
-from app import config, context, state, track_record
+from app import config, context, db, payments, state, track_record
 from app import copy as cp
 from app.routers.accounts import trade_accounts_overview
 from tests.test_alpha88 import mixed  # noqa: F401 - pytest fixture
+from tests.test_alpha93 import _client, trio  # noqa: F401 - pytest fixture
 from tests.test_copy import _placed
 
 
@@ -77,3 +78,46 @@ def test_copy_track_record_size_never_crosses_broker_local_account_ids(admin):
         state.set_pnl(_summary([_pnl(7, "LEAD", 49900), _pnl(7, "LEAD", 150100)]), area_id=1)
         g["id"] = "track-size-ambiguous"
         assert track_record.copy_record(1, g, detail=False)["size"] is None
+
+
+async def test_broadcaster_demotion_retains_failed_stripe_subscription_for_retry(trio, monkeypatch):
+    """A role change must not orphan a still-live Stripe subscription by deleting
+    the local subscription row. Unpublish immediately, retain retry identity,
+    and keep the Broadcaster role until Stripe confirms cancellation."""
+    admin, broadcaster, subscriber = trio
+    publisher_area = db.user_primary_area(broadcaster["id"])
+    subscriber_area = db.user_primary_area(subscriber["id"])
+
+    with context.use_area(publisher_area):
+        wh = config.new_webhook(name="Paid signal")
+        wh["sharing"] = {"enabled": True, "mode": "public", "price_cents": 1000}
+        config.save_settings({"webhooks": [wh]})
+    sub = db.upsert_subscription(subscriber_area, publisher_area, wh["id"], [], user_id=subscriber["id"])
+    pay = db.upsert_payment(subscriber_area, publisher_area, wh["id"],
+                            stripe_subscription="sub_still_live", status="active", price_cents=1000, currency="usd")
+
+    async def cancellation_fails(_publisher_area, _key, *, area_id=None):
+        return 0
+
+    monkeypatch.setattr(payments, "cancel_for_listing", cancellation_fails)
+    async with _client(admin["id"]) as c:
+        r = await c.post(f"/api/users/{broadcaster['id']}/role", json={"role": "user"})
+    assert r.status_code == 502
+    assert db.get_user(broadcaster["id"])["role"] == "broadcaster"
+    with context.use_area(publisher_area):
+        assert config.load_settings()["webhooks"][0]["sharing"]["enabled"] is False
+    assert [s["id"] for s in db.list_subscriptions(subscriber_area)] == [sub["id"]]
+    assert db.get_payment(subscriber_area, publisher_area, wh["id"])["status"] == "active"
+
+    async def cancellation_recovers(_publisher_area, key, *, area_id=None):
+        row = db.get_payment(subscriber_area, publisher_area, key)
+        db.update_payment(row["id"], status="canceled")
+        return 1
+
+    monkeypatch.setattr(payments, "cancel_for_listing", cancellation_recovers)
+    async with _client(admin["id"]) as c:
+        r = await c.post(f"/api/users/{broadcaster['id']}/role", json={"role": "user"})
+    assert r.status_code == 200, r.text
+    assert db.get_user(broadcaster["id"])["role"] == "user"
+    assert db.list_subscriptions(subscriber_area) == []
+    assert db.get_payment(subscriber_area, publisher_area, wh["id"])["status"] == "canceled"
