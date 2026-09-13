@@ -575,6 +575,8 @@ def init() -> None:
             _ann_schema(c)
             from .ops import _schema as _ops_schema              # alpha.99: escalations + settings history
             _ops_schema(c)
+            from .foundation import create_schema
+            create_schema(c)
         _initialized = True
 
 

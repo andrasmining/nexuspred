@@ -7,6 +7,9 @@ import pytest
 
 from app import alerts, automations, config, context, db, events, exposure, metrics, risk, signals
 from app.routers import trading
+from app.execution import local
+from app.execution.contracts import AccountTarget, ExecutionError
+from app.routers.execution_errors import http_error
 from tests.helpers import FakeExecutor
 
 
@@ -149,7 +152,7 @@ async def test_settings_export_carries_automations_and_import_validates(client, 
 def ticket(monkeypatch, admin):
     ex = FakeExecutor("DEMO11", positions=[{"symbol": "MNQZ6", "account": "DEMO11", "netPos": 2, "netPrice": 20000.0}],
                       working=[{"id": 5, "symbol": "MNQZ6"}, {"id": 6, "symbol": "ESZ6"}])
-    monkeypatch.setattr(trading, "_executor", lambda body: ex)
+    monkeypatch.setattr(local, "resolve_account", lambda target: ex)
     return ex
 
 
@@ -194,15 +197,14 @@ async def test_close_position_cancels_that_contract_then_liquidates_and_untracks
 
 
 def test_executor_lookup_requires_a_login_and_account(admin):
-    from fastapi import HTTPException
     with context.use_area(1):
         for body in ({}, {"spec": "DEMO11"}, {"spec": "DEMO11", "token_idx": "x"}):
-            with pytest.raises(HTTPException) as exc:
-                trading._executor(body)
-            assert exc.value.status_code == 400
-        with pytest.raises(HTTPException) as exc:
-            trading._executor({"spec": "DEMO11", "token_idx": 0})
-        assert exc.value.status_code == 404
+            with pytest.raises(ExecutionError) as exc:
+                local.resolve_account(AccountTarget.from_payload(body))
+            assert http_error(exc.value).status_code == 400
+        with pytest.raises(ExecutionError) as exc:
+            local.resolve_account(AccountTarget.from_payload({"spec": "DEMO11", "token_idx": 0}))
+        assert http_error(exc.value).status_code == 404
 
 
 # ---------------------------------------------------------------- exposure
