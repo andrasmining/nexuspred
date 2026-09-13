@@ -15,6 +15,7 @@ import { openDrawer, closeDrawer } from "../components/drawer.js";
 import { openCopySubscriptionDrawer } from "./marketplace.js";
 import { publisherControls, subscriberStatusTag, subscriberActions } from "../components/publisher.js";
 import { t } from "../i18n.js";
+import { quotaHint } from "../components/ops.js";
 
 const accountKey = (idx, spec) => `${idx}::${spec}`;
 const CONTRACT_RE = /^([A-Z]{1,4})[FGHJKMNQUVXZ]\d{1,2}$/;
@@ -408,7 +409,7 @@ export default {
     } }, icon("plus"), t("Add copy group"));
 
     root.append(
-      pageHead(t("Copy Trading"), t("Mirror one leader trade account onto any number of follower accounts, live: entries, adds, reductions, closes and reversals. Followers are sized by multiplier or a fixed number of contracts; a lost leader feed flattens them after a grace period."), [
+      pageHead(t("Copy Trading"), t("Mirror one leader trade account onto any number of follower accounts, live: entries, adds, reductions, closes and reversals. Followers are sized by multiplier or a fixed number of contracts; a lost leader feed flattens them after a grace period."), [quotaHint("groups"), 
         h("button", { class: "btn", onClick: () => { load(); loadEvents(); } }, icon("refresh"), t("Refresh")), addBtn,
       ]),
       card({ title: t("Copy groups") }, table.el),

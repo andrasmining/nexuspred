@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
-from .. import config, context, db, http, relay
+from .. import web, config, context, db, http, relay
 from ..security import client_ip
 from ..web import BASE_DIR, base_url, require_role
 
@@ -129,6 +129,7 @@ async def api_agents(request: Request) -> list[dict[str, Any]]:
 async def api_agent_pairing_code(request: Request) -> dict[str, Any]:
     """Admin: a one-time code (valid 15 min) to pair a new agent."""
     user = require_role(request, "user")
+    web.check_quota(context.get_area(), user, "agents")                          # alpha.99
     body = await request.json()
     name = str((body or {}).get("name") or "").strip()[:60] or "agent"
     code = db.create_agent_pairing(context.get_area(), name)

@@ -152,7 +152,7 @@ def _connect() -> sqlite3.Connection:
     setup) is reused for the thread's lifetime. Inside ``batch()`` the block
     joins the batch's transaction instead."""
     conn = getattr(_local, "conn", None)
-    if conn is not None and getattr(_local, "path", None) == str(DB_FILE):
+    if conn is not None and getattr(_local, "path", None) == str(DB_FILE) and getattr(_local, "gen", 0) == _conn_gen:
         return _Batched(conn) if getattr(_local, "batch", False) else conn
     if conn is not None:
         try:
@@ -168,6 +168,7 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     _local.conn = conn
     _local.path = str(DB_FILE)
+    _local.gen = _conn_gen
     return conn
 
 
@@ -483,6 +484,10 @@ def init() -> None:
                 c.execute("ALTER TABLE users ADD COLUMN role_request TEXT NOT NULL DEFAULT ''")
                 c.execute("ALTER TABLE users ADD COLUMN role_requested_at TEXT NOT NULL DEFAULT ''")
                 c.execute("UPDATE users SET role='admin', is_admin=1")
+            if "role_note" not in user_cols:
+                # alpha.98: the Broadcaster application (strategy, instruments, experience, link) and a trial expiry
+                c.execute("ALTER TABLE users ADD COLUMN role_note TEXT NOT NULL DEFAULT ''")
+                c.execute("ALTER TABLE users ADD COLUMN role_expires_at TEXT NOT NULL DEFAULT ''")
             if "totp_secret" not in user_cols:
                 # two-factor authentication (app/mfa.py): encrypted secret, enrolment
                 # state, replay counter, salt of the backup-code hashes
@@ -562,6 +567,16 @@ def init() -> None:
                 # Preserve behavior for existing deployments: areas that predate
                 # feature gating keep every feature ON, so nobody loses Discord.
                 c.execute("UPDATE areas SET features=?", (_all_features_on(),))
+            from .mail import _schema as _mail_schema           # alpha.95: outbox + alert deliveries
+            _mail_schema(c)
+            from .notifications import _schema as _notif_schema  # alpha.97: notification inbox
+            _notif_schema(c)
+            from .announcements import _schema as _ann_schema    # alpha.98: broadcaster announcements
+            _ann_schema(c)
+            from .ops import _schema as _ops_schema              # alpha.99: escalations + settings history
+            _ops_schema(c)
+            from .foundation import create_schema
+            create_schema(c)
         _initialized = True
 
 
@@ -635,6 +650,24 @@ def set_db_file(path: Any) -> None:
     pkg = sys.modules.get("app.db")
     if pkg is not None:
         pkg.DB_FILE = DB_FILE
+
+
+_conn_gen = 0
+
+
+def disconnect() -> None:
+    """Close this thread's connection and make every other thread reopen on its
+    next use (before the database file is replaced underneath them)."""
+    global _conn_gen
+    _conn_gen += 1
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    _local.conn = None
+    _local.path = None
 
 
 def mark_uninitialized() -> None:

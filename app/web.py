@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from . import auth, config, i18n
+from . import db, auth, config, i18n
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -21,7 +21,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # Prefixes match whole subtrees; pages match exactly (``/loginx`` is *not* exempt).
 AUTH_EXEMPT_PREFIXES = ("/webhook/", "/static/", "/api/agent/")
 AUTH_EXEMPT_PATHS = frozenset({
-    "/healthz", "/metrics", "/guide", "/favicon.ico", "/sw.js", "/api/payments/webhook",
+    "/healthz", "/readyz", "/status", "/unsubscribe", "/ack", "/api/public/status", "/metrics", "/guide", "/favicon.ico", "/sw.js", "/api/payments/webhook",
     "/login", "/logout", "/register", "/setup", "/reset", "/login/2fa",
 })
 # Paths a signed-in user who still has to enrol in two-factor may reach.
@@ -110,7 +110,8 @@ def require_role(request: Request, min_role: str) -> dict[str, Any]:
     user = getattr(request.state, "user", None)
     if not user or not has_role(user, min_role):
         raise HTTPException(status_code=403, detail=f"{ROLE_LABEL[min_role]} role required")
-    if getattr(request.state, "support", False) and request.method not in ("GET", "HEAD"):
+    sup = getattr(request.state, "support", None)
+    if sup and request.method not in ("GET", "HEAD") and not sup.get("write") and request.url.path not in ("/api/support/exit", "/api/support/note"):
         raise HTTPException(status_code=403, detail="Support view is read-only")
     return user
 
@@ -124,7 +125,7 @@ def capabilities(user: dict[str, Any] | None) -> dict[str, bool]:
     r = role_of(user)
     bc, ad = has_role(user, "broadcaster"), has_role(user, "admin")
     return {"role": r, "trade": True, "webhooks": True, "subscribe": True, "follow": True, "agents": True,
-            "publish": bc, "lead": True, "simulator": bc, "settings_io": bc,
+            "publish": bc, "lead": True, "simulator": bc, "settings_io": True,
             "admin": ad, "users": ad, "payments_config": ad, "news": ad, "updates": ad, "discord": ad, "support": ad}
 
 
@@ -140,12 +141,20 @@ ROUTE_POLICY: list[tuple[tuple[str, ...] | None, str, str]] = [
     (("PUT", "POST", "DELETE"), "/api/news/", "admin"),
     (None, "/api/discord/", "admin"),
     (None, "/api/support/enter", "admin"),
+    (None, "/api/mail/", "admin"),
+    (None, "/api/backups", "admin"),
+    (None, "/api/platform/", "admin"),
+    (None, "/api/incidents", "admin"),
+    (None, "/api/broadcaster/", "broadcaster"),
+    (None, "/api/broadcast", "admin"),
+    (("POST",), "/api/update/rollback", "admin"),
+    (None, "/api/announcements", "broadcaster"),
     (("PUT", "POST", "DELETE"), "/api/webhooks", "user"),           # own webhooks: every role (sharing / subscribers: see the exact rules)
     (None, "/api/simulator", "broadcaster"),
     (None, "/api/simulate", "broadcaster"),
     (None, "/api/scenarios", "broadcaster"),
-    (None, "/api/settings/export", "broadcaster"),
-    (None, "/api/settings/import", "broadcaster"),
+    (None, "/api/settings/export", "user"),           # alpha.99: a User takes their workspace with them
+    (None, "/api/settings/import", "user"),
 ]
 # finer rules that must beat the prefixes above
 ROUTE_POLICY_EXACT: list[tuple[tuple[str, ...] | None, "re.Pattern[str]", str]] = [
@@ -196,6 +205,75 @@ def read_support_cookie(cookie: str | None, admin_id: int) -> dict[str, Any] | N
         return {"area_id": area_id, "email": email}
     except Exception:  # noqa: BLE001
         return None
+
+
+# --------------------------------------------------------------------- alpha.99: support grant + quotas
+GRANT_KEY = "support_grant:{area}"
+
+
+def support_grant(area_id: int) -> dict[str, Any] | None:
+    import json, time
+    raw = db.meta_get(GRANT_KEY.format(area=area_id))
+    if not raw:
+        return None
+    try:
+        g = json.loads(raw)
+    except ValueError:
+        return None
+    return g if isinstance(g, dict) and float(g.get("until", 0)) > time.time() else None
+
+
+def support_grant_active(area_id: int) -> bool:
+    return support_grant(area_id) is not None
+
+
+def set_support_grant(area_id: int, hours: float, by: str) -> dict[str, Any] | None:
+    import json, time
+    if hours <= 0:
+        db.meta_set(GRANT_KEY.format(area=area_id), "")
+        return None
+    g = {"until": time.time() + min(float(hours), 72) * 3600, "by": by}
+    db.meta_set(GRANT_KEY.format(area=area_id), json.dumps(g))
+    return g
+
+
+QUOTAS: dict[str, dict[str, int | None]] = {
+    "user": {"webhooks": 5, "groups": 3, "agents": 2},
+    "broadcaster": {"webhooks": 25, "groups": 10, "agents": 5},
+    "admin": {"webhooks": None, "groups": None, "agents": None},
+}
+
+
+def quota_for(user: dict[str, Any] | None) -> dict[str, int | None]:
+    """The role's limits, overridden per user by the admin (meta ``quota:<uid>``)."""
+    import json
+    q = dict(QUOTAS[role_of(user)])
+    if user and user.get("id"):
+        raw = db.meta_get(f"quota:{user['id']}")
+        if raw:
+            try:
+                for k, v in json.loads(raw).items():
+                    if k in q:
+                        q[k] = None if v in (None, "", 0) else int(v)
+            except (ValueError, TypeError):
+                pass
+    return q
+
+
+def quota_usage(area_id: int, user: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    from . import copy as cp
+    q = quota_for(user)
+    s = config.load_settings(area_id=area_id)
+    used = {"webhooks": len(s.get("webhooks") or []), "groups": len(cp.load_groups(area_id)), "agents": len(db.list_agents(area_id))}
+    return {k: {"used": used[k], "max": q[k]} for k in q}
+
+
+def check_quota(area_id: int, user: dict[str, Any] | None, what: str) -> None:
+    """403 when the workspace has used up its ``what`` (webhooks / groups / agents)."""
+    u = quota_usage(area_id, user)[what]
+    if u["max"] is not None and u["used"] >= u["max"]:
+        label = {"webhooks": "webhooks", "groups": "copy groups", "agents": "execution agents"}[what]
+        raise HTTPException(status_code=403, detail=f"Quota reached: {u['used']} of {u['max']} {label} — ask your admin for more")
 
 
 def min_role_for(method: str, path: str) -> str | None:

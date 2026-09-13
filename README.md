@@ -571,6 +571,79 @@ path with a one-year immutable cache (a deploy changes every URL), the German di
 fetched only for German, and uvicorn's per-request access log is off unless
 `NEXUSPRED_ACCESS_LOG=1` (the bridge keeps its own signal, order and event logs).
 
+## Platform mailer (transactional e-mail)
+
+Invites, password-reset links, the Broadcaster request to the admins and role notices are sent by
+the **platform mailer**, not by a user's own SMTP. An admin sets it up under **Settings → Platform**
+(SMTP with STARTTLS/TLS, or the Resend / Postmark API) or pins it with environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `NEXUSPRED_MAIL_PROVIDER` | `smtp`, `resend`, `postmark` or `off` |
+| `NEXUSPRED_MAIL_HOST` / `NEXUSPRED_MAIL_PORT` | SMTP host and port (587 STARTTLS, 465 TLS) |
+| `NEXUSPRED_MAIL_USERNAME` / `NEXUSPRED_MAIL_PASSWORD` | SMTP login |
+| `NEXUSPRED_MAIL_API_KEY` | Resend API key or Postmark server token |
+| `NEXUSPRED_MAIL_FROM` / `NEXUSPRED_MAIL_FROM_NAME` / `NEXUSPRED_MAIL_REPLY_TO` | Sender |
+
+Mails are queued in an **outbox** and delivered by a worker with retries (1, 5, 15, 60, 360 minutes);
+the admin sees every row (pending / sent / failed with the error) under Settings → Platform, can
+retry, and can send a test mail. Templates are HTML + plain text in the recipient's language. When
+the platform mailer is off, a mail falls back to the SMTP of the workspace that sends it — a user
+without their own SMTP then sends nothing, and the response says so (`emailed: false`).
+
+Every alert delivery (push, e-mail, Discord) is logged per workspace; Settings → Alerts shows when
+each channel last delivered and flags a channel with three failures in a row.
+
+## Backups, deep health and the status page
+
+**Backups** (Settings → Backups, admin): a consistent snapshot of the whole database every day at the
+quiet hour (21:15 UTC by default), opened and integrity-checked against the live database before it
+counts as verified; 7 daily / 4 weekly / 3 monthly kept under `<NEXUSPRED_DATA_DIR>/backups/`.
+Optionally every snapshot is encrypted with the bridge's key and pushed to an S3-compatible bucket
+(R2, B2, Hetzner, AWS) or mailed to the admins. Restore: decrypt with
+`python -m app.backups decrypt FILE.db.enc FILE.db`, then put the file in place of `fluxbridge.db`
+on a host with the same `NEXUSPRED_ENCRYPTION_KEY` / `SESSION_SECRET`. A failed snapshot, a failed
+off-site push or no verified backup for 36 h alarms the admins once a day.
+
+**Deep health** `GET /readyz` (bearer `NEXUSPRED_METRICS_TOKEN` or `?token=`): database writable,
+disk, backup age, broker sessions, history backlog, event-loop lag, outbox, latency — `ok` /
+`degraded` / `down`, HTTP 503 when down. Point your uptime monitor here instead of `/healthz`.
+
+**Status page** `GET /status` (public, no account data): overall state, brokers, signal latency of
+the last hour and admin-posted incidents (Settings → Platform). `GET /api/public/status` is the JSON.
+
+**Platform heartbeat** (Settings → Platform): an outbound ping to healthchecks.io / Uptime Kuma
+every N seconds carrying the deep-health result — the monitor reports when the bridge itself is gone.
+
+## Notifications, severities and readiness
+
+- **Inbox (bell):** every alert lands as a row per workspace with severity and deep link, read or
+  unread, independent of the channels. Admins also see platform events there.
+- **Severity per channel, quiet hours, digest** (Settings → Alerts): info / warning / critical;
+  critical always gets through; quiet hours follow the journal timezone; trade alerts can be bundled.
+- **Role-specific alerts:** Broadcasters hear about subscribers, failed payments and paused fan-out;
+  users about new sign-in addresses and two-factor resets; admins about health changes, updates and
+  Stripe webhook problems.
+- **Ready to trade** and **Getting started** on the Overview: what is missing before the workspace can
+  run safely, with a Fix link per item; a first-days checklist per role.
+- **What's new** after each update, **release mail** to everyone who wants it, and per-user **mail
+  preferences** with one-click unsubscribe (Settings → Account).
+
+## Professional operations
+
+- **Escalation:** critical alerts stay open until acknowledged — push with a link at once, e-mail after
+  2 minutes, Telegram / SMS after 5 (Settings → Alerts, Twilio under Settings → Platform).
+- **Telegram:** bot token under Settings → Platform, chat linked per workspace with `/start <code>`.
+- **Latency watchdog, canary signal, token pre-warning:** admins hear about slow signals and event-loop
+  lag, a synthetic signal runs the whole path in the simulator every few minutes, and a broker token
+  that will lapse is announced half an hour ahead.
+- **Rollback:** every one-click update writes a snapshot first; Settings → Updates rolls the code (and
+  optionally the database) back.
+- **Settings history:** the last 30 versions per workspace, restorable (Settings → General).
+- **Assisted support:** a user grants 24 hours of write access; every change is logged under the admin.
+- **Quotas per role** (5/3/2, 25/10/5, unlimited), per-user overrides on the Users page.
+- **Monthly roles report** and **admin broadcasts** with banner.
+
 ## Alerts
 
 **Settings → Alerts** — three channels, each with its own on/off switch:
@@ -730,6 +803,20 @@ Subscriptions are stored in the `subscriptions` table; the sharing config lives 
 webhook itself (`sharing` key), so v4 data stays compatible.
 
 ---
+### Broadcaster business (cockpit, announcements, tiers, trials)
+
+- **Cockpit** (Broadcaster / Admin): subscribers per status, monthly revenue, new subscribers per
+  week, and per listing the tier, signals and error rate of the last 30 days, latency and P&L.
+- **Announcements:** a message to the subscribers of one listing or all — inbox, push and (opt-out)
+  e-mail on their side; at most three a day.
+- **Tiers** on the marketplace card, from facts only: Bronze (a week published with trades or a
+  subscriber), Silver (30 days, 30 broker-verified trades, error rate under 5 %), Gold (90 days, 100
+  verified trades, 90 days of history, five subscribers, under 2 % errors).
+- **Applying:** *Become a Broadcaster* takes strategy, instruments, experience and a link; the admin
+  sees them next to the applicant's journal track record and approves permanently or as a trial
+  (30/90/180 days). A trial warns the admins three days before it ends and lapses on its own.
+- **Weekly report** by mail on Monday morning (opt-out under Settings → Account).
+
 ### Verified track record
 
 Every published signal and copy group carries a **track record** on its marketplace card
@@ -844,6 +931,16 @@ under Recent orders and in the history. No stop is attached — you manage the p
 Every open position has a **Close** button: the contract's working orders are cancelled
 first, then the position is liquidated; the bridge stops managing that trade on that
 account. Both actions are written to the admin audit log.
+
+Since alpha.100 the ticket, Close and the emergency flatten go through an **execution
+service** (`app/execution`, see `docs/COMMERCIAL-FOUNDATION.md`): the caller must be a member
+of the workspace (the support view cannot trade), and every manual order is recorded in a
+command ledger before it reaches the broker. A client that sends an `Idempotency-Key` header
+gets the recorded acknowledgement back on a retry instead of a second order; the same key with
+a different instruction is refused with 409. The response carries `X-Execution-Command-Id`,
+and `GET /api/execution/commands/{id}` shows a command's outcome (*accepted* means the broker
+acknowledged it, not that it filled). Commands interrupted by a restart are marked *unknown*
+and never replayed.
 
 The **Exposure** card sums the open positions across all accounts per symbol root: long /
 short / net contracts, number of accounts, notional at the average entry price
@@ -1009,7 +1106,8 @@ Every account has exactly one role; each role includes everything below it.
 | Trade own accounts, own webhooks, own copy groups (leader → own followers), automations, risk guard, journal, alerts, execution agents | ✓ | ✓ | ✓ |
 | Subscribe to marketplace signals, follow copy leaders, subscription journal | ✓ | ✓ | ✓ |
 | Publish webhooks and copy groups on the marketplace, manage subscribers | – | ✓ | ✓ |
-| Simulator, scenarios, settings export/import | – | ✓ | ✓ |
+| Simulator, scenarios | – | ✓ | ✓ |
+| Settings export/import (a User's file without sharing blocks) | ✓ | ✓ | ✓ |
 | Users & roles, invites, audit, payments config, news, updates, Discord listener, support view | – | – | ✓ |
 
 - **Migration:** every account that existed before the roles were introduced becomes an
@@ -1137,6 +1235,7 @@ the dashboard **Update** button works.
 | `POST` | `/api/flatten-all` | 🆘 Cancel every working order and flatten every position on all accounts (ignores the trading switch) |
 | `POST` | `/api/orders/manual` | Order ticket: `{lid, spec, symbol, action, qty, order_type, price?, stop_price?}` — Trading switch and risk lock apply |
 | `POST` | `/api/positions/close` | Cancel one contract's working orders and close the position at market (`{lid, spec, symbol}`) |
+| `GET`  | `/api/execution/commands/{id}` | Outcome of one manual command from the ledger (`claimed`, `dispatching`, `accepted`, `rejected`, `unknown`) |
 | `GET`  | `/api/exposure` | Open positions (with their login) + per-symbol / per-account exposure summary and warnings |
 | `GET/PUT` | `/api/automations` | Rules (`{rules: [...]}`), recent firings, the event and action catalogue |
 | `GET`  | `/metrics` | Prometheus text format; `Authorization: Bearer $NEXUSPRED_METRICS_TOKEN` (404 when unset) |

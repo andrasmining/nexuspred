@@ -12,6 +12,7 @@ import { enablePush, disablePush, currentSubscription, unsupportedReason, isIOS,
 import { openDrawer, closeDrawer } from "../components/drawer.js";
 import { copyText } from "../ui.js";
 import { t, LANGUAGES } from "../i18n.js";
+import { telegramCard, escalationsCard, historyCard, supportGrantCard, rollbackCard } from "../components/ops.js";
 
 const lead = () => t("Changes are saved per page — only this page's settings are sent.");
 
@@ -50,7 +51,7 @@ export const general = {
         ] },
       ],
     });
-    root.append(pageHead(t("General & Trading"), lead()), form.el);
+    root.append(pageHead(t("General & Trading"), lead()), form.el, historyCard());
     const unsub = store.subscribe("settings", (s) => { if (!form.isDirty()) form.setValues(s); });
     return () => unsub();
   },
@@ -101,7 +102,7 @@ export const updates = {
       ], after: h("div", null, status, h("div", { class: "form-actions" }, checkBtn, applyBtn, backupLink), hosting) },
       { title: t("Settings file"), hint: t("The workspace configuration as one JSON file: webhooks with routing, symbol map, trading rules, alert preferences, news-lock rules. No secrets travel (broker tokens, passwords, API keys). Use it as a configuration backup or to move a workspace to another bridge — the database backup above is the full copy."), after: settingsFilePanel() }],
     });
-    root.append(pageHead(t("Updates"), t("Version status of this bridge and the one-click updater (self-hosted installs).")), form.el);
+    root.append(pageHead(t("Updates"), t("Version status of this bridge and the one-click updater (self-hosted installs).")), form.el, rollbackCard());
     const unsubs = [
       store.subscribe("settings", (s) => { if (!form.isDirty()) form.setValues(s); }),
       store.subscribe("update", (u) => {
@@ -325,6 +326,35 @@ function pushPanel() {
   return el;
 }
 
+/* alpha.95: per channel, when the last alert was delivered and whether the
+   channel keeps failing (three failures in a row = degraded). */
+function channelHealthPanel() {
+  const box = h("div", { class: "callout", style: "display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center" }, h("span", { class: "muted" }, t("Loading…")));
+  const LABEL = { push: t("Push"), email: t("Email"), discord: t("Discord") };
+  const ago = (iso) => { const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000); return s < 90 ? t("{n} s ago", { n: Math.round(s) }) : s < 5400 ? t("{n} min ago", { n: Math.round(s / 60) }) : s < 172800 ? t("{n} h ago", { n: Math.round(s / 3600) }) : t("{n} d ago", { n: Math.round(s / 86400) }); };
+  let alive = true, timer = null;
+  async function paint() {
+    try {
+      const r = await api.get("/api/alerts/deliveries?limit=1");
+      if (!alive) return;
+      clear(box);
+      let degraded = false;
+      for (const ch of ["push", "email", "discord"]) {
+        const c = r.channels[ch] || {};
+        degraded = degraded || c.degraded;
+        box.append(h("span", { style: "display:inline-flex;gap:6px;align-items:center" }, h("strong", null, LABEL[ch]),
+          c.degraded ? h("span", { title: c.last_error ? c.last_error.error : "" }, tag(t("{n} failures in a row", { n: c.failures }), "off"))
+            : c.last_ok ? tag(t("delivered {when}", { when: ago(c.last_ok) }), "on")
+            : c.last_error ? h("span", { title: c.last_error.error }, tag(t("failed {when}", { when: ago(c.last_error.at) }), "warn"))
+            : tag(t("no delivery yet"), "")));
+      }
+      box.className = `callout ${degraded ? "danger" : "ok"}`;
+    } catch (e) { if (alive) { clear(box); box.append(h("span", { class: "muted" }, errText(e.message))); } }
+  }
+  paint(); timer = setInterval(paint, 30000);
+  return { el: box, cleanup() { alive = false; clearInterval(timer); } };
+}
+
 export const alerts = {
   title: t("Alerts"),
   render(root) {
@@ -376,18 +406,35 @@ export const alerts = {
           { name: "alert_on_discord_lost", type: "switch", label: t("Discord listener went offline"), hint: t("Discord + email") },
           { name: "alert_on_discord_restored", type: "switch", label: t("Discord listener came back online"), hint: t("Discord + email") },
           { name: "alert_on_rollover", type: "switch", label: t("Contract rollover due"), hint: t("A dated contract in the symbol map is near or past its roll date — Discord + email + push, once per contract") },
+          { name: "alert_on_subscribers", type: "switch", label: t("Marketplace subscribers"), hint: t("Broadcasters: a subscriber joined or left, a payment failed, a subscriber was paused after errors — Discord + push (email for problems)") },
           { name: "rollover_warn_days", type: "number", label: t("Rollover warning lead time (days)"), min: 0, max: 60, placeholder: "10", width: "200px", hint: t("Warn this many days before the estimated expiry / first-notice date.") },
           { name: "discord_health_grace", type: "number", label: t("Discord health grace period (seconds)"), min: 15, step: 5, placeholder: "90", width: "200px", hint: t("How long the listener may be down before an outage alert fires (avoids alerting on transient reconnects).") },
         ], after: h("div", { class: "form-actions", style: "margin-top:12px" }, testBtn, testHint) },
+        { title: t("Severity, quiet hours, digest"), hint: t("Every alert has a severity: info (trades, restores, summaries), warning (lost connections, failed signals, paused subscriptions), critical (risk guard, unprotected position, feed loss). Pick per channel the least severe alert that may reach it; critical always gets through, quiet hours included. Everything still lands in the notification inbox (bell)."), fields: [
+          { name: "alert_min_severity_push", type: "select", label: t("Push: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_min_severity_email", type: "select", label: t("Email: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_min_severity_discord", type: "select", label: t("Discord: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_quiet_from", type: "time", label: t("Quiet hours from"), hint: t("Local time (journal timezone). Empty = no quiet hours. The window may cross midnight."), width: "160px" },
+          { name: "alert_quiet_to", type: "time", label: t("Quiet hours until"), width: "160px" },
+          { name: "alert_digest_trades", type: "switch", label: t("Bundle trade alerts"), hint: t("Signal executed / position opened / added / closed are collected and sent as one message every N minutes instead of one each.") },
+          { name: "alert_digest_minutes", type: "number", label: t("Digest every (minutes)"), min: 1, max: 240, step: 1, placeholder: "15", width: "160px" },
+        ] },
+        { title: t("Telegram and escalation"), hint: t("Telegram gets the alerts at or above its threshold once a chat is linked below. Escalation keeps a critical alert alive until it is acknowledged: push at once, e-mail after 2 minutes, Telegram and SMS after 5."), fields: [
+          { name: "alert_telegram_enabled", type: "switch", label: t("Telegram alerts enabled") },
+          { name: "alert_min_severity_telegram", type: "select", label: t("Telegram: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_escalation", type: "switch", label: t("Escalate critical alerts until acknowledged") },
+          { name: "alert_sms_to", type: "text", label: t("SMS number for the last step"), placeholder: "+41 79 …", hint: t("E.164 format. Needs the Twilio sender the admin sets under Settings → Platform."), width: "220px" },
+        ], after: h("div", null, telegramCard(), escalationsCard()) },
         { title: t("External watchdog"), hint: t("The bridge pings a URL you monitor elsewhere (healthchecks.io, Uptime Kuma push monitor, cronitor …). That service alerts you when the pings stop — the one failure the bridge cannot report itself: process gone, host asleep, network down."), fields: [
           { name: "heartbeat_url", type: "text", label: t("Heartbeat URL"), placeholder: "https://hc-ping.com/…", hint: t("Empty = off. Called with a plain GET; anything below HTTP 400 counts as delivered.") },
           { name: "heartbeat_interval", type: "number", label: t("Ping interval (seconds)"), min: 30, max: 3600, step: 10, placeholder: "60", width: "200px", hint: t("30–3600 s. Set the monitor's grace period to about twice this.") },
         ], after: heartbeatPanel() },
       ],
     });
-    root.append(pageHead(t("Alerts"), t("Notify a Discord channel, an email address and/or your phone when something happens. ") + lead()), form.el);
+    const health = channelHealthPanel();
+    root.append(pageHead(t("Alerts"), t("Notify a Discord channel, an email address and/or your phone when something happens. ") + lead()), health.el, form.el);
     const unsub = store.subscribe("settings", (s) => { if (!form.isDirty()) form.setValues(s); });
-    return () => { unsub(); if (accountsPanel.cleanup) accountsPanel.cleanup(); root.querySelectorAll("[data-heartbeat]").forEach((p) => p.cleanup && p.cleanup()); };
+    return () => { unsub(); health.cleanup(); if (accountsPanel.cleanup) accountsPanel.cleanup(); root.querySelectorAll("[data-heartbeat]").forEach((p) => p.cleanup && p.cleanup()); root.querySelectorAll(".card").forEach((c) => c.cleanup && c.cleanup()); };
   },
 };
 
@@ -566,10 +613,25 @@ export const account = {
       mfaBody.append(actions);
     }
     paintMfa();
+    const prefsBody = h("div", null, h("span", { class: "muted" }, t("Loading…")));
+    api.get("/api/me/mail-prefs").then((p) => {
+      clear(prefsBody);
+      const row = (key, label, small) => { const sw = h("input", { type: "checkbox", class: "switch", checked: !!p[key], onChange: async (e) => {
+        try { await api.put("/api/me/mail-prefs", { [key]: e.target.checked }); toast(t("Mail preferences saved"), "success"); } catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
+      } }); return h("label", { class: "switch-row" }, h("span", null, label, h("small", null, small)), sw); };
+      prefsBody.append(
+        row("updates", t("Product updates"), t("What changed after each release.")),
+        row("weekly", t("Weekly report"), t("Your P&L, hit rate and risks every Monday.")),
+        row("marketplace", t("Marketplace news"), t("New listings you can subscribe to.")),
+        row("announcements", t("Broadcaster announcements"), t("Messages from the publishers you subscribe to.")),
+        h("p", { class: "hint" }, t("Invites, password resets and security notices are always sent.")));
+    }).catch((e) => { clear(prefsBody); prefsBody.append(h("span", { class: "muted" }, e.message)); });
     root.append(
       pageHead(t("Account"), t("You're signed in to your own isolated area — token accounts, webhooks, Discord listener, symbol map and logs are private to you.")),
       h("div", { class: "grid grid-2" },
         card({ title: t("Two-factor authentication") }, mfaBody),
+        card({ title: t("E-mail preferences") }, prefsBody),
+        supportGrantCard(),
         card({ title: t("Your account") },
           h("dl", { class: "kv" }, h("dt", null, t("Email")), h("dd", null, me.email || "—"), h("dt", null, t("Role")), h("dd", null, me.is_admin ? t("Administrator") : t("User")),
             h("dt", null, t("Discord Signals")), h("dd", null, (me.features || {}).discord_signals === false ? t("not enabled") : t("enabled"))),

@@ -244,6 +244,30 @@ export default {
     let all = [];
     // a User who wants to sell: one tap asks the admin for the Broadcaster role
     const becomeBox = h("div");
+    // alpha.98: the application — what the admin sees next to your track record
+    const openApplication = () => {
+      const strategy = h("input", { id: "app-strategy", maxlength: 500, placeholder: t("e.g. NQ opening-range breakouts, 1–3 trades a day") });
+      const instruments = h("input", { id: "app-instruments", maxlength: 500, placeholder: "MNQ, MES, GC" });
+      const experience = h("input", { id: "app-experience", maxlength: 500, placeholder: t("e.g. 4 years futures, funded since 2024") });
+      const link = h("input", { id: "app-link", type: "url", maxlength: 500, placeholder: "https://…" });
+      const hint = h("span", { class: "save-hint" });
+      const send = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
+        send.disabled = true;
+        try {
+          await api.post("/api/me/role-request", { role: "broadcaster", strategy: strategy.value, instruments: instruments.value, experience: experience.value, link: link.value });
+          closeDrawer(); await actions.loadMe(); paintBecome(); toast(t("Request sent — an admin will approve it"), "success");
+        } catch (e) { hint.textContent = e.message; hint.className = "save-hint err"; } finally { send.disabled = false; }
+      } }, icon("send"), t("Send request"));
+      openDrawer({ title: t("Become a Broadcaster"), width: "520px",
+        body: h("div", null,
+          h("p", { class: "hint", style: "margin-top:0" }, t("An admin decides with your track record next to these answers. Everything is optional, but a clear picture speeds it up.")),
+          h("div", { class: "field" }, h("label", { for: "app-strategy" }, t("Strategy")), strategy),
+          h("div", { class: "field" }, h("label", { for: "app-instruments" }, t("Instruments")), instruments),
+          h("div", { class: "field" }, h("label", { for: "app-experience" }, t("Experience")), experience),
+          h("div", { class: "field" }, h("label", { for: "app-link" }, t("Link (optional)")), link, h("div", { class: "field-hint" }, t("A public track record, a channel, a site."))),
+          hint),
+        foot: send });
+    };
     const paintBecome = () => {
       clear(becomeBox);
       const me = store.get("me") || {};
@@ -254,10 +278,12 @@ export default {
           pending ? t("Your request for the Broadcaster role is waiting for an admin.") : t("The Broadcaster role lets you publish webhooks and copy groups on the marketplace and manage your subscribers.")),
         pending
           ? h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => { try { await api.del("/api/me/role-request"); await actions.loadMe(); paintBecome(); toast(t("Request withdrawn")); } catch (e) { toast(e.message, "error"); } } }, t("Withdraw request"))
-          : h("button", { type: "button", class: "btn btn-primary btn-sm", onClick: async () => { try { await api.post("/api/me/role-request", { role: "broadcaster" }); await actions.loadMe(); paintBecome(); toast(t("Request sent — an admin will approve it"), "success"); } catch (e) { toast(e.message, "error"); } } }, icon("plus"), t("Become a Broadcaster"))));
+          : h("button", { type: "button", class: "btn btn-primary btn-sm", onClick: () => openApplication(), }, icon("plus"), t("Become a Broadcaster"))));
     };
     paintBecome();
-    const filters = { q: "", sort: "net_30d", kind: "", verified: false, tag: "" };
+    const filters = { q: "", sort: "net_30d", kind: "", verified: false, tag: "", tier: "" };
+    const TIER_LABEL = { gold: t("Gold"), silver: t("Silver"), bronze: t("Bronze") };
+    const tierBadge = (tier) => tier ? h("span", { class: `tag tier-badge ${tier}`, title: t("Tier from facts: time published, verified trades, subscribers, fan-out errors") }, TIER_LABEL[tier] || tier) : null;
     const qIn = h("input", { type: "search", class: "input-sm", placeholder: t("Search title, publisher, tags…"), style: "min-width:220px", onInput: (e) => { filters.q = e.target.value.trim().toLowerCase(); paint(); } });
     const sortSel = h("select", { class: "input-sm", onChange: (e) => { filters.sort = e.target.value; paint(); } },
       [["net_30d", t("Best last 30 days")], ["net_pnl", t("Best net P&L")], ["win_rate", t("Highest win rate")], ["trades", t("Most trades")], ["subscribers", t("Most subscribers")], ["newest", t("Newest")]]
@@ -265,14 +291,18 @@ export default {
     const kindSel = h("select", { class: "input-sm", onChange: (e) => { filters.kind = e.target.value; paint(); } },
       [["", t("Signals + copy")], ["webhook", t("Signals only")], ["copy", t("Copy trading only")]].map(([v, l]) => h("option", { value: v }, l)));
     const verifiedBox = h("input", { type: "checkbox", onChange: (e) => { filters.verified = e.target.checked; paint(); } });
+    const tierSel = h("select", { class: "input-sm", onChange: (e) => { filters.tier = e.target.value; paint(); } },
+      [["", t("Any tier")], ["bronze", t("Bronze and up")], ["silver", t("Silver and up")], ["gold", t("Gold only")]].map(([v, l]) => h("option", { value: v }, l)));
+    const TIER_RANK = { "": 0, bronze: 1, silver: 2, gold: 3 };
     const tagChip = h("button", { type: "button", class: "chip active", hidden: true, title: t("Clear the tag filter"), onClick: () => { filters.tag = ""; paint(); } });
-    const bar = h("div", { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" }, qIn, sortSel, kindSel,
+    const bar = h("div", { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" }, qIn, sortSel, kindSel, tierSel,
       h("label", { class: "check-row", style: "padding:0;border:0" }, verifiedBox, " ", t("broker-verified only")), tagChip);
     let alive = true;
     const recOf = (it) => it.record || {};
     const matches = (it) => {
       if (filters.kind && it.kind !== filters.kind) return false;
       if (filters.verified && !recOf(it).verified) return false;
+      if (filters.tier && (TIER_RANK[it.tier || ""] || 0) < TIER_RANK[filters.tier]) return false;
       if (filters.tag && !(it.tags || []).includes(filters.tag)) return false;
       if (filters.q) {
         const hay = `${it.title} ${it.description || ""} ${it.publisher_email || ""} ${(it.tags || []).join(" ")} ${it.strategy || ""}`.toLowerCase();
@@ -311,7 +341,7 @@ export default {
             : (isCopy ? !it.enabled : !it.webhook_enabled) ? tag(t("paused by publisher"), "warn") : sub.enabled ? tag(isCopy ? t("following · on") : t("subscribed · on"), "on") : tag(isCopy ? t("following · off") : t("subscribed · off"), "off");
           const open = () => (isCopy ? openCopySubscriptionDrawer(it, load) : openSubscriptionDrawer(it, load));
           grid.append(h("div", { class: "card mk-card" },
-            h("div", { class: "mk-title" }, h("strong", null, it.title), isCopy ? tag(t("copy trading"), "accent") : tag(STRATEGY_LABEL[it.strategy] || it.strategy, it.strategy),
+            h("div", { class: "mk-title" }, h("strong", null, it.title), tierBadge(it.tier), isCopy ? tag(t("copy trading"), "accent") : tag(STRATEGY_LABEL[it.strategy] || it.strategy, it.strategy),
               isCopy ? tag((it.environment || "demo").toUpperCase(), it.environment === "live" ? "live" : "demo") : null,
               it.paid ? tag(priceLabel(it), "accent") : null,
               isCopy && it.leader_tier ? h("span", { class: "tag tier", title: t("Leader account size") }, it.leader_tier) : null,

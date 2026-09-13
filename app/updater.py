@@ -12,6 +12,8 @@ The local version is read from the ``VERSION`` file in the working tree.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+import json
 import os
 import re
 import subprocess
@@ -21,7 +23,7 @@ from typing import Any
 import httpx
 from packaging.version import InvalidVersion, Version
 
-from . import config, http, state
+from . import db, config, http, state
 
 API = "https://api.github.com"
 RAW = "https://raw.githubusercontent.com"
@@ -166,6 +168,14 @@ async def _apply_update() -> dict[str, Any]:
     if not _SHA_RE.match(old_head):
         return {"success": False, "message": f"Could not determine the current git revision — update not started: {head_out or 'no output'}"}
     state.log_event("info", f"Applying update from GitHub (current v{old_version}, {old_head[:10]})…")
+    # alpha.99: a snapshot before anything moves, and the revision to roll back to
+    try:
+        from . import backups
+        snap = await backups.run("pre-update")
+        db.meta_set(PRE_UPDATE_KEY, json.dumps({"sha": old_head, "version": old_version, "backup": snap["name"], "at": snap["created_at"]}))
+    except Exception as exc:  # noqa: BLE001
+        state.log_event("warn", f"pre-update backup failed: {exc}")
+        db.meta_set(PRE_UPDATE_KEY, json.dumps({"sha": old_head, "version": old_version, "backup": "", "at": datetime.now(timezone.utc).isoformat()}))
 
     ok, fetch_out = await asyncio.to_thread(
         _run, ["git", "fetch", "--all", "--tags", "--prune"]
@@ -218,6 +228,45 @@ async def _apply_update() -> dict[str, Any]:
         "version": new_version,
         "log": pull_out,
     }
+
+
+PRE_UPDATE_KEY = "pre_update"
+
+
+def rollback_point() -> dict[str, Any] | None:
+    raw = db.meta_get(PRE_UPDATE_KEY)
+    if not raw:
+        return None
+    try:
+        p = json.loads(raw)
+        return p if isinstance(p, dict) and p.get("sha") else None
+    except ValueError:
+        return None
+
+
+async def rollback(*, restore_db: bool = False) -> dict[str, Any]:
+    """alpha.99: back to the revision (and optionally the database) from before the last update."""
+    if _apply_lock.locked():
+        return {"success": False, "message": "An update is running — wait for it to finish."}
+    point = rollback_point()
+    if not point:
+        return {"success": False, "message": "No update to roll back — nothing was recorded before the last update."}
+    if os.environ.get("RENDER") or os.environ.get("NEXUSPRED_MANAGED_HOST"):
+        return {"success": False, "message": "Managed host: roll back by redeploying the previous commit in the host dashboard; the pre-update snapshot is under Settings → Backups."}
+    async with _apply_lock:
+        ok, out = await asyncio.to_thread(_run, ["git", "reset", "--hard", point["sha"]])
+        if not ok:
+            return {"success": False, "message": f"git reset failed: {out}"}
+        dep_ok, dep_out = await asyncio.to_thread(_pip_install)
+        if not dep_ok:
+            return {"success": False, "message": f"dependency install failed: {dep_out[:300]}"}
+        if restore_db and point.get("backup"):
+            from . import backups
+            backups.schedule_restore(point["backup"])
+        config.get_version(force=True)
+        state.log_event("warn", f"Rolled back to {point['sha'][:10]} (v{point.get('version')})" + (" with the pre-update database" if restore_db else "") + "; restarting…")
+        asyncio.get_event_loop().call_later(1.5, _restart)
+        return {"success": True, "message": f"Rolled back to v{point.get('version')}" + (" and the database from before the update" if restore_db else "") + ". Restarting…", "version": point.get("version")}
 
 
 def _restart() -> None:

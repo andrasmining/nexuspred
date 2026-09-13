@@ -4,6 +4,162 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.100
+Two community contributions by andrasmining merged, plus a CI fix.
+- **Execution-service boundary (PR #25).** Dashboard manual orders, position close and the emergency
+  flatten go through `app/execution` with an explicit actor and workspace-membership check; platform
+  admins do not implicitly trade in another workspace (the support view and the support grant stay
+  read-only for orders). Manual orders are written to a durable command ledger (`execution_commands`)
+  before dispatch: an optional `Idempotency-Key` header makes a retried request replay the recorded
+  acknowledgement instead of sending a second order, the same key with a different instruction is a
+  conflict, and `GET /api/execution/commands/{id}` shows a command's outcome. Interrupted commands are
+  marked *unknown* at startup and never replayed. Response bodies and broker calls are unchanged; the
+  `commercial_entitlements` table (manual trading per workspace) has no UI yet. See
+  `docs/COMMERCIAL-FOUNDATION.md`.
+- **Copy flatten never trades blind (PR #24).** A feed-loss flatten whose follower position cannot be
+  read sends no close and records the contract as unresolved, instead of closing from cached memory
+  and possibly opening the opposite position.
+- **Account ids are broker-local (PR #24).** Balances and size tiers on the Trade Accounts page, the
+  public copy listing and the copy track record bind the P&L row to account id *and* spec; an ambiguous
+  match shows no balance rather than a foreign account's.
+- **Broadcaster demotion keeps billing identity (PR #24).** If Stripe cannot confirm every cancellation
+  the listings are unpublished, the subscriber rows are kept for a retry and the role change answers
+  502 instead of orphaning a live subscription.
+- **Support cookie re-checked per request (PR #24).** The support view drops when its target workspace
+  or user changed underneath it, and a non-bootstrap admin cannot keep viewing a user who became admin.
+- **CI.** The inbox tests of alpha.97–99 wait for the inbox writer thread instead of sleeping, which
+  made them flaky on slow runners.
+
+## 5.0.0-alpha.99
+Package 5 of the operations roadmap: professional operations.
+- **Escalation with acknowledgement.** With *Escalate critical alerts* on, a critical alert (risk guard,
+  unprotected position, feed loss with flatten, unknown order outcome) opens an escalation: push at
+  once with an acknowledge link, e-mail after 2 minutes, Telegram and SMS (Twilio) after 5 — until
+  someone acknowledges via the link (`/ack`), the inbox or Settings → Alerts.
+- **Telegram channel.** The admin adds a bot token under Settings → Platform; a user links their chat
+  with a one-time `/start <code>` from Settings → Alerts. Own switch and severity threshold; the
+  delivery log and the alert channel health cover it like the other channels.
+- **Latency watchdog and canary.** Admins hear once when the signal latency p95 or the event-loop lag
+  exceeds the platform thresholds, and again when it recovers. A canary signal runs the whole path
+  (receipt, parsing, sizing, order, bookkeeping) in the simulator every N minutes, timed; a failing or
+  slow canary alarms the admins and shows in `/readyz`.
+- **Token expiry pre-warning.** A broker token whose refresh keeps failing is announced 30 minutes
+  before it lapses — before the connection is lost, not after.
+- **Rollback after an update.** Every one-click update first writes a snapshot and remembers the
+  revision; Settings → Updates offers *Roll back code* and *Roll back code + database* (the previous
+  file is kept as `fluxbridge.db.pre-rollback`).
+- **Settings history with undo.** The last 30 versions of a workspace's settings — who changed what,
+  when — under Settings → General, restorable with one click (the current state stays as a version).
+  Machine state (risk / drawdown counters) never creates a version.
+- **Workspace file for every role.** Settings export / import is available to Users too; a User's
+  file carries no sharing blocks.
+- **Assisted support.** A user can grant support write access for 24 hours (Settings → Account);
+  every change in the support view is then logged under the admin's name and appears in the settings
+  history as "admin (support)". Without a grant the admin can leave a note the user sees in their inbox.
+- **Quotas per role.** User 5 webhooks / 3 copy groups / 2 agents, Broadcaster 25 / 10 / 5, Admin
+  unlimited; overridable per user on the Users page; the pages show "3 of 5" before the limit bites.
+- **Monthly roles report** to the admins on the 1st: roles, Broadcasters without a signal in 30 days,
+  open requests, trials, support views.
+- **Admin broadcast.** A message to everyone or one role as inbox row, e-mail and a dismissable banner
+  for a set number of hours (Settings → Platform).
+
+## 5.0.0-alpha.98
+Package 4 of the operations roadmap: the Broadcaster's business.
+- **Announcements to subscribers.** A Broadcaster writes to the subscribers of one listing or of all
+  ("No trading today", "Rollover to March"): every subscriber's inbox and push, plus e-mail for those
+  who keep *broadcaster announcements* on, at most three a day, audited. `GET/POST /api/announcements`.
+- **Cockpit.** One page for the business (Cockpit in the navigation, Broadcaster and Admin): subscribers
+  per status, monthly revenue from the Stripe records, new subscribers per week, and per listing the
+  tier, signals of the last 30 days, error rate, latency p50/p95 and net P&L 30 d.
+  `GET /api/broadcaster/cockpit`.
+- **Application with data.** *Become a Broadcaster* asks for strategy, instruments, experience and a
+  link; the admin reviews the request next to the requester's track record (trades, verified share,
+  win rate, profit factor, drawdown, days active) and approves as permanent or as a 30/90/180-day
+  trial. `GET /api/users/{id}/application`, `POST /api/users/{id}/role` with `days`.
+- **Trial Broadcasters.** Three days before a trial ends the admins get a summary (subscribers,
+  paused, listings) and can extend with one click; a lapsed trial falls back to User through the usual
+  demotion, and the user is told.
+- **Tiers.** Bronze / Silver / Gold on the marketplace card and as a filter, from facts only: days
+  published, broker-verified trades, days of history, subscribers, fan-out error rate.
+- **Weekly report.** Monday morning in the workspace's timezone: net P&L, trades, hit rate, fees, best
+  and worst session, open risks; Broadcasters add subscriber development and revenue, admins the
+  platform numbers. Sent to everyone who keeps *weekly report* on.
+
+## 5.0.0-alpha.97
+Package 3 of the operations roadmap: everyone sees what concerns them.
+- **Notification inbox.** Every alert is a row per workspace — read or unread, with its severity and a
+  deep link — behind the bell in the top bar, whatever the channels say. Admins also see platform
+  events there: Broadcaster requests, backup alarms, health changes, an available update, Stripe
+  webhook problems. `GET /api/notifications[/count]`, `POST /api/notifications/read`.
+- **Severities, quiet hours, digest.** Every alert carries a severity (info / warning / critical).
+  Settings → Alerts sets per channel the least severe alert that may reach it, quiet hours in the
+  workspace's timezone (critical always gets through) and a trade digest: signal executed / position
+  opened / added / closed bundled into one message every N minutes.
+- **Role-specific alerts.** Broadcasters: a subscriber joined or left, a payment failed, a subscriber
+  was paused after consecutive errors (new switch *Marketplace subscribers*). Users: a sign-in from a
+  new address, a two-factor reset by an admin. Admins: health degraded / recovered (once per change),
+  update available (once per version), Stripe webhook rejected (hourly at most).
+- **Ready to trade.** The Overview opens with "Ready to trade: 5 of 7" — broker login, trade accounts,
+  trading switch, risk guard, symbol mapping, alert channel, external watchdog, two-factor; Broadcasters
+  add listing, subscribers and sizing hint; Admins add backup, platform mailer and disk — each with a
+  Fix link. `GET /api/workspace/readiness`.
+- **Getting started.** A checklist per role on the Overview until every step is done or it is hidden.
+- **What's new.** After an update the release notes open once per user, filtered for the role.
+  `GET /api/whatsnew`, `POST /api/whatsnew/seen`.
+- **Release mail and mail preferences.** After a deploy the same notes go out once to everyone who
+  keeps *product updates* on (platform mailer). Settings → Account: product updates, weekly report,
+  marketplace news, broadcaster announcements — with a signed one-click unsubscribe link in every
+  non-transactional mail (`/unsubscribe`). `GET/PUT /api/me/mail-prefs`.
+
+## 5.0.0-alpha.96
+Package 2 of the operations roadmap: trust.
+- **Automatic verified backups.** Once a day at the quiet hour (default 21:15 UTC) a consistent
+  snapshot of the whole database goes to `<data>/backups/`, is opened in a scratch connection,
+  integrity-checked and compared row by row with the live database before it counts as *verified*.
+  Seven daily, four weekly (Sundays) and three monthly (1st) are kept. Settings → Backups: status,
+  schedule, retention, run now, download, delete. `GET/PUT /api/backups[/config]`,
+  `POST /api/backups/run`, `GET|DELETE /api/backups/{name}` (admin).
+- **Off-site copy.** Every snapshot can be encrypted with the bridge's own key and pushed to an
+  S3-compatible bucket (Cloudflare R2, Backblaze B2, Hetzner, AWS — SigV4, no SDK) or, while small,
+  mailed to the admins through the platform mailer. Decrypt with
+  `python -m app.backups decrypt FILE.db.enc FILE.db` on a host with the same key.
+- **Backup alarm.** A failed snapshot, a failed off-site push, an unverified copy or no verified
+  backup for 36 hours → one admin notice per day (event log + mail).
+- **Deep health `/readyz`.** Database writable, disk free, backup age, broker sessions per broker,
+  history-writer backlog, event-loop lag, outbox failures, live streams, signal latency p95 — `ok`,
+  `degraded` or `down` with one line per check; 200 while ok/degraded, 503 when down. Bearer
+  `NEXUSPRED_METRICS_TOKEN` or `?token=`; admins see the same under Settings → Platform → Health.
+- **Public status page `/status`.** No login, no account data: overall state, version, uptime, broker
+  connectivity per broker, signal latency p50/p95 of the last hour, and admin-posted incidents with
+  their update history (investigating → identified → monitoring → resolved). `GET /api/public/status`
+  for machines; incidents via `GET/POST/PUT/DELETE /api/incidents` (admin).
+- **Platform heartbeat.** An outbound ping every N seconds to healthchecks.io / Uptime Kuma carrying
+  the deep-health result (`/fail` on healthchecks.io when the bridge is down, `?status=` elsewhere),
+  so a monitor reports the one failure the bridge cannot: not running at all.
+- Broker sessions now carry their broker in the live status; the updater's manual backup download
+  shares the snapshot writer.
+
+## 5.0.0-alpha.95
+Package 1 of the operations roadmap: reliable delivery.
+- **Platform mailer.** The bridge has its own sender for transactional mail — invites, password-reset
+  links, the Broadcaster request to the admins, role notices — configured by an admin under
+  Settings → Platform (SMTP, Resend or Postmark) or pinned by `NEXUSPRED_MAIL_*` environment
+  variables. A workspace's own SMTP stays the user's channel for trade alerts and is the fallback when
+  the platform sender is off. Before this every platform mail went through the SMTP of whichever
+  workspace was active: a User's Broadcaster request tried the User's (usually missing) SMTP and the
+  admin never heard about it.
+- **Templates in the recipient's language.** HTML with a plain-text twin, Fluxbridge header, one
+  button, German or English from the recipient's workspace language, an unsubscribe link where a mail
+  is not transactional.
+- **Outbox with retry and mail log.** Every mail is a row first; a worker delivers it and retries a
+  failure after 1, 5, 15, 60 and 360 minutes, then marks it failed with the error. Settings → Platform
+  shows the log (pending / sent / failed, route, attempts) with a retry button and a "send test e-mail
+  to me" button. An address that fails five times in a row is flagged on that user's dashboard.
+  `GET /api/mail/config|log`, `PUT /api/mail/config`, `POST /api/mail/test|retry/{id}` (admin).
+- **Alert delivery log.** Every push, e-mail and Discord delivery attempt is recorded per workspace;
+  Settings → Alerts shows per channel "delivered 4 min ago", "failed …" or "3 failures in a row" (the
+  channel counts as degraded from three consecutive failures). `GET /api/alerts/deliveries`.
+
 ## 5.0.0-alpha.94
 - **Copy groups for every role.** A User creates and runs their own copy groups (a leader account
   mirrored onto their own follower accounts); only publishing a group on the marketplace and managing

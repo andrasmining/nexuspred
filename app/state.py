@@ -190,6 +190,14 @@ def session_statuses() -> list[dict[str, Any]]:
         return [dict(v) for v in st.sessions.values()]
 
 
+def session_statuses_for(area_id: int) -> list[dict[str, Any]]:
+    st = _areas.get(area_id)
+    if st is None:
+        return []
+    with _lock:
+        return [dict(v) for v in st.sessions.values()]
+
+
 def aggregate_connection() -> dict[str, Any]:
     st = _st()
     with _lock:

@@ -28,6 +28,13 @@ from app import auth, config, context, crypto, db, health, history, http, push, 
 from app import copy as copy_mod  # noqa: E402
 from app import automations, events, metrics, risk, track_record  # noqa: E402
 from app import payments as payments_mod  # noqa: E402
+from app import mailer as mailer_mod  # noqa: E402
+from app import backups as backups_mod  # noqa: E402
+from app import alerts as alerts_mod  # noqa: E402
+from app import canary as canary_mod  # noqa: E402
+from app import platform as platform_mod  # noqa: E402
+from app import telegram as telegram_mod  # noqa: E402
+from app import readiness as readiness_mod  # noqa: E402
 from app import pnl as pnl_mod  # noqa: E402
 from app import drawdown as drawdown_mod  # noqa: E402
 from app import news as news_mod  # noqa: E402
@@ -50,6 +57,7 @@ def _reset_runtime() -> None:
     tests are independent. (A fresh file per test sidesteps Windows' refusal to
     delete a SQLite file while a not-yet-collected connection still holds it.)"""
     _counter["n"] += 1
+    alerts_mod.drain_inbox()            # a late inbox write must not land in (or initialise) the next test's database
     db.mark_uninitialized()
     db.set_db_file(_DATA / f"test-{_counter['n']}.db")
     db.reset_caches()
@@ -82,6 +90,13 @@ def _reset_runtime() -> None:
     automations.reset()
     track_record.reset()
     payments_mod.reset()
+    mailer_mod.reset()
+    backups_mod.reset()
+    readiness_mod.reset()
+    alerts_mod.reset_digest()
+    canary_mod.reset()
+    platform_mod.reset()
+    telegram_mod.reset()
     metrics.reset()
     events.reset()
     pnl_mod.reset()

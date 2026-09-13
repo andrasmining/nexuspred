@@ -75,15 +75,13 @@ async def test_login_brake_spares_the_accounts_usual_address(admin, anon_client)
 async def test_reset_link_is_not_returned_when_it_was_emailed(client, admin, monkeypatch):
     u = db.create_user("user@example.com", "password123")
 
-    async def mailed(*a, **k):
-        return True
-    monkeypatch.setattr(alerts, "send_email_to", mailed)
+    from app import mailer
+    monkeypatch.setattr(mailer, "can_send", lambda area_id=None: True)        # alpha.95: a mail route exists → queued, link withheld
     r = await client.post(f"/api/users/{u['id']}/reset")
     assert r.status_code == 200 and r.json()["emailed"] is True and r.json()["url"] == ""
+    assert db.outbox_list()[0]["kind"] == "password_reset" and db.outbox_list()[0]["to"] == "user@example.com"
 
-    async def not_mailed(*a, **k):
-        return False
-    monkeypatch.setattr(alerts, "send_email_to", not_mailed)
+    monkeypatch.setattr(mailer, "can_send", lambda area_id=None: False)
     r = await client.post(f"/api/users/{u['id']}/reset")
     assert r.json()["emailed"] is False and "/reset?token=" in r.json()["url"]
 

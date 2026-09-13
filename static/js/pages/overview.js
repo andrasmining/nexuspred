@@ -191,6 +191,37 @@ export default {
     });
 
     const rollover = h("div", { class: "callout warn", hidden: true });
+    // alpha.97: "ready to trade" + the role's first-days checklist
+    const readyBody = h("div", { class: "ready-list" }, h("span", { class: "muted" }, t("Loading…")));
+    const readyTitle = h("span", null, t("Ready to trade"));
+    const readyCard = card({ title: readyTitle, actions: [h("button", { class: "btn btn-ghost btn-sm", onClick: () => loadReadiness() }, icon("refresh"), t("Refresh"))] }, readyBody);
+    const onboardBody = h("div");
+    const onboardCard = card({ title: t("Getting started") }, onboardBody);
+    onboardCard.hidden = true;
+    const TONE = { ok: "on", warn: "warn", fail: "off" };
+    const CHECK_LABEL = { login: t("Broker login"), accounts: t("Trade accounts"), trading: t("Trading switch"), risk: t("Risk guard"), rollover: t("Symbol mapping"), alerts: t("Alert channel"),
+      watchdog: t("External watchdog"), "2fa": t("Two-factor"), listing: t("Marketplace listing"), subscribers: t("Subscribers"), sizing: t("Sizing hint"), backup: t("Backup"), mailer: t("Platform mailer"), disk: t("Disk") };
+    const STEP_LABEL = { login: t("Connect a broker login"), risk: t("Set a risk guard on an account"), alerts: t("Test an alert channel"), signal: t("Create a webhook or subscribe on the marketplace"),
+      record: t("Import your track record (journal)"), listing: t("Publish a webhook or copy group"), sizing: t("State the account size your signals are sized for"), mailer: t("Set up the platform mailer"),
+      backup: t("Switch on off-site backups"), heartbeat: t("Point a monitor at the heartbeat"), status: t("Open the public status page once") };
+    async function loadReadiness() {
+      try {
+        const r = await api.get("/api/workspace/readiness");
+        const c = r.checks;
+        readyTitle.textContent = t("Ready to trade: {ok} of {total}", { ok: c.ok, total: c.total });
+        clear(readyBody);
+        c.checks.forEach((x) => readyBody.append(h("div", { class: "ready-row" }, h("span", { class: `dot ${TONE[x.status] || ""}` }), h("span", null, h("strong", null, CHECK_LABEL[x.key] || x.label), " ", h("span", { class: "muted" }, x.detail)),
+          x.status !== "ok" ? h("a", { class: "fixlink", href: x.url, onClick: (e) => { if (x.url.startsWith("/#/")) { e.preventDefault(); navigate(x.url.slice(2)); } } }, t("Fix")) : null)));
+        const o = r.onboarding;
+        onboardCard.hidden = o.dismissed || o.complete;
+        clear(onboardBody);
+        onboardBody.append(h("p", { class: "hint", style: "margin-top:0" }, t("{done} of {total} done — the steps that make this workspace safe to run.", { done: o.done, total: o.total })));
+        o.steps.forEach((st) => onboardBody.append(h("div", { class: `onboard-step ${st.done ? "done" : ""}` }, st.done ? icon("check") : h("span", { class: "dot" }), h("span", null, STEP_LABEL[st.key] || st.label),
+          !st.done ? h("a", { href: st.url, target: st.url.startsWith("/#/") ? null : "_blank", rel: "noopener", onClick: (e) => { if (st.url.startsWith("/#/")) { e.preventDefault(); navigate(st.url.slice(2)); } else if (st.key === "status") api.post("/api/workspace/onboarding/status-seen", {}).catch(() => null); } }, t("Open")) : null)));
+        onboardBody.append(h("div", { class: "form-actions" }, h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => { try { await api.post("/api/workspace/onboarding/dismiss", {}); onboardCard.hidden = true; } catch (e) { toast(e.message, "error"); } } }, t("Hide this checklist"))));
+      } catch (e) { clear(readyBody); readyBody.append(h("span", { class: "muted" }, errText(e.message))); }
+    }
+    loadReadiness();
     const DATE_KIND = { "first notice": t("first notice"), "expiry (3rd Friday)": t("expiry (3rd Friday)"), "expiry (last Friday)": t("expiry (last Friday)"), expiry: t("expiry") };
     function paintRollover(list) {
       clear(rollover);
@@ -351,6 +382,8 @@ export default {
         h("button", { class: "btn", onClick: async (e) => { const b = e.currentTarget; b.disabled = true; try { await actions.healthCheck(); } finally { b.disabled = false; } } }, icon("refresh"), t("Check connections")),
       ]),
       rollover,
+      onboardCard,
+      readyCard,
       pnlCard,
       h("div", { class: "kpis" }, Object.values(k).filter(Boolean).map((x) => x.el)),
       card({ title: t("Connection health"), actions: [h("button", { class: "btn btn-ghost btn-sm", onClick: () => navigate("/settings/accounts") }, t("Manage logins"))] }, sessions.el),

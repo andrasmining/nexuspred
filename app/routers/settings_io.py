@@ -130,10 +130,23 @@ async def _validate(doc: Any, area_id: int) -> dict[str, Any]:
     return incoming
 
 
+def _for_role(doc: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    """alpha.99: a User's file carries no sharing blocks (they cannot publish anyway)."""
+    from .. import web
+    if web.has_role(user, "broadcaster"):
+        return doc
+    st = doc.get("settings") or {}
+    for w in st.get("webhooks") or []:
+        w.pop("sharing", None)
+    for g in st.get("copy_groups") or []:
+        g.pop("sharing", None)
+    return doc
+
+
 @router.get("/export")
 async def api_export(request: Request) -> JSONResponse:
     user = request.state.user
-    doc = export_settings(context.get_area())
+    doc = _for_role(export_settings(context.get_area()), user)
     db.log_action(user["id"], user["email"], "settings_export", user["email"])
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     return JSONResponse(doc, headers={"Content-Disposition": f'attachment; filename="fluxbridge-settings-{stamp}.json"'})

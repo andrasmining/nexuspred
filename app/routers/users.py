@@ -2,12 +2,14 @@
 self-service password change, admin-issued password resets."""
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import alerts, config, context, db, state
+from .. import alerts, config, context, db, mailer, platform, state
 from ..discord_signals import listener as discord_listener
 from .. import roles, web
 from ..web import base_url, require_admin, require_role, set_session_cookie
@@ -30,7 +32,10 @@ async def api_me(request: Request) -> dict[str, Any]:
             "role_request": u.get("role_request") or "", "capabilities": web.capabilities(u),
             "features": db.user_features(u["id"]),
             "support": {"area_id": support["area_id"], "email": support["email"]} if support else None,
-            "totp_enabled": bool(u.get("totp_enabled")), "totp_required": bool(u.get("totp_required"))}
+            "totp_enabled": bool(u.get("totp_enabled")), "totp_required": bool(u.get("totp_required")),
+            "mail_blocked": mailer.address_blocked(u["email"]),
+            "quotas": web.quota_usage(context.get_area(), u), "banner": platform.banner_for(u),
+            "support_grant": web.support_grant(context.get_area())}
 
 
 @router.post("/me/role-request")
@@ -41,13 +46,16 @@ async def api_role_request(request: Request) -> dict[str, Any]:
     wanted = str(body.get("role") or "broadcaster")
     if wanted != "broadcaster" or web.has_role(user, "broadcaster"):
         raise HTTPException(status_code=400, detail="Only the Broadcaster role can be requested")
-    db.request_role(user["id"], "broadcaster")
+    note = {k: str(body.get(k) or "").strip()[:500] for k in ("strategy", "instruments", "experience", "link")}   # alpha.98: the application
+    if note["link"] and not note["link"].startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="The link must start with http:// or https://")
+    db.request_role(user["id"], "broadcaster", note)
     db.log_action(user["id"], user["email"], "role_request", user["email"], "broadcaster")
     state.log_event("info", f"{user['email']} asked for the Broadcaster role — approve it under Settings → Users")
     with context.use_area(context.DEFAULT_AREA_ID):                       # the operator's workspace hears it too
         state.log_event("info", f"{user['email']} asked for the Broadcaster role — approve it under Settings → Users")
     try:
-        await alerts.notify_admins("Broadcaster request", f"{user['email']} asked for the Broadcaster role. Approve it under Settings → Users.")
+        await alerts.notify_admins("role_request", {"email": user["email"], "url": base_url(request) + "/#/settings/users"})
     except Exception:  # noqa: BLE001 - an alert channel must never fail the request
         pass
     return {"status": "requested", "role": "broadcaster"}
@@ -58,6 +66,33 @@ async def api_role_request_withdraw(request: Request) -> dict[str, Any]:
     user = require_role(request, "user")
     db.clear_role_request(user["id"])
     return {"status": "withdrawn"}
+
+
+def _expiry(body: dict[str, Any]) -> str | None:
+    """``days`` in the body: >0 = a trial ending then, 0 = permanent (clears), absent = keep."""
+    if "days" not in body:
+        return None
+    try:
+        days = int(body.get("days") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="days must be a number")
+    if days <= 0:
+        return ""
+    if days > 365:
+        raise HTTPException(status_code=400, detail="a trial is at most 365 days")
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
+
+
+@router.get("/users/{user_id}/application")
+async def api_application(request: Request, user_id: int) -> dict[str, Any]:
+    """Admin: the Broadcaster application of a user next to their track record."""
+    from .. import broadcaster
+    require_admin(request)
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    return await asyncio.to_thread(broadcaster.application, target)
 
 
 @router.post("/users/{user_id}/role")
@@ -80,17 +115,61 @@ async def api_set_role(request: Request, user_id: int) -> dict[str, Any]:
     before = web.role_of(target)
     if before == role:
         db.clear_role_request(user_id)
-        return {"user_id": user_id, "role": role, "effects": {}}
+        exp = _expiry(body)
+        if exp is not None and role == "broadcaster":                    # alpha.98: extend / end a trial
+            db.set_role(user_id, role, expires_at=exp)
+            db.log_action(admin["id"], admin["email"], "role_set", target["email"], f"broadcaster trial {'until ' + exp[:10] if exp else 'made permanent'}")
+        return {"user_id": user_id, "role": role, "effects": {}, "expires_at": db.get_user(user_id).get("role_expires_at", "")}
     effects: dict[str, int] = {}
     if web.ROLE_RANK[before] >= web.ROLE_RANK["broadcaster"] and web.ROLE_RANK[role] < web.ROLE_RANK["broadcaster"]:
         area = db.user_primary_area(user_id)
         if area:
             effects = await roles.demote_publisher(area)
-    db.set_role(user_id, role)
+    db.set_role(user_id, role, expires_at=_expiry(body))
+    if mailer.can_send(context.get_area()):
+        lang = mailer.lang_for_user(user_id)
+        mailer.send_template(target["email"], "role_changed", {**mailer.role_ctx(role, lang, admin["email"]), "url": base_url(request) + "/"},
+                             lang=lang, area_id=context.get_area())
     db.log_action(admin["id"], admin["email"], "role_set", target["email"], f"{before} → {role}"
                   + (f" ({effects['listings']} listings unpublished, {effects['groups']} groups disabled)" if effects else ""))
     state.log_event("info", f"Role of {target['email']} set to {role} by {admin['email']}")
-    return {"user_id": user_id, "role": role, "effects": effects}
+    return {"user_id": user_id, "role": role, "effects": effects, "expires_at": db.get_user(user_id).get("role_expires_at", "")}
+
+
+@router.put("/users/{user_id}/quota")
+async def api_set_quota(request: Request, user_id: int) -> dict[str, Any]:
+    """Admin: per-user limits (webhooks / groups / agents); null = unlimited, absent = the role's default."""
+    import json
+    admin = require_admin(request)
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected an object")
+    q: dict[str, Any] = {}
+    for k in ("webhooks", "groups", "agents"):
+        if k in body:
+            v = body[k]
+            if v in (None, "", "unlimited"):
+                q[k] = None
+            else:
+                try:
+                    q[k] = max(0, min(int(v), 10000))
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail=f"{k} must be a number or null")
+    db.meta_set(f"quota:{user_id}", json.dumps(q) if q else "")
+    db.log_action(admin["id"], admin["email"], "quota_set", target["email"], json.dumps(q) if q else "defaults")
+    return {"user_id": user_id, "quota": web.quota_for(target), "usage": web.quota_usage(db.user_primary_area(user_id) or 0, target)}
+
+
+@router.get("/users/{user_id}/quota")
+async def api_get_quota(request: Request, user_id: int) -> dict[str, Any]:
+    require_admin(request)
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    return {"user_id": user_id, "quota": web.quota_for(target), "usage": web.quota_usage(db.user_primary_area(user_id) or 0, target)}
 
 
 @router.post("/users/{user_id}/support")
@@ -185,12 +264,14 @@ async def api_create_invite(request: Request) -> dict[str, Any]:
                   f"{role} invite" if role != "user" else "")
     url = f"{base_url(request)}/register?code={code}"
     emailed = False
-    if email and "@" in email and bool(body.get("send_email")):
-        emailed = await alerts.send_email_to(
-            email, "You're invited to Fluxbridge",
-            f"You've been invited to Fluxbridge. Create your account here:\n\n{url}\n\n"
-            "This link is single-use. If you didn't expect this, you can ignore it.")
-    return {"code": code, "url": url, "role": role, "emailed": emailed, "smtp_configured": alerts.smtp_configured()}
+    area = context.get_area()
+    if email and "@" in email and bool(body.get("send_email")) and mailer.can_send(area):
+        lang = mailer.lang_for_area(area)
+        note = {"en": {"broadcaster": " as a Broadcaster", "admin": " as an administrator"}, "de": {"broadcaster": " als Broadcaster", "admin": " als Administrator"}}
+        mailer.send_template(email, "invite", {"inviter": admin["email"], "url": url, "expiry": "",
+                                               "role_note": note.get(lang, note["en"]).get(role, "")}, lang=lang, area_id=area)
+        emailed = True
+    return {"code": code, "url": url, "role": role, "emailed": emailed, "smtp_configured": mailer.can_send(area)}
 
 
 @router.get("/invites")
@@ -292,11 +373,12 @@ async def api_create_reset(request: Request, user_id: int) -> dict[str, Any]:
     token = db.create_password_reset(user_id)
     db.log_action(admin["id"], admin["email"], "password_reset", target["email"])
     url = f"{base_url(request)}/reset?token={token}"
-    emailed = await alerts.send_email_to(
-        target["email"], "Reset your Fluxbridge password",
-        f"An administrator started a password reset for your Fluxbridge account.\n\n"
-        f"Set a new password here (single-use, expires in 24 hours):\n\n{url}\n\n"
-        "If you didn't expect this, contact your administrator.")
+    area = context.get_area()
+    emailed = mailer.can_send(area)
+    if emailed:
+        lang = mailer.lang_for_user(user_id)
+        who = {"en": "An administrator", "de": "Ein Administrator"}.get(lang, "An administrator")
+        mailer.send_template(target["email"], "password_reset", {"who": who, "url": url}, lang=lang, area_id=area)
     # The link is a login: hand it to the admin only when it could not be mailed
-    # to the user (no SMTP) and they have to pass it on out of band.
-    return {"user_id": user_id, "url": "" if emailed else url, "emailed": emailed, "smtp_configured": alerts.smtp_configured()}
+    # to the user (no mail route) and they have to pass it on out of band.
+    return {"user_id": user_id, "url": "" if emailed else url, "emailed": emailed, "smtp_configured": emailed}

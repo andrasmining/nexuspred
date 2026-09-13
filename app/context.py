@@ -36,6 +36,18 @@ def get_area_optional() -> Optional[int]:
     return _area.get()
 
 
+_actor: ContextVar[str] = ContextVar("current_actor", default="system")
+
+
+def get_actor() -> str:
+    """Who is acting in this request (e-mail), "system" for loops (alpha.99: settings history)."""
+    return _actor.get()
+
+
+def set_actor(actor: str):
+    return _actor.set(actor or "system")
+
+
 def set_area(area_id: Optional[int]):
     """Set the current area; returns the token for :func:`reset_area`."""
     return _area.set(area_id)

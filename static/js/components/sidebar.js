@@ -15,6 +15,7 @@ export const NAV = [
   { group: t("Routing"), items: [
     { path: "/webhooks", label: t("Webhooks"), icon: "webhook" },
     { path: "/marketplace", label: t("Marketplace"), icon: "store" },
+    { path: "/cockpit", label: t("Cockpit"), icon: "activity", gate: "publish" },
     { path: "/copy", label: t("Copy Trading"), icon: "share" },
     { path: "/subscriptions", label: t("Subscription journal"), icon: "activity" },
   ] },
@@ -30,6 +31,8 @@ export const NAV = [
       { path: "/settings/account", label: t("Account") },
       { path: "/settings/users", label: t("Users"), gate: "admin" },
       { path: "/settings/payments", label: t("Payments"), gate: "admin" },
+      { path: "/settings/platform", label: t("Platform"), gate: "admin" },
+      { path: "/settings/backups", label: t("Backups"), gate: "admin" },
       { path: "/settings/agents", label: t("Execution Agents") },
       { path: "/settings/news", label: t("News & Calendar"), gate: "admin" },
       { path: "/settings/updates", label: t("Updates"), gate: "admin" },

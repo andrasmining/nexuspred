@@ -465,6 +465,15 @@ async def _apply(p: Optional[dict[str, Any]]) -> None:
     db.set_subscription_status(sub["id"], p["publisher_area_id"], target)
     with context.use_area(p["area_id"]):
         state.log_event("info", f"Subscription {key}: payment {p['status']} → {target}")
+    if target == "unpaid":
+        try:
+            from . import alerts
+            who = db.area_owner_email(p["area_id"]) or f"workspace {p['area_id']}"
+            await alerts.publisher_event(p["publisher_area_id"], "payment.failed", f"Payment {p['status']}: {key}",
+                                         f"{who}: payment for '{key}' is {p['status']} — the subscription is paused until Stripe confirms a payment",
+                                         severity="warn", url="/#/webhooks")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("payment alert failed: %s", exc)
     if key.startswith("copy:"):
         try:
             await cp.sync_area(p["publisher_area_id"])

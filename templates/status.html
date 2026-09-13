@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="{{ lang or 'en' }}" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="robots" content="noindex" />
+  <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg" />
+  <title>Fluxbridge {{ t("Status") }}</title>
+  <script nonce="{{ nonce }}">
+    (function () {
+      try {
+        var th = localStorage.getItem("fb_theme");
+        if (!th || th === "system") { th = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"; }
+        document.documentElement.dataset.theme = th;
+      } catch (e) { /* ignore */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/css/tokens.css" />
+  <style nonce="{{ nonce }}">
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14.5px; line-height: 1.5; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 36px 18px 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; color: var(--text-dim); font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+    .brand b { color: var(--accent); font-size: 18px; }
+    h1 { font-size: 26px; margin: 18px 0 6px; }
+    .lead { color: var(--text-dim); margin: 0 0 22px; }
+    .hero { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-card); margin-bottom: 18px; }
+    .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+    .ok .dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 25%, transparent); }
+    .degraded .dot { background: var(--amber); box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 25%, transparent); }
+    .down .dot { background: var(--red); box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 25%, transparent); }
+    .hero strong { font-size: 17px; }
+    .hero small { display: block; color: var(--text-dim); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 22px; }
+    .tile { padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); }
+    .tile .k { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    .tile .v { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .tile .s { color: var(--text-dim); font-size: 12.5px; }
+    .row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); }
+    .row:last-child { border-bottom: 0; }
+    .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); }
+    .pill.ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); }
+    .pill.degraded { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
+    .pill.down, .pill.investigating, .pill.identified { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+    .pill.monitoring { color: var(--amber); }
+    .pill.resolved { color: var(--green); }
+    h2 { font-size: 16px; margin: 26px 0 10px; }
+    .inc { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); padding: 12px 16px; margin-bottom: 10px; }
+    .inc h3 { margin: 0; font-size: 15px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+    .inc .u { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 13.5px; }
+    .inc .u time { color: var(--text-dim); font-size: 12px; display: block; }
+    .muted { color: var(--text-dim); }
+    footer { margin-top: 30px; color: var(--text-faint); font-size: 12px; }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand"><b>◈</b> Fluxbridge</div>
+    <h1>{{ t("System status") }}</h1>
+    <p class="lead">{{ t("Whether the bridge is up, which brokers it can reach and how fast signals are executed. No account data is shown here.") }}</p>
+
+    {% set s = summary %}
+    <div class="hero {{ s.status }}">
+      <div class="dot"></div>
+      <div>
+        <strong>
+          {% if s.status == "ok" %}{{ t("All systems operational") }}
+          {% elif s.status == "degraded" %}{{ t("Degraded performance") }}
+          {% else %}{{ t("Major outage") }}{% endif %}
+        </strong>
+        <small>{{ t("Version") }} {{ s.version }} · {{ t("checked") }} {{ s.checked_at[:16].replace("T", " ") if s.checked_at else "—" }} UTC</small>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="tile"><div class="k">{{ t("Uptime") }}</div><div class="v">{{ (s.uptime_s // 3600) }} h {{ ((s.uptime_s % 3600) // 60) }} min</div><div class="s">{{ t("since the last restart") }}</div></div>
+      <div class="tile"><div class="k">{{ t("Signal latency (1 h)") }}</div>
+        {% if s.latency.count %}<div class="v">{{ s.latency.p50_ms }} ms</div><div class="s">p50 · p95 {{ s.latency.p95_ms }} ms · {{ s.latency.count }} {{ t("signals") }}</div>
+        {% else %}<div class="v">—</div><div class="s">{{ t("no signals in the last hour") }}</div>{% endif %}
+      </div>
+    </div>
+
+    <h2>{{ t("Brokers") }}</h2>
+    <div class="tile">
+      {% if s.brokers %}
+        {% for name, st in s.brokers.items() %}
+          <div class="row"><span>{{ {"tradovate": "Tradovate", "projectx": "ProjectX", "rithmic": "Rithmic"}.get(name, name) }}</span>
+            <span class="pill {{ st }}">{% if st == "ok" %}{{ t("connected") }}{% elif st == "degraded" %}{{ t("partly connected") }}{% else %}{{ t("disconnected") }}{% endif %}</span></div>
+        {% endfor %}
+      {% else %}
+        <div class="muted">{{ t("No broker session is configured yet.") }}</div>
+      {% endif %}
+    </div>
+
+    <h2>{{ t("Incidents") }}</h2>
+    {% if s.incidents %}
+      {% for inc in s.incidents %}
+        <div class="inc">
+          <h3><span>{{ inc.title }}</span><span class="pill {{ inc.status }}">{{ t(inc.status) }}</span></h3>
+          {% for u in inc.updates | reverse %}
+            <div class="u"><time>{{ u.at[:16].replace("T", " ") }} UTC · {{ t(u.status) }}</time>{{ u.body }}</div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="tile muted">{{ t("No incidents in the last 7 days.") }}</div>
+    {% endif %}
+
+    <footer>{{ t("Machine-readable:") }} <a href="/api/public/status">/api/public/status</a></footer>
+  </div>
+</body>
+</html>

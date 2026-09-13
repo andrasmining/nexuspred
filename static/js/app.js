@@ -42,12 +42,54 @@ function paintSidebar() {
 
 /* ------------------------------------------------------------- support view */
 let supportBanner = null;
+let mailBanner = null;
+let noticeBanner = null;
+/* alpha.99: an admin broadcast banner, dismissable per viewer */
+function paintNoticeBanner() {
+  const me = store.get("me");
+  if (noticeBanner) { noticeBanner.remove(); noticeBanner = null; }
+  const b = me && me.banner;
+  if (!b) return;
+  try { if (localStorage.getItem("fb_banner_dismissed") === b.id) return; } catch (e) { /* ignore */ }
+  noticeBanner = h("div", { class: "support-banner warn", role: "status" },
+    h("strong", null, b.title), " ", b.body,
+    h("button", { type: "button", class: "btn btn-sm", onClick: () => { try { localStorage.setItem("fb_banner_dismissed", b.id); } catch (e) { /* ignore */ } noticeBanner.remove(); noticeBanner = null; } }, t("Dismiss")));
+  shell.prepend(noticeBanner);
+}
+/* alpha.97: the release notes once per version, after the shell is up */
+async function showWhatsNew() {
+  try {
+    const r = await api.get("/api/whatsnew");
+    if (r.seen) return;
+    if (r.first_login || !r.bullets.length) { await api.post("/api/whatsnew/seen", {}); return; }
+    const { openDrawer, closeDrawer } = await import("./components/drawer.js");
+    openDrawer({ title: t("What's new in {version}", { version: r.version }),
+      body: h("div", null, h("ul", { class: "whatsnew" }, r.bullets.map((b) => h("li", null, b.replace(/\*\*|`/g, "")))), h("p", { class: "hint" }, t("The full changelog is on GitHub."))),
+      foot: h("button", { type: "button", class: "btn btn-primary", onClick: async () => { closeDrawer(); try { await api.post("/api/whatsnew/seen", {}); } catch (e) { /* shown again next time */ } } }, t("Got it")),
+      width: "560px" });
+  } catch (e) { /* not essential */ }
+}
+function paintMailBanner() {
+  const me = store.get("me");
+  if (mailBanner) { mailBanner.remove(); mailBanner = null; }
+  if (!me || !me.mail_blocked) return;
+  mailBanner = h("div", { class: "support-banner warn", role: "status" },
+    h("strong", null, t("E-mail not reaching you")), " ", t("Several messages to {email} could not be delivered. Check the address under Settings → Account or ask your admin to look at the mail log.", { email: me.email }));
+  shell.prepend(mailBanner);
+}
 function paintSupportBanner() {
   const me = store.get("me");
   if (supportBanner) { supportBanner.remove(); supportBanner = null; }
   if (!me || !me.support) return;
   supportBanner = h("div", { class: "support-banner", role: "status" },
-    h("strong", null, t("Support view")), " ", t("You are looking at the workspace of {email}. Everything is read-only; nothing you do here changes their data.", { email: me.support.email }),
+    h("strong", null, t("Support view")), " ", me.support_grant ? t("You are looking at the workspace of {email}. The user granted write access — every change is logged under your name.", { email: me.support.email })
+      : t("You are looking at the workspace of {email}. Everything is read-only; nothing you do here changes their data.", { email: me.support.email }),
+    h("button", { type: "button", class: "btn btn-sm", onClick: async () => {
+      const { promptDialog } = await import("./ui.js");
+      const text = await promptDialog({ title: t("Note to {email}", { email: me.support.email }), label: t("They see it in their inbox."), placeholder: t("What you looked at, what to do next…") });
+      if (!text) return;
+      try { await api.post("/api/support/note", { message: text }); toast(t("Note left"), "success"); } catch (e) { toast(e.message, "error"); }
+    } }, t("Leave a note")),
     h("button", { type: "button", class: "btn btn-sm", onClick: async () => { try { await api.post("/api/support/exit"); window.location.hash = "#/settings/users"; window.location.reload(); } catch (e) { toast(e.message, "error"); } } }, t("Leave support view")));
   shell.prepend(supportBanner);
 }
@@ -108,10 +150,13 @@ async function boot() {
     return;
   }
   paintSupportBanner();
+  paintMailBanner();
+  paintNoticeBanner();
   // Data the shell and most pages need right away.
   await Promise.all([actions.loadSettings().catch(() => null), actions.refreshStatus(), actions.loadWebhooks(), actions.loadTradeAccounts()]);
   window.addEventListener("hashchange", render);
   render();
+  showWhatsNew();                       // after the first page paint: a route render closes open drawers
 
   connectStream();
   registerWorker();  // push notifications (no-op where unsupported); never caches pages

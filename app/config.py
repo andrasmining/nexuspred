@@ -144,6 +144,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "copy_groups": [],
     "automations": [],                # per-workspace rules: when <event> then <action> (app.automations)
     # One summary per day (local time in journal_timezone) with realised P&L.
+    "alert_on_subscribers": True,       # alpha.97: publisher-side marketplace events
+    "alert_min_severity_push": "info",  # alpha.97: per channel, the least severe alert that gets through
+    "alert_min_severity_email": "info",
+    "alert_min_severity_discord": "info",
+    "alert_quiet_from": "",             # HH:MM in journal_timezone; critical alerts ignore the window
+    "alert_quiet_to": "",
+    "alert_digest_trades": False,       # fold trade alerts into one message every alert_digest_minutes
+    "alert_digest_minutes": 15,
+    "alert_telegram_enabled": False,    # alpha.99: the linked Telegram chat as a channel
+    "alert_min_severity_telegram": "warn",
+    "alert_escalation": False,          # alpha.99: critical alerts escalate until acknowledged
+    "alert_sms_to": "",                 # E.164 number for the last escalation step (Twilio, admin-configured)
     "alert_daily_summary": True,
     "daily_summary_time": "22:05",
     # Discord listener health (self-bot Gateway connection).
@@ -432,8 +444,39 @@ def _persist(aid: int, current: dict[str, Any]) -> None:
     before = _cache.get(aid)
     if before is None or before.get("webhooks") != current.get("webhooks"):
         _webhooks_generation += 1       # the token index is rebuilt only when a webhook list changed
+    _record_version(aid, before, current)
     _set_cache(aid, current)
     _generation += 1
+
+
+# alpha.99: the settings history — one version per meaningful change, the last
+# thirty per workspace, restorable from Settings → General. State that machines
+# rewrite every tick (risk / drawdown state, "seen" stamps) never makes a version.
+HISTORY_SKIP = frozenset({"risk_state", "dd_state", "ui_language_seen", "rollover_notified"})
+
+
+_fingerprints: dict[int, dict[str, int]] = {}
+
+
+def _record_version(aid: int, before: dict[str, Any] | None, current: dict[str, Any]) -> None:
+    try:
+        from . import context, crypto, db
+        prints = {k: hash(json.dumps(v, sort_keys=True, default=str)) for k, v in current.items()}
+        prev = _fingerprints.get(aid)
+        if prev is None:
+            keys = ["initial"] if not db.list_settings_versions(aid, limit=1) else [k for k, h in prints.items() if h != prev.get(k)] if prev else []
+            if prev is None and db.list_settings_versions(aid, limit=1):
+                keys = list(current.keys())            # first save since start: everything may have changed
+        else:
+            keys = [k for k, h in prints.items() if h != prev.get(k)]
+        _fingerprints[aid] = prints
+        keys = [k for k in keys if k not in HISTORY_SKIP]
+        if not keys:
+            return
+        snap = json.dumps(crypto.encrypt_settings(current), default=str)
+        db.add_settings_version(aid, context.get_actor(), keys, snap)
+    except Exception as exc:  # noqa: BLE001 - history must never block a save
+        log.warning("settings history for area %s not recorded: %s", aid, exc)
 
 
 def save_settings(updates: dict[str, Any], area_id: int | None = None) -> dict[str, Any]:
@@ -469,6 +512,7 @@ def invalidate(area_id: int | None = None) -> None:
         if area_id is None:
             _cache.clear()
             _snapshots.clear()
+            _fingerprints.clear()
         else:
             _cache.pop(area_id, None)
             _snapshots.pop(area_id, None)

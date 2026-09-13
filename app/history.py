@@ -86,6 +86,11 @@ def _worker() -> None:
                 _idle.set()
 
 
+def backlog() -> int:
+    """Rows waiting for the writer thread (alpha.96: a readiness signal)."""
+    return _q.qsize()
+
+
 def start() -> None:
     """Start the background writer (idempotent)."""
     global _thread, _running

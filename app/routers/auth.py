@@ -15,8 +15,18 @@ from ..web import render, secure, set_session_cookie
 def _signed_in(request: Request, user: dict, how: str) -> None:
     """Stamp + audit a successful sign-in (login, invite registration, reset)."""
     ip = client_ip(request)
+    prev = str(user.get("last_login_ip") or "")
     db.record_login(user["id"], ip)
     db.log_action(user["id"], user["email"], "login_ok", ip, how)
+    if prev and ip and ip != prev and how == "password":       # alpha.97: a new address gets a note in the inbox
+        area = db.user_primary_area(user["id"])
+        if area:
+            from .. import alerts
+            try:
+                asyncio.get_running_loop().create_task(alerts.security_event(area, "login.new_ip", "Sign-in from a new address",
+                                                                             f"Your account signed in from {ip} (before: {prev}). Not you? Change your password and sign out everywhere under Settings → Security."))
+            except RuntimeError:
+                pass
 
 _RATE = "Too many attempts — please wait a minute and try again."
 

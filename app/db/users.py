@@ -40,6 +40,8 @@ def _row_to_user(row: sqlite3.Row) -> dict[str, Any]:
     return {"id": row["id"], "email": row["email"], "is_admin": role == "admin", "role": role,
             "role_request": str(row["role_request"] or "") if "role_request" in keys else "",
             "role_requested_at": str(row["role_requested_at"] or "") if "role_requested_at" in keys else "",
+            "role_note": _json_or_empty(row["role_note"]) if "role_note" in keys else {},
+            "role_expires_at": str(row["role_expires_at"] or "") if "role_expires_at" in keys else "",
             "created_at": row["created_at"],
             "last_login_at": row["last_login_at"] if "last_login_at" in keys else None,
             "last_login_ip": row["last_login_ip"] if "last_login_ip" in keys else None,
@@ -189,26 +191,49 @@ async def authenticate_async(email: str, password: str) -> Optional[dict[str, An
     return await asyncio.to_thread(authenticate, email, password)
 
 
-def set_role(user_id: int, role: str) -> Optional[dict[str, Any]]:
-    """Change a user's role (admin / broadcaster / user); the legacy flag follows."""
+def _json_or_empty(raw: Any) -> dict[str, Any]:
+    import json
+    try:
+        v = json.loads(raw) if raw else {}
+        return v if isinstance(v, dict) else {}
+    except ValueError:
+        return {}
+
+
+def set_role(user_id: int, role: str, *, expires_at: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Change a user's role (admin / broadcaster / user); the legacy flag follows.
+    ``expires_at`` (ISO) makes a Broadcaster role a trial; "" clears an expiry, None keeps it."""
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
     init()
     with _connect() as c:
         c.execute("UPDATE users SET role=?, is_admin=?, role_request='', role_requested_at='' WHERE id=?",
                   (role, 1 if role == "admin" else 0, user_id))
+        if expires_at is not None or role != "broadcaster":
+            c.execute("UPDATE users SET role_expires_at=? WHERE id=?", (expires_at if (role == "broadcaster" and expires_at) else "", user_id))
     _users.pop(user_id, None)
     return get_user(user_id)
 
 
-def request_role(user_id: int, role: str) -> None:
-    """A user asks for a higher role (the admin approves in the Users page)."""
+def request_role(user_id: int, role: str, note: Optional[dict[str, Any]] = None) -> None:
+    """A user asks for a higher role (the admin approves in the Users page);
+    ``note`` is the application (strategy, instruments, experience, link)."""
+    import json
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
     init()
     with _connect() as c:
-        c.execute("UPDATE users SET role_request=?, role_requested_at=? WHERE id=?", (role, _now(), user_id))
+        c.execute("UPDATE users SET role_request=?, role_requested_at=?, role_note=? WHERE id=?",
+                  (role, _now(), json.dumps(note or {}), user_id))
     _users.pop(user_id, None)
+
+
+def expiring_roles() -> list[dict[str, Any]]:
+    """Users whose role carries an expiry (trial Broadcasters)."""
+    init()
+    with _connect() as c:
+        rows = c.execute("SELECT * FROM users WHERE role_expires_at!='' ORDER BY role_expires_at").fetchall()
+    return [_row_to_user(r) for r in rows]
 
 
 def clear_role_request(user_id: int) -> None:
