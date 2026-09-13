@@ -29,9 +29,9 @@ _loop_tasks: list[asyncio.Task] = []
 async def _startup() -> None:
     try:
         restored = backups.apply_pending_restore()          # alpha.99: a rollback's database, before the first open
-    except Exception as exc:  # noqa: BLE001
-        restored = None
-        logging.getLogger(__name__).error("pending restore failed: %s", exc)
+    except Exception:  # a requested rollback must never fall through to opening uncertain state
+        logging.getLogger(__name__).exception("pending restore failed; refusing startup")
+        raise
     db.init()
     if restored:
         state.log_event("warn", f"Database restored from snapshot {restored}")
