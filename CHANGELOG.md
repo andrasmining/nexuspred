@@ -4,6 +4,34 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.103
+**Every fan-out across the platform now runs in parallel.** A static sweep of the whole
+codebase looked for the pattern alpha.102 removed from the order lane: a loop that awaits a
+broker call once per login, per follower or per contract, serialising work that is
+independent. Six places still did it; all six were changed, and a test now guards the rule.
+
+| Path | Was | Now |
+|---|---|---|
+| News lock across workspaces (`app/news.py`) | one workspace flattened after another | every workspace at once |
+| News lock, several active windows in one workspace | one full flatten per window, back to back | one flatten covers them all |
+| Copy: seeding follower logins (`app/copy/group_runner.py`) | one login's positions after another | every login at once |
+| Copy: drift reconcile across logins | one login after another | every login at once |
+| Copy: flatten, the contracts of one follower | one contract's close after another | all contracts together, still under the account's lock |
+| Copy: reading follower working orders (`app/copy/orders.py`) | one login after another | every login at once |
+| Watchdog trade alerts (`app/watch.py`) | one login's positions after another | every login at once |
+
+Measured with a 50 ms fake broker call and four independent parts: 200 ms → 50 ms on each of
+the reworked reads. The copy flatten of 10 followers on one login is 563 ms (was 1147 ms
+before alpha.102), of which 500 ms is the deliberate settle wait before the verification read.
+
+Already parallel and left alone: the webhook signal across routed accounts, the bracket's
+legs, the marketplace fan-out to subscribers, the emergency flatten across accounts, the
+risk guard. Deliberately sequential and documented as such: the two retry loops in
+`app/engine/common.py`, where attempt 2 exists only because attempt 1 failed.
+
+- `tests/test_alpha101.py` now parses every module and fails on a new serial broker loop,
+  with an explicit allowlist naming why each exception is one.
+
 ## 5.0.0-alpha.102
 **Copy trading fans out in one burst.** Orders decided in one moment now leave in one moment.
 

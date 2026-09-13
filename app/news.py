@@ -417,6 +417,7 @@ async def _tick_area(area_id: int, settings: Optional[dict[str, Any]] = None) ->
     if not s["enabled"]:
         return
     now = datetime.now(timezone.utc)
+    needs_flatten: list[tuple[int, str]] = []
     # the lock may start up to ``before`` minutes ahead: scan as far as the widest setting
     for w in windows(area_id, hours=max(1.0, float(s.get("before") or 0) / 60.0 + 0.1), now=now, settings=s):
         if not w["active"]:
@@ -433,16 +434,22 @@ async def _tick_area(area_id: int, settings: Optional[dict[str, Any]] = None) ->
                 except Exception as exc:  # noqa: BLE001
                     log.warning("news alert failed: %s", exc)
         if s["action"] == "flatten" and k not in _flattened and _flatten_tries.get(k, 0) < FLATTEN_TRIES:
-            from . import signals
-            with context.use_area(area_id):
-                try:
-                    r = await signals.flatten_all()
-                    _flattened.add(k)                      # only a completed flatten counts; a failed one is retried next tick
-                    state.log_event("warn", f"News lock flatten: {r.get('flattened', 0)} position(s) closed, {r.get('cancelled', 0)} order(s) cancelled"
-                                            + (f" — errors: {'; '.join(r.get('errors') or [])[:200]}" if r.get("errors") else ""))
-                except Exception as exc:  # noqa: BLE001
+            needs_flatten.append(k)
+    if needs_flatten:
+        # One flatten covers every window that is active at this moment: two
+        # overlapping news events used to run two full flattens back to back,
+        # the second one only after the first had finished at the broker.
+        from . import signals
+        with context.use_area(area_id):
+            try:
+                r = await signals.flatten_all()
+                _flattened.update(needs_flatten)           # only a completed flatten counts; a failed one is retried next tick
+                state.log_event("warn", f"News lock flatten: {r.get('flattened', 0)} position(s) closed, {r.get('cancelled', 0)} order(s) cancelled"
+                                        + (f" — errors: {'; '.join(r.get('errors') or [])[:200]}" if r.get("errors") else ""))
+            except Exception as exc:  # noqa: BLE001
+                for k in needs_flatten:
                     _flatten_tries[k] = _flatten_tries.get(k, 0) + 1
-                    state.log_event("error", f"News lock flatten failed ({_flatten_tries[k]}/{FLATTEN_TRIES}): {exc}")
+                state.log_event("error", f"News lock flatten failed ({max(_flatten_tries.get(k, 0) for k in needs_flatten)}/{FLATTEN_TRIES}): {exc}")
     # forget keys older than a day so the sets stay small
     cutoff = (now - timedelta(days=1)).isoformat()
     for st in (_alerted, _flattened):
@@ -468,11 +475,16 @@ async def news_loop() -> None:
             per_area = {a: settings_for(a) for a in db.all_area_ids()}
             if any(s["enabled"] for s in per_area.values()):
                 await refresh()
-                for aid, s in per_area.items():
+                # Every workspace at once. A news lock that flattens used to run
+                # one workspace after another, so the last one kept its positions
+                # through every earlier workspace's broker round trips — the one
+                # moment where that is least acceptable.
+                async def tick(aid: int, s: dict[str, Any]) -> None:
                     try:
                         await _tick_area(aid, s)
                     except Exception as exc:  # noqa: BLE001
                         log.warning("news tick failed for area %s: %s", aid, exc)
+                await asyncio.gather(*(tick(aid, s) for aid, s in per_area.items()))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001

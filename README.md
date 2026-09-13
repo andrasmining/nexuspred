@@ -550,7 +550,11 @@ that moment is.
 | Environment override | `NEXUSPRED_TRADOVATE_ORDER_BURST` | `NEXUSPRED_PROJECTX_ORDER_BURST` |
 
 Before this, six copy followers on one login were filled 300 ms apart; now the spread is
-under a millisecond. Every 429 the broker does return is counted on the login's status
+under a millisecond. **Nothing else in the platform fans out one item at a time either**
+(alpha.103): the news lock flattens every workspace at once, copy trading seeds, reconciles
+and reads its follower logins together, a follower's contracts close together, and the
+watchdog polls every login at once. A test parses every module and fails on a new serial
+broker loop; the only two exceptions are retry loops, named in its allowlist. Every 429 the broker does return is counted on the login's status
 (`rate_limits`, `last_rate_limit` in `/api/status`), so the burst can be raised or lowered
 against evidence.
 

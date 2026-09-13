@@ -156,6 +156,7 @@ class OrderMirror:
         ``/order/list`` — five followers used to cost five identical requests."""
         out: dict[str, set[int]] = {}
         by_session: dict[int, tuple[Any, list[tuple[dict[str, Any], Any]]]] = {}
+        singles: list[tuple[dict[str, Any], Any]] = []
         for f in self.r.followers:
             ex = self.r._executor(f)
             if ex is None:
@@ -164,25 +165,33 @@ class OrderMirror:
             if sess is not None and getattr(sess, "kind", "tradovate") == "tradovate" and hasattr(sess, "orders_snapshot") and getattr(ex, "id", 0):
                 by_session.setdefault(id(sess), (sess, []))[1].append((f, ex))
                 continue
+            singles.append((f, ex))                      # a broker without a login-wide order list
+
+        async def read_one(f: dict[str, Any], ex: Any) -> None:
             try:
                 out[f["spec"]] = {int(o["id"]) for o in await ex.working_orders() if o.get("id")}
             except Exception:  # noqa: BLE001
-                continue
-        for sess, items in by_session.values():
+                pass
+        # Logins are independent: read them together instead of one round trip
+        # after another, so the reconcile that follows starts at once.
+        async def read_session(sess: Any, items: list[tuple[dict[str, Any], Any]]) -> None:
             if len(items) == 1:
                 f, ex = items[0]
                 try:
                     out[f["spec"]] = {int(o["id"]) for o in await ex.working_orders() if o.get("id")}
                 except Exception:  # noqa: BLE001
                     pass
-                continue
+                return
             try:
                 raw = await sess.orders_snapshot()
             except Exception:  # noqa: BLE001
-                continue
+                return
             for f, ex in items:
                 out[f["spec"]] = {int(o["id"]) for o in raw or []
                                   if o.get("id") and o.get("ordStatus") in WORKING_STATUSES and o.get("accountId") == ex.id}
+
+        await asyncio.gather(*[read_session(sess, items) for sess, items in by_session.values()],
+                             *[read_one(f, ex) for f, ex in singles], return_exceptions=True)
         return out
 
     # --------------------------------------------------------- leader feed

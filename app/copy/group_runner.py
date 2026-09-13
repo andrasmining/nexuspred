@@ -358,12 +358,15 @@ class GroupRunner:
         by_session: dict[tuple[int, str], list[dict[str, Any]]] = {}
         for f in self.followers:
             by_session.setdefault((self._area_of(f), self._session_key(f)), []).append(f)
-        for (farea, _skey), fs in by_session.items():
+        # One login at a time meant the last login's followers were seeded only
+        # after every earlier login's round trip; logins are independent, so they
+        # are read together.
+        async def seed_session(_key: tuple[int, str], fs: list[dict[str, Any]]) -> None:
             s = self._session(fs[0])
             if s is None:
                 for f in fs:
                     self.follower_err[f["spec"]] = "login disabled or gone"
-                continue
+                return
             ids = {self._follower_id(s, f): f["spec"] for f in fs}
             ids.pop(0, None)
             for f in fs:
@@ -374,9 +377,9 @@ class GroupRunner:
             except Exception as exc:  # noqa: BLE001
                 for f in fs:
                     self._ferr(f["spec"], exc, prefix="positions: ")
-                continue
+                return
             if not isinstance(raw, list):
-                continue
+                return
             to_leader, readable = await self._to_leader_cids(s)
             known = set(readable) if readable is not None else set(self.contract_names)
             seen: dict[tuple[str, int], int] = {}
@@ -396,6 +399,8 @@ class GroupRunner:
                     for (sp, cid), net in seen.items():
                         if sp == spec:
                             self.follower_pos[(sp, cid)] = net
+
+        await asyncio.gather(*(seed_session(k, fs) for k, fs in by_session.items()), return_exceptions=True)
         self._followers_seeded_at = time.monotonic()
         try:
             await self.orders.load()
@@ -927,21 +932,25 @@ class GroupRunner:
         for f in self.followers:
             if f.get("enabled", True):
                 by_session.setdefault((self._area_of(f), self._session_key(f)), []).append(f)
-        for (farea, _skey), fs in by_session.items():
+        # Logins are independent: read and correct them together, so a drift on
+        # the last login is not corrected only after every earlier login's
+        # round trips.
+        async def reconcile_session(farea: int, fs: list[dict[str, Any]]) -> int:
+            fixes = 0
             s = self._session(fs[0])
             if s is None:
-                continue
+                return 0
             ids = {self._follower_id(s, f): f for f in fs}
             ids.pop(0, None)                                    # an account without id is never "flat"
             fs = [f for f in fs if self._follower_id(s, f)]
             if not fs:
-                continue
+                return 0
             try:
                 raw = await s.positions_snapshot()
             except Exception:  # noqa: BLE001
-                continue
+                return 0
             if not isinstance(raw, list):
-                continue
+                return 0
             to_leader, readable = await self._to_leader_cids(s)
             actual: dict[tuple[str, int], int] = {}
             for p in raw:
@@ -981,6 +990,11 @@ class GroupRunner:
                         await self._mirror_follower(f, cid, name, net, self.unit.get(cid) or abs(net) or 1,
                                                     bool(self.group.get("copy_adds", True)), "drift", None)
                         fixes += 1
+            return fixes
+
+        done = await asyncio.gather(*(reconcile_session(farea, fs) for (farea, _skey), fs in by_session.items()),
+                                    return_exceptions=True)
+        fixes += sum(n for n in done if isinstance(n, int))
         return fixes
 
     async def watchdog(self) -> None:
@@ -1044,43 +1058,50 @@ class GroupRunner:
                     if self.follower_pos.get((f["spec"], cid), 0):
                         note(f, cid, "login disabled or account gone")
                 return 0
-            n = 0
-            for cid in contracts:
+            async def one_contract(cid: int) -> int:
                 key = (f["spec"], cid)
-                lock = self.locks.setdefault(f["spec"], asyncio.Lock())
-                async with lock:
-                    actual = await self._broker_net(ex, cid)
-                    if actual is None:
-                        # Cached mirror memory is not broker truth. If this read is
-                        # unavailable the follower may already be flat; sending its
-                        # remembered offset would open the opposite position.
-                        self.follower_pos.pop(key, None)
-                        note(f, cid, "position unreadable before close — no close sent")
-                        continue
-                    have = actual
-                    if not have:
-                        self.follower_pos[key] = 0
-                        continue
-                    name = self.contract_names.get(cid, str(cid))
-                    with context.use_area(self._area_of(f)):
-                        try:
-                            res = await ex.place_order(symbol=name, action="Sell" if have > 0 else "Buy", qty=abs(have), order_type="Market")
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as exc:  # noqa: BLE001 - keep going with the other contracts; never re-send a maybe-live close
-                            note(f, cid, f"close failed ({exc})")
-                            self._record("reject", follower=f["spec"], symbol=name, detail=f"flatten ({reason}): {exc}")
-                            continue
-                    if isinstance(res, dict) and res.get("status") == "submitted":
-                        self.follower_pos[key] = 0
-                        self.last_order_at[f["spec"]] = time.monotonic()
-                        n += 1
-                        closed.append((f, ex, cid, have))
-                        self._record("flatten", follower=f["spec"], symbol=name, detail=f"{reason}: closed {have:+d}")
-                    else:
-                        note(f, cid, f"close not accepted ({res})")
-                        self._record("reject", follower=f["spec"], symbol=name, detail=f"flatten ({reason}): not accepted ({res})")
-            return n
+                actual = await self._broker_net(ex, cid)
+                if actual is None:
+                    # Cached mirror memory is not broker truth. If this read is
+                    # unavailable the follower may already be flat; sending its
+                    # remembered offset would open the opposite position.
+                    self.follower_pos.pop(key, None)
+                    note(f, cid, "position unreadable before close — no close sent")
+                    return 0
+                have = actual
+                if not have:
+                    self.follower_pos[key] = 0
+                    return 0
+                name = self.contract_names.get(cid, str(cid))
+                with context.use_area(self._area_of(f)):
+                    try:
+                        res = await ex.place_order(symbol=name, action="Sell" if have > 0 else "Buy", qty=abs(have), order_type="Market")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - keep going with the other contracts; never re-send a maybe-live close
+                        note(f, cid, f"close failed ({exc})")
+                        self._record("reject", follower=f["spec"], symbol=name, detail=f"flatten ({reason}): {exc}")
+                        return 0
+                if isinstance(res, dict) and res.get("status") == "submitted":
+                    self.follower_pos[key] = 0
+                    self.last_order_at[f["spec"]] = time.monotonic()
+                    closed.append((f, ex, cid, have))
+                    self._record("flatten", follower=f["spec"], symbol=name, detail=f"{reason}: closed {have:+d}")
+                    return 1
+                note(f, cid, f"close not accepted ({res})")
+                self._record("reject", follower=f["spec"], symbol=name, detail=f"flatten ({reason}): not accepted ({res})")
+                return 0
+
+            # One hold of the account's lock for the whole flatten (a mirror still
+            # cannot interleave), but its contracts close together rather than one
+            # broker round trip after another — three symbols used to cost three.
+            lock = self.locks.setdefault(f["spec"], asyncio.Lock())
+            async with lock:
+                per_contract = await asyncio.gather(*(one_contract(cid) for cid in contracts), return_exceptions=True)
+            for r in per_contract:
+                if isinstance(r, asyncio.CancelledError):
+                    raise r
+            return sum(r for r in per_contract if isinstance(r, int))
 
         # every follower at once (each behind its own lock): on the feed-loss path time matters
         results = await asyncio.gather(*(one_follower(f) for f in self.followers if f.get("enabled", True)), return_exceptions=True)

@@ -366,3 +366,37 @@ def test_the_order_lane_can_be_switched_off_without_dividing_by_zero(area, monke
         _last_prio = 0.0
     monkeypatch.setattr(tradovate, "PRIORITY_SPACING_S", 0.0)
     assert tradovate.TradovateSession._take_order_token(_S()) == 0.0
+
+
+# ================================================== alpha.103: nothing fans out serially
+def test_no_broker_call_is_made_one_item_at_a_time_in_a_loop():
+    """A guard against the pattern this release removed: a loop that awaits a
+    broker call per login / per follower / per contract serialises work that is
+    independent. Anything new that needs it must be listed here with a reason."""
+    import ast
+    import pathlib
+
+    BROKER = ("place_order", "place_oco", "cancel_order", "modify_order", "liquidate",
+              "positions_snapshot", "orders_snapshot", "working_orders", "_close_contract",
+              "_cancel_working", "_flatten_account", "flatten_all")
+    # (file, function): why this one is sequential on purpose
+    ALLOWED = {
+        ("app/engine/common.py", "_place_stop_with_retry"): "a retry, not a fan-out: attempt 2 only after attempt 1 failed",
+        ("app/engine/common.py", "_cancel_working"): "a retry of the same list read, not a fan-out",
+    }
+
+    offenders = []
+    for path in sorted(pathlib.Path("app").rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            for loop in [n for n in ast.walk(fn) if isinstance(n, (ast.For, ast.AsyncFor))]:
+                body = ast.Module(body=loop.body, type_ignores=[])
+                calls = [n for n in ast.walk(body) if isinstance(n, ast.Call)]
+                if any(getattr(getattr(c, "func", None), "attr", "") == "gather" for c in calls):
+                    continue                     # the loop only builds the fan-out
+                hit = [getattr(a.value.func, "attr", "") for a in ast.walk(body)
+                       if isinstance(a, ast.Await) and isinstance(a.value, ast.Call)
+                       and any(b in (getattr(a.value.func, "attr", "") or "") for b in BROKER)]
+                if hit and (str(path), fn.name) not in ALLOWED:
+                    offenders.append(f"{path}:{loop.lineno} in {fn.name}(): {sorted(set(hit))}")
+    assert not offenders, "serial broker calls in a loop:\n  " + "\n  ".join(offenders)
