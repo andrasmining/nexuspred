@@ -4,6 +4,32 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.89
+- **PR #23 merged** (andrasmining, must-fix audit of alpha.88 — reviewed finding by finding, all
+  eight confirmed, no policy changes, the same-broker Tradovate path is untouched):
+  - Copy trading across brokers: a follower contract the broker cannot resolve right now keeps its
+    known exposure and is skipped by the reconcile instead of counting as flat (no second entry
+    on a transient lookup failure); the reverse id map is rebuilt from the current lookups only.
+  - The startup follower seed runs before the leader's contract names are known, so a follower on
+    another broker could look flat for its first delta (a restart with a smaller leader position
+    bought instead of selling). Before the first unseeded cross-broker delta the follower's real
+    position is read once inside the lock; unreadable blocks that delta. Same-broker followers
+    gain no extra read.
+  - A failed follower contract lookup no longer puts the subscriber's login name and the raw broker
+    error into the group status the publisher sees.
+  - Stripe refunds, disputes and uncollectible invoices resolve the exact subscription (invoice →
+    subscription, modern `parent.subscription_details` and legacy `invoice.subscription`, charge
+    fetched by id, PaymentIntent → invoice payment → invoice). A customer with several
+    subscriptions no longer loses the wrong one; lookup failures return 500 so Stripe retries;
+    GET filters go as query parameters.
+  - The alpha.86 legacy database move uses SQLite's backup API into a temporary file and publishes
+    it atomically; a failed move stops the start instead of serving first-run setup next to a
+    partial file.
+  - The dashboard "close position" takes the same trade lock as signal processing (TS-Hunter trade
+    id; full webhook id and signal root for the others) and releases already acquired locks when
+    cancelled while waiting for another.
+  - 24 regression tests (763 total).
+
 ## 5.0.0-alpha.88
 - **Copy trading across brokers**: a leader on Tradovate, ProjectX or Rithmic may have followers
   on any of the three, in one group and on the marketplace. The mirror keys every contract by

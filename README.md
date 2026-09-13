@@ -1134,8 +1134,10 @@ the dashboard **Update** button works.
 
 Runtime data lives in `data/` next to the checkout (or wherever `NEXUSPRED_DATA_DIR` points —
 Render and `install-server.sh` set it). alpha.74–85 resolved that default one directory too
-shallow (`app/data/`): alpha.86 moves a database found there into `data/` once at startup, and
-the updater refuses to run while the active database is a file git tracks. If you run a
+shallow (`app/data/`): alpha.86 moves a database found there into `data/` once at startup (since
+alpha.89 as one consistent SQLite snapshot published atomically; a failed move stops the start
+instead of opening an empty database), and the updater refuses to run while the active database
+is a file git tracks. If you run a
 one-click install from that range, back `app/data/fluxbridge.db` up before updating.
 Runtime settings live **per area** in the SQLite database at
 `<NEXUSPRED_DATA_DIR>/fluxbridge.db` (default `data/`, git-ignored, never committed). A
