@@ -12,6 +12,8 @@ const ACTION_LABEL = {
   feature_set: t("Feature changed"), password_reset: t("Password reset"), password_change: t("Password changed"),
   flatten_all: t("Flatten all"), subscribe: t("Subscribed"), unsubscribe: t("Unsubscribed"),
   webhook_share: t("Marketplace publish"), subscriber_remove: t("Subscriber removed"),
+  mail_config: t("Platform mailer"), backup_config: t("Backup settings"), backup_run: t("Backup run"), backup_download: t("Backup downloaded"), backup_delete: t("Backup deleted"),
+  heartbeat_config: t("Heartbeat"), incident: t("Incident"),
   login_ok: t("Signed in"), login_failed: t("Failed sign-in"), login_blocked: t("Rate limited"),
   agent_pairing_code: t("Agent pairing code"), agent_bundle: t("Agent download (preconfigured)"), agent_paired: t("Agent paired"), agent_pair_failed: t("Agent pairing failed"), agent_revoke: t("Agent revoked"),
 };

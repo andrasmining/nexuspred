@@ -4,6 +4,34 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.96
+Package 2 of the operations roadmap: trust.
+- **Automatic verified backups.** Once a day at the quiet hour (default 21:15 UTC) a consistent
+  snapshot of the whole database goes to `<data>/backups/`, is opened in a scratch connection,
+  integrity-checked and compared row by row with the live database before it counts as *verified*.
+  Seven daily, four weekly (Sundays) and three monthly (1st) are kept. Settings → Backups: status,
+  schedule, retention, run now, download, delete. `GET/PUT /api/backups[/config]`,
+  `POST /api/backups/run`, `GET|DELETE /api/backups/{name}` (admin).
+- **Off-site copy.** Every snapshot can be encrypted with the bridge's own key and pushed to an
+  S3-compatible bucket (Cloudflare R2, Backblaze B2, Hetzner, AWS — SigV4, no SDK) or, while small,
+  mailed to the admins through the platform mailer. Decrypt with
+  `python -m app.backups decrypt FILE.db.enc FILE.db` on a host with the same key.
+- **Backup alarm.** A failed snapshot, a failed off-site push, an unverified copy or no verified
+  backup for 36 hours → one admin notice per day (event log + mail).
+- **Deep health `/readyz`.** Database writable, disk free, backup age, broker sessions per broker,
+  history-writer backlog, event-loop lag, outbox failures, live streams, signal latency p95 — `ok`,
+  `degraded` or `down` with one line per check; 200 while ok/degraded, 503 when down. Bearer
+  `NEXUSPRED_METRICS_TOKEN` or `?token=`; admins see the same under Settings → Platform → Health.
+- **Public status page `/status`.** No login, no account data: overall state, version, uptime, broker
+  connectivity per broker, signal latency p50/p95 of the last hour, and admin-posted incidents with
+  their update history (investigating → identified → monitoring → resolved). `GET /api/public/status`
+  for machines; incidents via `GET/POST/PUT/DELETE /api/incidents` (admin).
+- **Platform heartbeat.** An outbound ping every N seconds to healthchecks.io / Uptime Kuma carrying
+  the deep-health result (`/fail` on healthchecks.io when the bridge is down, `?status=` elsewhere),
+  so a monitor reports the one failure the bridge cannot: not running at all.
+- Broker sessions now carry their broker in the live status; the updater's manual backup download
+  shares the snapshot writer.
+
 ## 5.0.0-alpha.95
 Package 1 of the operations roadmap: reliable delivery.
 - **Platform mailer.** The bridge has its own sender for transactional mail — invites, password-reset

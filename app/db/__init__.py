@@ -92,7 +92,7 @@ from .areas import (  # noqa: F401
     backfill_alert_emails,
 )
 from .mail import (  # noqa: F401
-    outbox_add, outbox_due, outbox_get, outbox_sent, outbox_failed, outbox_retry, outbox_list, outbox_counts, outbox_prune,
+    outbox_add, outbox_attachment_in_use, outbox_due, outbox_get, outbox_sent, outbox_failed, outbox_retry, outbox_list, outbox_counts, outbox_prune,
     record_delivery, delivery_status, recent_deliveries, prune_deliveries,
 )
 from .marketplace import (  # noqa: F401

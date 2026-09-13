@@ -489,7 +489,7 @@ def _register() -> None:
 _register()
 
 
-async def notify_admins(kind: str, ctx: dict[str, Any]) -> int:
+async def notify_admins(kind: str, ctx: dict[str, Any], *, attachment: str | None = None) -> int:
     """Queue a template mail (see app.mailer.TEMPLATES) to every admin, each in
     their own language, through the platform mailer. Returns how many were queued."""
     from . import mailer
@@ -499,6 +499,6 @@ async def notify_admins(kind: str, ctx: dict[str, Any]) -> int:
             area = db.user_primary_area(u["id"])
             if not mailer.can_send(area):
                 continue
-            mailer.send_template(u["email"], kind, ctx, lang=mailer.lang_for_area(area), area_id=area)
+            mailer.send_template(u["email"], kind, ctx, lang=mailer.lang_for_area(area), area_id=area, attachment=attachment)
             n += 1
     return n

@@ -17,7 +17,7 @@ def sent(monkeypatch):
     out: list[tuple[str, str, str]] = []
     mailer.save_config({"provider": "smtp", "host": "mail.example", "from_addr": "noreply@example.com", "from_name": "Fluxbridge"})
 
-    def fake_smtp(cfg, to_addr, subject, html_body, text_body):
+    def fake_smtp(cfg, to_addr, subject, html_body, text_body, attachment=""):
         out.append((to_addr, subject, text_body))
     monkeypatch.setattr(mailer, "_smtp_send", fake_smtp)
     return out
@@ -121,7 +121,7 @@ async def test_fallback_to_the_workspace_smtp_when_the_platform_sender_is_off(ad
     assert "no workspace SMTP" in db.outbox_get(rid)["last_error"]
     config.save_settings({"alert_smtp_username": "me@gmail.com", "alert_smtp_password": "app-pw"}, area_id=1)
     assert mailer.can_send(1)
-    monkeypatch.setattr(mailer, "_workspace_send", lambda area_id, to, subj, html, text: calls.append((area_id, to)))
+    monkeypatch.setattr(mailer, "_workspace_send", lambda area_id, to, subj, html, text, att="": calls.append((area_id, to)))
     with db.core._connect() as c:
         c.execute("UPDATE outbox SET next_at='2000-01-01' WHERE id=?", (rid,))
     assert await mailer.deliver_pending() == {"sent": 1, "failed": 0, "retry": 0}

@@ -21,12 +21,14 @@ Nothing here runs on the order path.
 from __future__ import annotations
 
 import asyncio
+import base64
 import html as _html
 import json
 import logging
 import os
 import smtplib
 import ssl
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -233,6 +235,16 @@ TEMPLATES: dict[str, dict[str, dict[str, Any]]] = {
                "body": ["Diese Nachricht wurde vom Plattform-Mailer gesendet ({route}).", "Einladungen, Reset-Links und Rollen-Hinweise kommen ab jetzt auf diesem Weg."],
                "button": "Fluxbridge öffnen", "foot": ""},
     },
+    "backup": {
+        "en": {"subject": "Fluxbridge backup {name}", "title": "Off-site backup",
+               "body": ["Attached: the encrypted database snapshot {name} ({size}, sha256 {sha256}…).",
+                        "Keep it somewhere safe. Decrypt on a host with the same NEXUSPRED_ENCRYPTION_KEY / SESSION_SECRET: python -m app.backups decrypt FILE.db.enc FILE.db"],
+               "button": "Open Backups", "foot": "You receive this because you are an administrator and off-site backups are set to e-mail."},
+        "de": {"subject": "Fluxbridge-Backup {name}", "title": "Externe Sicherung",
+               "body": ["Im Anhang: der verschlüsselte Datenbank-Snapshot {name} ({size}, sha256 {sha256}…).",
+                        "Sicher aufbewahren. Entschlüsseln auf einem Host mit demselben NEXUSPRED_ENCRYPTION_KEY / SESSION_SECRET: python -m app.backups decrypt FILE.db.enc FILE.db"],
+               "button": "Backups öffnen", "foot": "Du erhältst diese Nachricht, weil du Administrator bist und externe Sicherungen per E-Mail eingestellt sind."},
+    },
     "notice": {
         "en": {"subject": "Fluxbridge: {title}", "title": "{title}", "body": ["{message}"], "button": "{button}", "foot": ""},
         "de": {"subject": "Fluxbridge: {title}", "title": "{title}", "body": ["{message}"], "button": "{button}", "foot": ""},
@@ -304,23 +316,24 @@ def _kick() -> None:
 
 
 def enqueue(to_addr: str, subject: str, html_body: str, text_body: str, *, kind: str = "", area_id: Optional[int] = None,
-            kick: bool = True) -> int:
+            kick: bool = True, attachment: Optional[str] = None) -> int:
     """Queue a mail; the worker delivers it. Returns the outbox row id.
     ``kick=False`` leaves the worker asleep — for a caller that delivers the
-    row itself right away (:func:`send_now`), so the two never race."""
-    row_id = db.outbox_add(to_addr, subject, html_body, text_body, kind, area_id)
+    row itself right away (:func:`send_now`), so the two never race.
+    ``attachment`` is a file path; the file is deleted once no pending row needs it."""
+    row_id = db.outbox_add(to_addr, subject, html_body, text_body, kind, area_id, attachment or "")
     if kick:
         _kick()
     return row_id
 
 
 def send_template(to_addr: str, kind: str, ctx: dict[str, Any], *, lang: Optional[str] = None,
-                  area_id: Optional[int] = None, kick: bool = True) -> int:
+                  area_id: Optional[int] = None, kick: bool = True, attachment: Optional[str] = None) -> int:
     """Render ``kind`` in the recipient's language and queue it. ``area_id`` is
     the workspace whose SMTP is the fallback route and whose language applies
     when ``lang`` is not given."""
     subject, html_body, text_body = render(kind, lang or lang_for_area(area_id), ctx)
-    return enqueue(to_addr, subject, html_body, text_body, kind=kind, area_id=area_id, kick=kick)
+    return enqueue(to_addr, subject, html_body, text_body, kind=kind, area_id=area_id, kick=kick, attachment=attachment)
 
 
 def can_send(area_id: Optional[int] = None) -> bool:
@@ -354,24 +367,40 @@ def _note_outcome(addr: str, ok: bool) -> None:
 
 
 # ------------------------------------------------------------- transports
-def _build(cfg_from: str, to_addr: str, subject: str, html_body: str, text_body: str, reply_to: str = "") -> MIMEMultipart:
-    msg = MIMEMultipart("alternative")
+def _read_attachment(path: str) -> tuple[str, bytes]:
+    p = os.path.abspath(path)
+    with open(p, "rb") as f:
+        return os.path.basename(p), f.read()
+
+
+def _build(cfg_from: str, to_addr: str, subject: str, html_body: str, text_body: str, reply_to: str = "",
+           attachment: str = "") -> MIMEMultipart:
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(text_body or " ", "plain", "utf-8"))
+    if html_body:
+        alt.attach(MIMEText(html_body, "html", "utf-8"))
+    if attachment:
+        msg = MIMEMultipart("mixed")
+        msg.attach(alt)
+        name, data = _read_attachment(attachment)
+        part = MIMEApplication(data, Name=name)
+        part["Content-Disposition"] = f'attachment; filename="{name}"'
+        msg.attach(part)
+    else:
+        msg = alt
     msg["Subject"] = subject
     msg["From"] = cfg_from
     msg["To"] = to_addr
     if reply_to:
         msg["Reply-To"] = reply_to
-    msg.attach(MIMEText(text_body or " ", "plain", "utf-8"))
-    if html_body:
-        msg.attach(MIMEText(html_body, "html", "utf-8"))
     return msg
 
 
-def _smtp_send(cfg: dict[str, Any], to_addr: str, subject: str, html_body: str, text_body: str) -> None:
+def _smtp_send(cfg: dict[str, Any], to_addr: str, subject: str, html_body: str, text_body: str, attachment: str = "") -> None:
     from .alerts import _check_smtp_target
     host, port = cfg["host"], int(cfg["port"] or 587)
     _check_smtp_target(host, port)
-    msg = _build(_sender(cfg), to_addr, subject, html_body, text_body, cfg.get("reply_to", ""))
+    msg = _build(_sender(cfg), to_addr, subject, html_body, text_body, cfg.get("reply_to", ""), attachment)
     ctx = ssl.create_default_context()
     if port == 465:
         server = smtplib.SMTP_SSL(host, port, timeout=20, context=ctx)
@@ -385,7 +414,7 @@ def _smtp_send(cfg: dict[str, Any], to_addr: str, subject: str, html_body: str, 
         server.send_message(msg)
 
 
-def _workspace_send(area_id: int, to_addr: str, subject: str, html_body: str, text_body: str) -> None:
+def _workspace_send(area_id: int, to_addr: str, subject: str, html_body: str, text_body: str, attachment: str = "") -> None:
     """Fallback: the workspace's own SMTP (the user's alert channel)."""
     from .alerts import _check_smtp_target
     s = config.load_settings(area_id=area_id)
@@ -395,25 +424,33 @@ def _workspace_send(area_id: int, to_addr: str, subject: str, html_body: str, te
     host = s.get("alert_smtp_host") or "smtp.gmail.com"
     port = int(s.get("alert_smtp_port") or 587)
     _check_smtp_target(host, port)
-    msg = _build(str(username), to_addr, subject, html_body, text_body)
+    msg = _build(str(username), to_addr, subject, html_body, text_body, "", attachment)
     with smtplib.SMTP(host, port, timeout=20) as server:
         server.starttls(context=ssl.create_default_context())
         server.login(str(username), str(password))
         server.send_message(msg)
 
 
-async def _api_send(cfg: dict[str, Any], to_addr: str, subject: str, html_body: str, text_body: str) -> None:
+async def _api_send(cfg: dict[str, Any], to_addr: str, subject: str, html_body: str, text_body: str, attachment: str = "") -> None:
     client = http.client("mail")
+    att = None
+    if attachment:
+        name, data = await asyncio.to_thread(_read_attachment, attachment)
+        att = (name, base64.b64encode(data).decode())
     if cfg["provider"] == "resend":
         payload: dict[str, Any] = {"from": _sender(cfg), "to": [to_addr], "subject": subject, "html": html_body, "text": text_body}
         if cfg.get("reply_to"):
             payload["reply_to"] = cfg["reply_to"]
-        r = await client.post(RESEND_API, json=payload, headers={"Authorization": f"Bearer {cfg['api_key']}"}, timeout=20)
+        if att:
+            payload["attachments"] = [{"filename": att[0], "content": att[1]}]
+        r = await client.post(RESEND_API, json=payload, headers={"Authorization": f"Bearer {cfg['api_key']}"}, timeout=60)
     else:
         payload = {"From": _sender(cfg), "To": to_addr, "Subject": subject, "HtmlBody": html_body, "TextBody": text_body, "MessageStream": "outbound"}
         if cfg.get("reply_to"):
             payload["ReplyTo"] = cfg["reply_to"]
-        r = await client.post(POSTMARK_API, json=payload, headers={"X-Postmark-Server-Token": cfg["api_key"], "Accept": "application/json"}, timeout=20)
+        if att:
+            payload["Attachments"] = [{"Name": att[0], "Content": att[1], "ContentType": "application/octet-stream"}]
+        r = await client.post(POSTMARK_API, json=payload, headers={"X-Postmark-Server-Token": cfg["api_key"], "Accept": "application/json"}, timeout=60)
     if r.status_code >= 300:
         raise RuntimeError(f"{cfg['provider']} answered {r.status_code}: {r.text[:200]}")
 
@@ -421,16 +458,29 @@ async def _api_send(cfg: dict[str, Any], to_addr: str, subject: str, html_body: 
 async def _deliver(row: dict[str, Any]) -> str:
     """Send one outbox row; returns the route used. Raises on failure."""
     cfg = get_config()
+    att = str(row.get("attachment") or "")
+    if att and not os.path.exists(att):
+        raise RuntimeError(f"attachment {os.path.basename(att)} is gone")
     if configured():
         if cfg["provider"] == "smtp":
-            await asyncio.to_thread(_smtp_send, cfg, row["to"], row["subject"], row["html"], row["text"])
+            await asyncio.to_thread(_smtp_send, cfg, row["to"], row["subject"], row["html"], row["text"], att)
             return f"smtp:{cfg['host']}"
-        await _api_send(cfg, row["to"], row["subject"], row["html"], row["text"])
+        await _api_send(cfg, row["to"], row["subject"], row["html"], row["text"], att)
         return cfg["provider"]
     if row.get("area_id"):
-        await asyncio.to_thread(_workspace_send, int(row["area_id"]), row["to"], row["subject"], row["html"], row["text"])
+        await asyncio.to_thread(_workspace_send, int(row["area_id"]), row["to"], row["subject"], row["html"], row["text"], att)
         return "workspace-smtp"
     raise RuntimeError("no platform mailer configured")
+
+
+def _release_attachment(row: dict[str, Any]) -> None:
+    """Delete the attachment file once no pending row needs it any more."""
+    att = str(row.get("attachment") or "")
+    if att and not db.outbox_attachment_in_use(att):
+        try:
+            os.unlink(att)
+        except OSError:
+            pass
 
 
 async def deliver_pending(limit: int = 20) -> dict[str, int]:
@@ -446,6 +496,7 @@ async def deliver_pending(limit: int = 20) -> dict[str, int]:
                 db.outbox_failed(row["id"], err, None)
                 out["failed"] += 1
                 _note_outcome(row["to"], False)
+                _release_attachment(row)
                 with context.use_area(context.DEFAULT_AREA_ID):
                     state.log_event("warn", f"E-mail to {row['to']} ({row['kind'] or 'mail'}) given up after {attempt} attempts: {err}")
             else:
@@ -454,6 +505,7 @@ async def deliver_pending(limit: int = 20) -> dict[str, int]:
             continue
         db.outbox_sent(row["id"], route)
         _note_outcome(row["to"], True)
+        _release_attachment(row)
         out["sent"] += 1
     return out
 
@@ -471,6 +523,7 @@ async def send_now(row_id: int) -> dict[str, Any]:
     else:
         db.outbox_sent(row_id, route)
         _note_outcome(row["to"], True)
+        _release_attachment(row)
     return db.outbox_get(row_id) or {}
 
 

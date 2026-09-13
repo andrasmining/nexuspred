@@ -581,7 +581,7 @@ class TradovateSession:
         on (there's no prior state to have transitioned from)."""
         had_prior = state.has_session(self.name)
         was_connected = state.session_status(self.name).get("connected") if had_prior else None
-        state.set_session_status(self.name, connected=connected, agent_id=self.agent_id, **fields)
+        state.set_session_status(self.name, connected=connected, agent_id=self.agent_id, broker=getattr(self, "kind", "tradovate"), **fields)
         if had_prior and was_connected and not connected:
             events.emit("connection.lost", account=self.name, environment=self.environment, error=fields.get("last_error", ""), broker=getattr(self, "kind", "tradovate"))
         elif had_prior and not was_connected and connected:

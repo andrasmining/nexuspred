@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, automations, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
+from . import auth, automations, backups, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, readiness, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
 from .discord_signals.routes import router as discord_router
 from .routers import ROUTERS
 from . import web
@@ -87,7 +87,11 @@ async def _startup() -> None:
                       asyncio.create_task(news.news_loop(), name="news-loop"),
                       asyncio.create_task(watchdog.heartbeat_loop(), name="heartbeat-loop"),
                       asyncio.create_task(signals.persist_loop(), name="active-trades-loop"),
-                      asyncio.create_task(mailer.outbox_loop(), name="outbox-loop")]
+                      asyncio.create_task(mailer.outbox_loop(), name="outbox-loop"),
+                      asyncio.create_task(backups.backup_loop(), name="backup-loop"),
+                      asyncio.create_task(readiness.lag_loop(), name="loop-lag-sampler"),
+                      asyncio.create_task(readiness.readiness_loop(), name="readiness-loop"),
+                      asyncio.create_task(readiness.heartbeat_loop(), name="platform-heartbeat-loop")]
     health.start_discord_listeners()     # the health loop keeps them alive from here on
 
 

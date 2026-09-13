@@ -37,6 +37,7 @@ def _schema(c: sqlite3.Connection) -> None:
             next_at TEXT NOT NULL,
             last_error TEXT NOT NULL DEFAULT '',
             route TEXT NOT NULL DEFAULT '',
+            attachment TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             sent_at TEXT
         );
@@ -53,26 +54,38 @@ def _schema(c: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_deliveries_area ON alert_deliveries(area_id, channel, id);
         """
     )
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(outbox)").fetchall()}
+    if "attachment" not in cols:                      # alpha.96: off-site backups travel as attachments
+        c.execute("ALTER TABLE outbox ADD COLUMN attachment TEXT NOT NULL DEFAULT ''")
 
 
 # ------------------------------------------------------------------ outbox
 def _row(r: sqlite3.Row, body: bool = False) -> dict[str, Any]:
     d = {"id": r["id"], "to": r["to_addr"], "subject": r["subject"], "kind": r["kind"], "area_id": r["area_id"],
          "status": r["status"], "attempts": r["attempts"], "next_at": r["next_at"], "last_error": r["last_error"],
-         "route": r["route"], "created_at": r["created_at"], "sent_at": r["sent_at"]}
+         "route": r["route"], "created_at": r["created_at"], "sent_at": r["sent_at"],
+         "attachment": r["attachment"] if "attachment" in r.keys() else ""}
     if body:
         d["html"] = r["html"]
         d["text"] = r["text"]
     return d
 
 
-def outbox_add(to_addr: str, subject: str, html: str, text: str, kind: str = "", area_id: Optional[int] = None) -> int:
+def outbox_add(to_addr: str, subject: str, html: str, text: str, kind: str = "", area_id: Optional[int] = None,
+               attachment: str = "") -> int:
     init()
     now = _now()
     with _connect() as c:
-        cur = c.execute("INSERT INTO outbox(to_addr,subject,html,text,kind,area_id,next_at,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                        (to_addr, subject, html, text, kind, area_id, now, now))
+        cur = c.execute("INSERT INTO outbox(to_addr,subject,html,text,kind,area_id,next_at,created_at,attachment) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (to_addr, subject, html, text, kind, area_id, now, now, attachment or ""))
         return int(cur.lastrowid)
+
+
+def outbox_attachment_in_use(path: str) -> bool:
+    """Does any pending row still need this attachment file?"""
+    init()
+    with _connect() as c:
+        return c.execute("SELECT 1 FROM outbox WHERE status='pending' AND attachment=? LIMIT 1", (path,)).fetchone() is not None
 
 
 def outbox_due(limit: int = 20) -> list[dict[str, Any]]:

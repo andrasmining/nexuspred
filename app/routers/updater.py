@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from typing import Any
@@ -12,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from .. import crypto, db, updater
+from .. import backups, crypto, db, updater
 from ..security import client_ip
 from ..web import require_admin
 
@@ -23,34 +22,6 @@ router = APIRouter(prefix="/api/update", tags=["updater"])
 async def api_update_check(request: Request) -> dict[str, Any]:
     require_admin(request)                      # an outbound GitHub call is an admin's to trigger
     return await updater.check_for_update()
-
-
-# meta rows that never leave the server inside a backup: the cookie-signing /
-# encryption secret (when it is DB-stored) and the Web-Push private key. A
-# backup holding them would let whoever downloads it forge any user's session
-# cookie and decrypt every tenant's broker tokens offline.
-BACKUP_EXCLUDED_META = ("session_secret", "vapid_private_pem")
-
-
-def _backup_to(path: str) -> None:
-    """A consistent copy of the live database via SQLite's online backup API,
-    minus :data:`BACKUP_EXCLUDED_META`."""
-    src = sqlite3.connect(str(db.DB_FILE))
-    dst = sqlite3.connect(path)
-    try:
-        with dst:
-            src.backup(dst)
-        with dst:
-            dst.executemany("DELETE FROM meta WHERE key=?", [(k,) for k in BACKUP_EXCLUDED_META])
-            # unused one-time capabilities never travel: a reset link, an invite or a
-            # pairing code lifted from a backup must not open an account or an agent slot
-            dst.execute("DELETE FROM password_resets WHERE used_at IS NULL")
-            dst.execute("DELETE FROM invites WHERE used_by IS NULL")
-            dst.execute("DELETE FROM agent_pairings")
-        dst.execute("VACUUM")               # the deleted rows must not survive in free pages
-    finally:
-        dst.close()
-        src.close()
 
 
 @router.get("/backup")
@@ -69,7 +40,7 @@ async def api_download_backup(request: Request) -> FileResponse:
     fd, path = tempfile.mkstemp(prefix="fluxbridge-backup-", suffix=".db")
     os.close(fd)
     try:
-        await asyncio.to_thread(_backup_to, path)
+        await asyncio.to_thread(backups.write_snapshot, path)
     except Exception as exc:  # noqa: BLE001
         os.unlink(path)
         raise HTTPException(status_code=500, detail=f"backup failed: {exc}") from exc

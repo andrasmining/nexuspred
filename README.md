@@ -594,6 +594,27 @@ without their own SMTP then sends nothing, and the response says so (`emailed: f
 Every alert delivery (push, e-mail, Discord) is logged per workspace; Settings → Alerts shows when
 each channel last delivered and flags a channel with three failures in a row.
 
+## Backups, deep health and the status page
+
+**Backups** (Settings → Backups, admin): a consistent snapshot of the whole database every day at the
+quiet hour (21:15 UTC by default), opened and integrity-checked against the live database before it
+counts as verified; 7 daily / 4 weekly / 3 monthly kept under `<NEXUSPRED_DATA_DIR>/backups/`.
+Optionally every snapshot is encrypted with the bridge's key and pushed to an S3-compatible bucket
+(R2, B2, Hetzner, AWS) or mailed to the admins. Restore: decrypt with
+`python -m app.backups decrypt FILE.db.enc FILE.db`, then put the file in place of `fluxbridge.db`
+on a host with the same `NEXUSPRED_ENCRYPTION_KEY` / `SESSION_SECRET`. A failed snapshot, a failed
+off-site push or no verified backup for 36 h alarms the admins once a day.
+
+**Deep health** `GET /readyz` (bearer `NEXUSPRED_METRICS_TOKEN` or `?token=`): database writable,
+disk, backup age, broker sessions, history backlog, event-loop lag, outbox, latency — `ok` /
+`degraded` / `down`, HTTP 503 when down. Point your uptime monitor here instead of `/healthz`.
+
+**Status page** `GET /status` (public, no account data): overall state, brokers, signal latency of
+the last hour and admin-posted incidents (Settings → Platform). `GET /api/public/status` is the JSON.
+
+**Platform heartbeat** (Settings → Platform): an outbound ping to healthchecks.io / Uptime Kuma
+every N seconds carrying the deep-health result — the monitor reports when the bridge itself is gone.
+
 ## Alerts
 
 **Settings → Alerts** — three channels, each with its own on/off switch:
