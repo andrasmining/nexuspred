@@ -22,22 +22,23 @@ async def api_news(hours: float = 72.0) -> dict[str, Any]:
 
 @router.get("/calendar")
 async def api_news_calendar(days: float = 7.0, start: str = "", end: str = "", currencies: str = "", impacts: str = "",
-                            q: str = "", relevant: bool = False) -> dict[str, Any]:
+                            q: str = "", relevant: bool = False, past: bool = False) -> dict[str, Any]:
     """The full calendar (feed + manual) for a range — default the next seven days —
     with optional currency / impact / text filters. Every row says whether the
-    news lock counts it and, if so, its lock window."""
+    news lock counts it and, if so, its lock window. Past events are archived
+    8 h after their time and hidden unless ``past=true``."""
     from datetime import datetime, timedelta, timezone
     if not news._events:
         await news.refresh()
     now = datetime.now(timezone.utc)
-    lo = news._parse_ts(start) if start else now - timedelta(hours=6)
+    lo = news._parse_ts(start) if start else news.archive_cutoff(now)
     hi = news._parse_ts(end) if end else now + timedelta(days=max(0.1, min(days, 60.0)))
     if lo is None or hi is None:
         raise HTTPException(status_code=400, detail="start / end must be ISO 8601 timestamps")
     cur = {c.strip().upper() for c in currencies.split(",") if c.strip()} or None
     imp = {i.strip().title() for i in impacts.split(",") if i.strip()} or None
-    rows = news.calendar(context.get_area(), start=lo, end=hi, currencies=cur, impacts=imp, query=q, relevant_only=relevant, now=now)
-    return {"status": news.status(), "range": {"start": lo.isoformat(), "end": hi.isoformat()},
+    rows = news.calendar(context.get_area(), start=lo, end=hi, currencies=cur, impacts=imp, query=q, relevant_only=relevant, now=now, include_past=past)
+    return {"status": news.status(), "range": {"start": lo.isoformat(), "end": hi.isoformat()}, "archive_after_hours": news.ARCHIVE_AFTER_H,
             "currencies": news.feed_currencies(), "impacts": list(news.IMPACTS), "events": rows}
 
 

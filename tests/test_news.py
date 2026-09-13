@@ -206,3 +206,34 @@ async def test_preview_failure_keeps_the_weekly_rows(admin, monkeypatch):
     monkeypatch.setattr(http, "client", lambda name: client)
     r = await news.refresh(force=True)
     assert r["events"] == 1 and "preview" in r["error"]
+
+
+
+# ------------------------------------------------------------ alpha.81
+def test_past_events_are_archived_eight_hours_after_their_time(admin, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    mk = lambda h, title: {"title": title, "currency": "USD", "impact": "High", "at": (now + timedelta(hours=h)).isoformat(), "source": "feed"}  # noqa: E731
+    monkeypatch.setattr(news, "_events", [mk(-9, "old"), mk(-7, "recent"), mk(2, "soon")])
+    with context.use_area(1):
+        config.save_settings({"news_lock": news.normalize({"enabled": True, "currencies": ["USD"], "impacts": ["High"], "before": 5, "after": 5})})
+    titles = [w["title"] for w in news.windows(1, hours=72, now=now)]
+    assert titles == ["recent", "soon"]                                             # 9 h old: archived; 7 h old: still listed
+    lo = now - timedelta(days=7)
+    assert [r["title"] for r in news.calendar(1, start=lo, end=now + timedelta(days=1), now=now)] == ["recent", "soon"]
+    assert [r["title"] for r in news.calendar(1, start=lo, end=now + timedelta(days=1), now=now, include_past=True)] == ["old", "recent", "soon"]
+
+
+async def test_calendar_api_hides_archived_events_unless_past_is_requested(client, admin, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(news, "_events", [{"title": "old", "currency": "USD", "impact": "High", "at": (now - timedelta(hours=10)).isoformat(), "source": "feed"},
+                                          {"title": "soon", "currency": "USD", "impact": "High", "at": (now + timedelta(hours=1)).isoformat(), "source": "feed"}])
+    from urllib.parse import quote
+    start = quote((now - timedelta(days=2)).isoformat())
+    r = await client.get(f"/api/news/calendar?start={start}&days=1")
+    assert r.status_code == 200 and [e["title"] for e in r.json()["events"]] == ["soon"] and r.json()["archive_after_hours"] == 8.0
+    r = await client.get(f"/api/news/calendar?start={start}&days=1&past=true")
+    assert [e["title"] for e in r.json()["events"]] == ["old", "soon"]
+    r = await client.get("/api/news?hours=48")
+    assert [e["title"] for e in r.json()["events"]] == ["soon"]

@@ -49,6 +49,7 @@ export default {
       else if (st.active) statusBox.append(h("strong", null, t("Locked now: ")), t("{title} — no new entries until {until}", { title: st.active.title, until: fmtClock(st.active.lock_until) }), st.action === "flatten" ? t(" (open positions were flattened at the window start).") : ".");
       else if (st.next) statusBox.append(h("strong", null, t("Next lock: ")), t("{title} — {from} to {until}.", { title: st.next.title, from: fmtTime(st.next.lock_from), until: fmtClock(st.next.lock_until) }));
       else statusBox.append(t("Enabled — no matching event in the next 48 hours."));
+      statusBox.append(h("div", { class: "muted", style: "margin-top:4px;font-size:12px" }, t("Past events are archived 8 h after their time.")));
       const feed = st.feed_events ? `${st.feed_events} events loaded` : "no calendar loaded yet";
       statusBox.append(h("div", { class: "muted", style: "margin-top:6px;font-size:12.5px" }, `Calendar: ${feed}${st.feed_error ? " · feed problem: " + st.feed_error : ""}`));
     }

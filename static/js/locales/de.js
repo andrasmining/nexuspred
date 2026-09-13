@@ -2,6 +2,9 @@
    Placeholders {name} must appear in both. A key missing here shows the English text;
    the key list is every t("…") in static/js (tests/test_i18n.py checks coverage). */
 export const DE = {
+  // alpha.81 — event archive
+  "Events leave the list 8 h after their time; “Past 7 days” shows them.": "Ereignisse verschwinden 8 h nach ihrem Zeitpunkt aus der Liste; «Letzte 7 Tage» zeigt sie.",
+  "Past events are archived 8 h after their time.": "Vergangene Ereignisse werden 8 h nach ihrem Zeitpunkt archiviert.",
   // review round 5 (alpha.80)
   "Clear the tag filter": "Tag-Filter löschen",
   "Mirrors the leader's positions live{symbols}.": "Spiegelt die Positionen des Leaders live{symbols}.",

@@ -62,7 +62,7 @@ export default {
       else statusBox.append(t("News lock enabled — no matching event in the next 48 hours."));
       const span = st.feed_from ? ` (${new Date(st.feed_from).toLocaleDateString(locale(), { month: "short", day: "numeric" })} – ${new Date(st.feed_to).toLocaleDateString(locale(), { month: "short", day: "numeric" })})` : "";
       const preview = st.preview_events ? t(", {n} of them a preview of the coming weeks from TradingView's calendar (replaced by the weekly file each Sunday evening)", { n: st.preview_events }) : "";
-      statusBox.append(h("div", { class: "muted", style: "margin-top:6px;font-size:12.5px" }, (st.feed_events ? t("Calendar: {n} events loaded", { n: st.feed_events }) + span + preview : t("Calendar: no calendar loaded yet")) + (st.feed_error ? t(" · feed problem: ") + st.feed_error : "") + t(". Past weeks are kept for 90 days.")));
+      statusBox.append(h("div", { class: "muted", style: "margin-top:6px;font-size:12.5px" }, (st.feed_events ? t("Calendar: {n} events loaded", { n: st.feed_events }) + span + preview : t("Calendar: no calendar loaded yet")) + (st.feed_error ? t(" · feed problem: ") + st.feed_error : "") + t(". Past weeks are kept for 90 days.") + " " + t("Events leave the list 8 h after their time; “Past 7 days” shows them.")));
     }
     let busy = false, rerun = false;
     async function load() {
@@ -73,7 +73,7 @@ export default {
         const now = new Date();
         if (v === "2w") { const [a, b] = twoWeeks(); params.set("start", a.toISOString()); params.set("end", b.toISOString()); }
         else if (v === "today") { const e = new Date(now); e.setHours(23, 59, 59, 0); params.set("start", new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()); params.set("end", e.toISOString()); }
-        else if (v === "past7") { params.set("start", new Date(now.getTime() - 7 * 86400e3).toISOString()); params.set("end", now.toISOString()); }
+        else if (v === "past7") { params.set("start", new Date(now.getTime() - 7 * 86400e3).toISOString()); params.set("end", now.toISOString()); params.set("past", "true"); }
         else params.set("days", v);
         const cur = checked(curBox), imp = checked(impBox);
         if (currencies.length && cur.length && cur.length < currencies.length) params.set("currencies", cur.join(","));

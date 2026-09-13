@@ -275,15 +275,24 @@ def _key(e: dict[str, Any]) -> str:
     return f"{e['at']}|{e['title']}"
 
 
+ARCHIVE_AFTER_H = 8.0          # a past event leaves the lists this long after its time (the feed keeps it for the calendar's past ranges)
+
+
+def archive_cutoff(now: Optional[datetime] = None) -> datetime:
+    """Events older than this are archived: hidden from the news list and the
+    calendar's default ranges."""
+    return (now or datetime.now(timezone.utc)) - timedelta(hours=ARCHIVE_AFTER_H)
+
+
 def windows(area_id: int, *, hours: float = 72.0, now: Optional[datetime] = None,
             settings: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
-    """The events that count for this workspace within ``hours`` (past 6 h to
-    future ``hours``), each with its lock window and whether it locks *now*."""
+    """The events that count for this workspace within ``hours`` (archive
+    cutoff to future ``hours``), each with its lock window and whether it locks *now*."""
     s = settings or settings_for(area_id)
     now = now or datetime.now(timezone.utc)
     if not _events:
         _load_cached()
-    lo, hi = now - timedelta(hours=6), now + timedelta(hours=hours)
+    lo, hi = archive_cutoff(now), now + timedelta(hours=hours)
     before, after = timedelta(minutes=s["before"]), timedelta(minutes=s["after"])
     out = []
     candidates = [dict(e, source=e.get("source") or "feed") for e in _events
@@ -302,13 +311,16 @@ def windows(area_id: int, *, hours: float = 72.0, now: Optional[datetime] = None
 
 def calendar(area_id: int, *, start: datetime, end: datetime, currencies: Optional[set[str]] = None,
              impacts: Optional[set[str]] = None, query: str = "", relevant_only: bool = False,
-             now: Optional[datetime] = None) -> list[dict[str, Any]]:
+             now: Optional[datetime] = None, include_past: bool = False) -> list[dict[str, Any]]:
     """Every calendar entry between ``start`` and ``end`` (feed + this workspace's
     manual events), each flagged ``relevant`` when the lock settings would count
     it, with its lock window when so. Filters narrow the list; ``relevant_only``
-    keeps only entries the lock would act on."""
+    keeps only entries the lock would act on. Events past the archive cutoff
+    (ARCHIVE_AFTER_H after their time) are hidden unless ``include_past``."""
     s = settings_for(area_id)
     now = now or datetime.now(timezone.utc)
+    if not include_past:
+        start = max(start, archive_cutoff(now))
     if not _events:
         _load_cached()
     before, after = timedelta(minutes=s["before"]), timedelta(minutes=s["after"])

@@ -4,6 +4,12 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.81
+- **Event archive**: a past calendar event leaves the news list and the calendar's default
+  ranges 8 h after its time (`news.ARCHIVE_AFTER_H`). The "Past 7 days" range still shows
+  archived events (`GET /api/news/calendar?past=true`); the feed keeps them for 90 days as
+  before. The news lock itself was never affected — it only looks at the next hours.
+
 ## 5.0.0-alpha.80
 Fifth review pass over the alpha.75–79 code (five independent read-only reviews, every finding
 verified before a change; 665 tests, 23 new). The signal path for Tradovate is unchanged.
