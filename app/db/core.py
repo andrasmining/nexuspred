@@ -22,7 +22,9 @@ thread instead of stalling the event loop.
 """
 from __future__ import annotations
 import json
+import logging
 import os
+import shutil
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -30,13 +32,44 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent        # app/db/core.py → the repository
 
 
 DATA_DIR = Path(os.environ.get("NEXUSPRED_DATA_DIR") or (ROOT_DIR / "data"))
 
 
 DB_FILE = DATA_DIR / "fluxbridge.db"
+
+# alpha.74–85 resolved the default one directory too shallow (``app/data``), inside
+# the checkout the updater hard-resets; an installation that ran without
+# NEXUSPRED_DATA_DIR has its database there. It is moved to ``data/`` once.
+LEGACY_DB_FILE = ROOT_DIR / "app" / "data" / "fluxbridge.db"
+
+
+def migrate_legacy_db() -> bool:
+    """Move a database left at the alpha.74–85 default into ``data/`` — only when
+    the new location holds nothing yet and the old file carries users (the file
+    git tracked by mistake is an empty schema). Returns True when moved."""
+    if os.environ.get("NEXUSPRED_DATA_DIR") or DB_FILE.exists() or not LEGACY_DB_FILE.exists():
+        return False
+    try:
+        c = sqlite3.connect(f"file:{LEGACY_DB_FILE}?mode=ro", uri=True)
+        try:
+            has_users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return False
+    if not has_users:
+        return False
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(LEGACY_DB_FILE, DB_FILE)
+    for suffix in ("-wal", "-shm"):
+        side = LEGACY_DB_FILE.with_name(LEGACY_DB_FILE.name + suffix)
+        if side.exists():
+            shutil.copy2(side, DB_FILE.with_name(DB_FILE.name + suffix))
+    LEGACY_DB_FILE.rename(LEGACY_DB_FILE.with_suffix(".db.migrated"))
+    return True
 
 
 _init_lock = threading.Lock()
@@ -134,6 +167,11 @@ def init() -> None:
     with _init_lock:
         if _initialized:
             return
+        try:
+            if migrate_legacy_db():
+                logging.getLogger(__name__).warning("database moved from the alpha.74–85 default app/data/ to %s", DB_FILE)
+        except OSError as exc:
+            logging.getLogger(__name__).error("legacy database at %s could not be moved: %s", LEGACY_DB_FILE, exc)
         with _connect() as c:
             c.executescript(
                 """

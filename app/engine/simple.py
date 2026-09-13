@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 
 import asyncio
-from .. import config, events
+from .. import config, events, state
 from .common import _collect_entries, _entry_result, _lock, _price, _signal_qty, _trade_key
 from ..sizing import account_qty
 
@@ -41,6 +41,12 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     if acct_state:
         key = _trade_key(webhook["id"], root)
         with _lock:
+            prev = active_map.get(key)
+            if prev and any(a.get("sl_order_id") or a.get("tp_order_ids") for a in (prev.get("accounts") or {}).values()):
+                # a new entry over a record that still lists protective orders: those orders
+                # stay at the broker but are no longer moved with this trade — close_all
+                # cancels the contract's orders regardless
+                state.log_event("warn", f"{tag}[{webhook.get('name', '?')}] entry for {root} replaces a tracked trade whose stop / targets may still be working — they are not managed by the new trade")
             active_map[key] = {
                 "webhook_id": webhook["id"], "webhook_name": webhook.get("name", ""),
                 "root": root, "contract": contract, "side": action, "qty": base_qty,

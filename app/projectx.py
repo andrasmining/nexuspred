@@ -36,7 +36,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from . import broker, config, events, http, state
+from . import broker, config, events, http, security, state
 from .tradovate import OrderOutcomeUnknown, RateLimited, TradovateError
 
 SNAPSHOT_TTL_S = 3.0              # one Position/searchOpen and Account/search per login per P&L tick, not per account
@@ -129,6 +129,7 @@ class ProjectXSession(broker.BrokerSessionBase):
         firm = str(entry.get("px_firm") or "topstep").strip()
         # a custom gateway must be https (a plain-http or non-URL value would send the API key in clear / nowhere)
         self.base_url = (FIRMS.get(firm.lower()) or (firm if firm.startswith("https://") else FIRMS["topstep"])).rstrip("/")
+        self._custom_gateway = firm.lower() not in FIRMS       # a URL the operator typed: re-checked at every login (below)
         self.firm = firm
         self.account_spec = entry.get("account_spec") or ""
         self.account_id = int(entry.get("account_id") or 0)
@@ -188,6 +189,12 @@ class ProjectXSession(broker.BrokerSessionBase):
             fresh = bool(self._token) and time.monotonic() - self._token_at < TOKEN_TTL_S
             if self._token and fresh and not force and (stale is None or stale != self._token):
                 return self._token
+            if self._custom_gateway:
+                # the API key is about to go out: the custom host must still resolve to
+                # a public address (at login only — never a lookup on the order path)
+                problem = await asyncio.to_thread(security.check_outbound_url, self.base_url)
+                if problem:
+                    raise TradovateError(f"[{self.name}] ProjectX gateway rejected: {problem}")
             r = await self._client().post(f"{self.base_url}/api/Auth/loginKey", json={"userName": self.user, "apiKey": self.api_key}, timeout=20.0)
             data = r.json() if r.content else {}
             if r.status_code != 200 or not data.get("success") or not data.get("token"):

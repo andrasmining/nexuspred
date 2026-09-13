@@ -91,7 +91,7 @@ _active: dict[int, dict[str, dict[str, Any]]] = {}
 _sim_active: dict[int, dict[str, dict[str, Any]]] = {}
 
 
-ACTIVE_TTL_S = 14 * 24 * 3600     # a record whose position closed without a signal (stop hit) is forgotten after this
+ACTIVE_TTL_S = 45 * 24 * 3600     # a record whose position closed without a signal (stop hit) is forgotten after this — longer than any prop-firm hold, shorter than forever
 _sweep_n = 0
 
 
@@ -111,6 +111,8 @@ def _map_for(simulate: bool) -> dict[str, dict[str, Any]]:
             cutoff = time.time() - ACTIVE_TTL_S
             for key in [k for k, rec in m.items() if 0 < float(rec.get("ts") or 0) < cutoff]:
                 m.pop(key, None)
+                state.log_event("warn", f"trade record {key} dropped after {ACTIVE_TTL_S // 86400} days without a signal — "
+                                        "if that position is still open, manage it by hand (close_all still flattens the contract)")
         return m
 
 

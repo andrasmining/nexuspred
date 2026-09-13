@@ -108,6 +108,19 @@ def _pip_install() -> tuple[bool, str]:
     return _run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], timeout=PIP_TIMEOUT_S)
 
 
+def _tracked_runtime_db() -> str:
+    """The active database's repo-relative path when git tracks it — a hard
+    reset would then overwrite the live data. Empty when it lives outside the
+    checkout or is untracked."""
+    from . import db
+    try:
+        rel = db.DB_FILE.resolve().relative_to(config.ROOT_DIR.resolve())
+    except ValueError:
+        return ""
+    ok, _ = _run(["git", "ls-files", "--error-unmatch", "--", rel.as_posix()])
+    return rel.as_posix() if ok else ""
+
+
 _apply_lock = asyncio.Lock()
 
 
@@ -139,6 +152,12 @@ async def _apply_update() -> dict[str, Any]:
             ),
         }
 
+    tracked = await asyncio.to_thread(_tracked_runtime_db)
+    if tracked:
+        message = (f"Update refused: the active database ({tracked}) is a file git tracks — a hard reset would overwrite it. "
+                   "Stop Fluxbridge, back the database up and move it to data/ (or set NEXUSPRED_DATA_DIR), then update.")
+        state.log_event("error", message)
+        return {"success": False, "message": message}
     old_version = config.get_version()
     # the revision to fall back to, verified before anything moves: a message
     # where a SHA should be would turn a rollback into a second failure

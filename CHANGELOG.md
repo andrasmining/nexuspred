@@ -4,6 +4,40 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.86
+The external PR #22 ("close alpha.84 must-fix safety gaps") reviewed point by point; the sound
+parts adopted in the bridge's own implementation, the rest replaced or declined. 735 tests, 11 new.
+
+**Adopted**
+- **Database path** (a real regression since alpha.74): `app/db/core.py` resolved the default
+  data directory one level too shallow, so an installation without `NEXUSPRED_DATA_DIR` kept
+  its database at `app/data/fluxbridge.db` — inside the checkout the updater hard-resets — and
+  an empty database with that name had been tracked by git. The default is `data/` again, the
+  stray file is untracked and ignored, a database left at the old path (with users) is **moved
+  to `data/` once at startup**, and the updater **refuses** to run while the active database is a
+  file git tracks. Render and `install-server.sh` installations set the data directory
+  explicitly and were never affected. Affected one-click installs: back `app/data/fluxbridge.db`
+  up before updating — the *old* updater's reset runs before the new code does.
+- A login whose user has **no workspace** is refused (403) instead of falling back to the
+  default workspace: a tenancy boundary is never crossed by a missing row.
+- Rithmic `modify_order`, `cancel_order` and `liquidate_position` treat a **timeout as an
+  unknown outcome** (`OrderOutcomeUnknown`, logged as `unknown`, alerted) instead of a rejection
+  — a rejection invites a retry that could double the mutation. Entries already did this.
+- Outbound targets that carry credentials or payloads are **re-checked when used**, not only
+  when saved (DNS can change in between): the Discord alert webhook, custom Discord signal
+  targets, Web-Push endpoints and the SMTP host. The ProjectX custom gateway is re-checked at
+  login (every ~20 h) — never a lookup on the order path.
+
+**Declined, and what stands instead**
+- *Broker reconciliation before every entry over an existing record* (two reads on the poll
+  lane per entry, blocks a strategy that adds to a position): declined — it would add up to
+  0.4 s (and a whole 429 penalty) to the entry path for the common stop-hit-then-re-enter
+  case. Instead the entry logs a warning when the replaced record still lists a stop or targets
+  (they stay at the broker; `close_all` cancels the contract's orders regardless).
+- *No expiry of trade records at all*: declined — records of trades that ended at the broker
+  would accumulate forever. The expiry is 45 days instead of 14 and every eviction is logged.
+- The PR's own test file was replaced by tests of the adopted behaviour.
+
 ## 5.0.0-alpha.85
 - **Rithmic connect diagnostics** (from a live report: "timed out during handshake" and
   "'NoneType' object has no attribute 'heartbeat_interval'"): a handshake timeout is retried once
