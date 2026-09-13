@@ -65,8 +65,8 @@ from .group_runner import (  # noqa: F401
     REJECT_HOLDOFF_S,
     ORDER_SETTLE_S,
     FOLLOWER_RESEED_S,
+    GroupRunner,
 )
-from .safety_runner import GroupRunner  # noqa: F401
 from .manager import (  # noqa: F401
     reset,
     release_followers,
