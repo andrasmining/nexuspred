@@ -144,6 +144,13 @@ class _RecordingAE(FakeExecutor):
         self.session = session
         _RecordingAE.instances.append(self)
 
+    async def liquidate_position(self, symbol):
+        result = await super().liquidate_position(symbol)
+        # Broker truth after the submitted liquidation: the fake fill removes
+        # the position so the safety reconciliation can confirm flat.
+        self._positions = [p for p in self._positions if p.get("symbol") != symbol]
+        return result
+
 
 async def test_flatten_all_ignores_toggles_and_trading_switch(accounts, monkeypatch):
     _RecordingAE.instances.clear()
