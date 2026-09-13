@@ -453,6 +453,8 @@ export const DE = {
   "Broker this login belongs to": "Broker dieses Logins",
   "ProjectX (Topstep …) beta": "ProjectX (Topstep …) Beta",
   "Rithmic (beta)": "Rithmic (Beta)",
+  "Rithmic (coming soon…)": "Rithmic (demnächst…)",
+  "Available once the Rithmic conformance review is complete": "Verfügbar, sobald die Rithmic-Konformitätsprüfung abgeschlossen ist",
   "ProjectX user name": "ProjectX-Benutzername",
   "firm (topstep, bulenox …)": "Firma (topstep, bulenox …)",
   "The prop firm's ProjectX gateway: topstep, alphaticks, bulenox, blusky, e8x, tradeify … or a full https:// URL": "Das ProjectX-Gateway der Prop-Firma: topstep, alphaticks, bulenox, blusky, e8x, tradeify … oder eine vollständige https://-URL",

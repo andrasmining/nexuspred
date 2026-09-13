@@ -36,7 +36,8 @@ export default {
     const row = (a = {}) => {
       const isR = a.broker === "rithmic", isP = a.broker === "projectx";
       const brokerSel = h("select", { class: "ta-broker input-sm", style: "min-width:100px", title: t("Broker this login belongs to") },
-        h("option", { value: "tradovate", selected: !isR && !isP }, t("Tradovate")), h("option", { value: "projectx", selected: isP }, t("ProjectX (Topstep …) beta")), h("option", { value: "rithmic", selected: isR }, t("Rithmic (beta)")));
+        h("option", { value: "tradovate", selected: !isR && !isP }, t("Tradovate")), h("option", { value: "projectx", selected: isP }, t("ProjectX (Topstep …) beta")), // Rithmic waits for its conformance sign-off: not selectable for a new login, an existing Rithmic login stays editable
+        h("option", { value: "rithmic", selected: isR, disabled: !isR, title: t("Available once the Rithmic conformance review is complete") }, isR ? t("Rithmic (beta)") : t("Rithmic (coming soon…)")));
       const pCells = h("div", { class: isP ? "" : "hidden", style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center" },
         h("input", { class: "ta-pxuser input-sm", value: a.px_user || "", placeholder: t("ProjectX user name"), autocomplete: "off", style: "min-width:140px" }),
         secretInput("ta-pxkey", a.px_api_key, "API key"),

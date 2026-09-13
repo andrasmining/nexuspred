@@ -4,6 +4,11 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.87
+- **Rithmic greyed out** in the broker selection ("Rithmic (coming soon…)") until the conformance
+  review with Rithmic is complete. An existing Rithmic login stays editable and removable; the
+  adapter and its tests are unchanged.
+
 ## 5.0.0-alpha.86
 The external PR #22 ("close alpha.84 must-fix safety gaps") reviewed point by point; the sound
 parts adopted in the bridge's own implementation, the rest replaced or declined. 735 tests, 11 new.
