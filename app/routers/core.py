@@ -257,14 +257,18 @@ async def api_pnl(refresh: bool = False) -> dict[str, Any]:
 async def api_flatten_all(request: Request) -> dict[str, Any]:
     """Emergency kill-switch: flatten every position and cancel every working order
     on all trade accounts in the caller's area. Runs even if trading is paused."""
-    user = getattr(request.state, "user", None)
-    result = await signals.flatten_all()
-    if user:
-        db.log_action(user["id"], user["email"], "flatten_all", "",
-                      f"{result.get('flattened', 0)} flattened, "
-                      f"{result.get('cancelled', 0)} cancelled, "
-                      f"{result.get('accounts', 0)} account(s)")
-    return result
+    from ..execution import service
+    from ..execution.contracts import ExecutionError
+    from ..platform.workspaces import WorkspaceAccessDenied, current_actor
+    from .execution_errors import http_error
+
+    user = getattr(request.state, "user", None) or {}
+    try:
+        return await service.execution.flatten(current_actor(user.get("id")))
+    except WorkspaceAccessDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ExecutionError as exc:
+        raise http_error(exc) from exc
 
 
 @router.post("/api/alerts/test")

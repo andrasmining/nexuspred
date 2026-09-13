@@ -6,7 +6,7 @@ import asyncio
 import pytest
 
 from app import context, signals
-from app.routers import trading
+from app.execution import local
 from tests.test_alpha76 import ticket  # noqa: F401 - broker executor fixture
 
 
@@ -24,7 +24,7 @@ async def test_close_waits_for_the_actual_signal_lock(client, ticket, monkeypatc
         called.set()
         return 0
 
-    monkeypatch.setattr(trading, "_close_contract", close)
+    monkeypatch.setattr(local, "_close_contract", close)
     lock = signals._trade_lock(lock_key)
     await lock.acquire()
     task = asyncio.create_task(client.post("/api/positions/close", json={"lid": "L1", "spec": "DEMO11", "symbol": "MNQZ6"}))

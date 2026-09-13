@@ -564,6 +564,8 @@ def init() -> None:
                 c.execute("UPDATE areas SET features=?", (_all_features_on(),))
             from .mail import _schema as _mail_schema           # alpha.95: outbox + alert deliveries
             _mail_schema(c)
+            from .foundation import create_schema
+            create_schema(c)
         _initialized = True
 
 

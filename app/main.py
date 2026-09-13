@@ -27,6 +27,15 @@ _loop_tasks: list[asyncio.Task] = []
 
 async def _startup() -> None:
     db.init()
+    # The command ledger is NOT a retry queue. A restart marks unfinished
+    # manual instructions for reconciliation without sending them again.
+    from .db import execution as execution_ledger
+    try:
+        unresolved = await asyncio.to_thread(execution_ledger.recover_incomplete)
+        if unresolved:
+            state.log_event("warn", f"{unresolved} interrupted manual command(s) need broker reconciliation; no orders replayed")
+    except Exception:  # the old close/flatten paths must remain reachable
+        state.log_event("error", "Manual command recovery failed; inspect the ledger and broker before new entries")
     # Default each area's alert "Notify email" to its owner's address where unset.
     try:
         if db.backfill_alert_emails():
