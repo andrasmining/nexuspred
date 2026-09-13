@@ -11,6 +11,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 
 import httpx
 from datetime import datetime, timedelta, timezone
@@ -19,8 +20,16 @@ from typing import Any
 from . import broker, config, context, events, http, risk, sizing, state, history
 
 REQUEST_SPACING_S = 0.2   # minimum gap between two requests of one login (5/s)
-PRIORITY_SPACING_S = 0.06  # orders / cancels / liquidations: a small gap of their own, never behind polls
+PRIORITY_SPACING_S = 0.06  # orders / cancels / liquidations: the *sustained* gap, never behind polls
 PRIORITY_PENALTY_WAIT_S = 3.0  # a 429 penalty shorter than this is waited out for an order; longer → refused
+# Orders leave in a burst, not one every PRIORITY_SPACING_S. A copy group's
+# followers, a bracket's legs and a kill switch's liquidations are one decision
+# taken at one moment: making them queue 60 ms apart gave the last account of a
+# six-follower group its fill 300 ms after the first. The bucket holds
+# ORDER_BURST tokens, refills at the sustained rate above, and a burst that
+# empties it falls back to exactly the old spacing — so the load Tradovate sees
+# over any longer window is unchanged, only its distribution inside a moment is.
+ORDER_BURST = max(1.0, float(os.environ.get("NEXUSPRED_TRADOVATE_ORDER_BURST") or 12))
 PRIORITY_PATHS = ("/order/placeorder", "/order/placeoco", "/order/modifyorder", "/order/cancelorder", "/order/liquidateposition")
 COALESCED_PATHS = ("/position/list", "/order/list")   # login-wide reads: concurrent callers share one request (see _coalesced)
 LIVE_BASE = "https://live.tradovateapi.com/v1"
@@ -176,6 +185,7 @@ class TradovateSession:
         self._prio_lock = asyncio.Lock()          # orders have their own, shorter spacing
         self._last_sent: float = 0.0
         self._last_prio: float = 0.0
+        self._order_tokens: float = ORDER_BURST   # see ORDER_BURST: a burst leaves together
         self.penalty_until: float = 0.0           # monotonic; set by a 429
         self.rate_limits = 0
         self._contract_id_cache: dict[str, tuple[int, datetime]] = {}
@@ -308,6 +318,24 @@ class TradovateSession:
             except _LeaderGone:
                 continue                                 # the leader's caller gave up: run or join the next read
 
+    def _take_order_token(self) -> float:
+        """Spend one order token. Returns how long to wait for it (0 = go now).
+
+        Refills at ``1 / PRIORITY_SPACING_S`` per second up to ``ORDER_BURST``,
+        so orders decided together leave together and a sustained stream still
+        keeps the old rate. The caller holds ``_prio_lock``."""
+        import time as _t
+        now = _t.monotonic()
+        if PRIORITY_SPACING_S <= 0:
+            return 0.0                       # pacing switched off (tests, or an operator who knows their budget)
+        rate = 1.0 / PRIORITY_SPACING_S
+        self._order_tokens = min(ORDER_BURST, self._order_tokens + max(0.0, now - self._last_prio) * rate)
+        self._last_prio = now
+        if self._order_tokens >= 1.0:
+            self._order_tokens -= 1.0
+            return 0.0
+        return (1.0 - self._order_tokens) / rate
+
     async def _request_paced(self, method: str, path: str, *, auth: bool = True, on_send: Any = None, **kwargs: Any) -> Any:
         import time as _time
         if path.startswith(PRIORITY_PATHS) or broker.is_urgent():
@@ -320,10 +348,10 @@ class TradovateSession:
                 left = self.penalty_until - _time.monotonic()
                 if left > PRIORITY_PENALTY_WAIT_S:
                     raise RateLimited(path, "", left)
-                gap = max(left, self._last_prio + PRIORITY_SPACING_S - _time.monotonic())
-                if gap > 0:
-                    await asyncio.sleep(gap)
-                self._last_prio = _time.monotonic()
+                wait = max(left, self._take_order_token())
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    self._take_order_token()      # the sleep earned the token; account for it
         else:
             async with self._pace_lock:
                 now = _time.monotonic()
@@ -338,6 +366,10 @@ class TradovateSession:
         except RateLimited as exc:
             self.rate_limits += 1
             self.penalty_until = _time.monotonic() + exc.retry_after
+            # Visible per login (Trade Accounts / session status): the order burst
+            # is only right while this stays at zero.
+            state.set_session_status(self.name, rate_limits=self.rate_limits,
+                                     last_rate_limit=datetime.now(timezone.utc).isoformat())
             raise
 
     async def _request_raw(self, method: str, path: str, *, auth: bool = True, **kwargs: Any) -> Any:

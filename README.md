@@ -530,13 +530,38 @@ its own. Who asks what:
 | Rollover | contract lookups | once a day |
 | Signals, risk guard, flatten | orders, cancels, liquidations | on demand |
 
-Orders, cancels and liquidations never queue behind the polls: they have a short lane of
-their own (a burst is spaced 60 ms apart), and a running 429 penalty longer than 3 s is
-refused at once rather than waited out. The **reads of a close** — the order list before a
-cancel, the position list before a flatten or a stop repair — take that lane too
-(`broker.urgent()`), so a kill switch or a close is never held behind a monitor's poll.
-ProjectX has the same order lane (100 ms spacing; the polls wait behind it, the 200/min
-budget holds).
+Orders, cancels and liquidations never queue behind the polls: they have a lane of their
+own, and a running 429 penalty longer than 3 s is refused at once rather than waited out.
+The **reads of a close** — the order list before a cancel, the position list before a
+flatten or a stop repair — take that lane too (`broker.urgent()`), so a kill switch or a
+close is never held behind a monitor's poll.
+
+**The order lane is a token bucket (alpha.102).** Orders decided in one moment — a copy
+group's followers, a bracket's legs, a kill switch's liquidations — leave in one moment
+instead of queueing one behind the other. The bucket holds `ORDER_BURST` tokens and refills
+at the sustained rate, so a burst that empties it falls back to exactly that rate: what the
+broker sees over any window longer than a moment is unchanged, only its distribution inside
+that moment is.
+
+| | Tradovate | ProjectX |
+|---|---|---|
+| Burst (orders at once) | 12 | 8 |
+| Sustained afterwards | 16.7 orders/s (60 ms) | 10 orders/s (100 ms) |
+| Environment override | `NEXUSPRED_TRADOVATE_ORDER_BURST` | `NEXUSPRED_PROJECTX_ORDER_BURST` |
+
+Before this, six copy followers on one login were filled 300 ms apart; now the spread is
+under a millisecond. Every 429 the broker does return is counted on the login's status
+(`rate_limits`, `last_rate_limit` in `/api/status`), so the burst can be raised or lowered
+against evidence.
+
+**What the 429 actually is.** Tradovate publishes no hard cap: its own FAQ states there is
+"no 'hard-cap' on request rate or data size limits" and that the thresholds are variable,
+enforced per second, per minute and per hour. When one is reached the answer carries
+`p-ticket` and `p-time` (the seconds to wait); `p-captcha` means an hour of manual
+cool-down. The bridge reads `p-time` (clamped 1–120 s), parks that login for it, waits out a
+penalty under 3 s for an order and refuses a longer one rather than sending a stop a minute
+late. Because the numbers are not published and can change, the burst defaults are
+deliberately modest and the counter above is the thing to tune against.
 
 ---
 ## Performance

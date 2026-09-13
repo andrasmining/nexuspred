@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -71,7 +72,12 @@ ORDER_STATUS = {0: "Working", 1: "Working", 2: "Filled", 3: "Canceled", 4: "Expi
 SIDES = {"Buy": 0, "Sell": 1}
 _MONTHS = "FGHJKMNQUVXZ"
 REQUEST_SPACING_S = 0.3
-PRIORITY_SPACING_S = 0.1          # orders / cancels / closes (and the reads of a close path): their own short gap, never behind polls
+PRIORITY_SPACING_S = 0.1          # orders / cancels / closes (and the reads of a close path): the *sustained* gap, never behind polls
+# Same bucket as the Tradovate lane: orders decided in one moment (a copy group's
+# followers, a bracket's legs, a kill switch) leave together instead of queueing
+# 100 ms apart; a burst that empties it falls back to exactly the old spacing, so
+# the 200/min budget over any longer window is unchanged.
+ORDER_BURST = max(1.0, float(os.environ.get("NEXUSPRED_PROJECTX_ORDER_BURST") or 8))
 PRIORITY_PENALTY_WAIT_S = 3.0     # a running 429 penalty shorter than this is waited out for an order; longer → refused at once
 MAX_PENALTY_S = 120.0            # the longest a 429 may hold the login (Tradovate caps the same way)
 PRIORITY_PATHS = ("/api/Order/place", "/api/Order/modify", "/api/Order/cancel", "/api/Position/closeContract")
@@ -148,6 +154,7 @@ class ProjectXSession(broker.BrokerSessionBase):
         self._prio = asyncio.Lock()                   # the order lane (see _post)
         self._last_prio = 0.0
         self._last_sent = 0.0
+        self._order_tokens: float = ORDER_BURST        # see ORDER_BURST: a burst leaves together
         self.penalty_until = 0.0
         self.rate_limits = 0
         self._contracts: dict[int, dict[str, Any]] = {}      # int id → {id, name, tickSize, tickValue, …}
@@ -209,6 +216,21 @@ class ProjectXSession(broker.BrokerSessionBase):
             self._token, self._token_at = str(data["token"]), time.monotonic()
             return self._token
 
+    def _take_order_token(self) -> float:
+        """Spend one order token. Returns how long to wait for it (0 = go now).
+        Refills at ``1 / PRIORITY_SPACING_S`` per second up to ``ORDER_BURST``.
+        The caller holds ``_prio``."""
+        now = time.monotonic()
+        if PRIORITY_SPACING_S <= 0:
+            return 0.0                       # pacing switched off (tests, or an operator who knows their budget)
+        rate = 1.0 / PRIORITY_SPACING_S
+        self._order_tokens = min(ORDER_BURST, self._order_tokens + max(0.0, now - self._last_prio) * rate)
+        self._last_prio = now
+        if self._order_tokens >= 1.0:
+            self._order_tokens -= 1.0
+            return 0.0
+        return (1.0 - self._order_tokens) / rate
+
     async def _post(self, path: str, body: dict[str, Any], *, retry: bool = True) -> dict[str, Any]:
         """One authenticated call, paced per login; 401 → re-login once, 429 → RateLimited."""
         token = await self._get_token()
@@ -221,10 +243,11 @@ class ProjectXSession(broker.BrokerSessionBase):
                 left = self.penalty_until - time.monotonic()
                 if left > PRIORITY_PENALTY_WAIT_S:
                     raise RateLimited(path, "", left)
-                gap = max(left, self._last_prio + PRIORITY_SPACING_S - time.monotonic())
-                if gap > 0:
-                    await asyncio.sleep(gap)
-                self._last_prio = self._last_sent = time.monotonic()
+                wait = max(left, self._take_order_token())
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    self._take_order_token()               # the sleep earned the token; account for it
+                self._last_sent = time.monotonic()         # the polls still wait behind an order
         else:
             async with self._pace:
                 wait = max(self.penalty_until - time.monotonic(), self._last_sent + REQUEST_SPACING_S - time.monotonic())
@@ -244,6 +267,9 @@ class ProjectXSession(broker.BrokerSessionBase):
             self.rate_limits += 1
             retry_after = max(1.0, min(_num(r.headers.get("Retry-After"), 5.0), MAX_PENALTY_S))   # a bogus header never parks the login for an hour
             self.penalty_until = time.monotonic() + retry_after
+            # Visible per login: the order burst is only right while this stays at zero.
+            state.set_session_status(self.name, rate_limits=self.rate_limits,
+                                     last_rate_limit=datetime.now(timezone.utc).isoformat())
             raise RateLimited(path, r.text[:200], retry_after)
         if r.status_code in (502, 504) and path in PRIORITY_PATHS:
             raise httpx.ReadTimeout(f"HTTP {r.status_code} from the gateway")                  # sent, may have executed → outcome unknown

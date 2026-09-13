@@ -314,3 +314,55 @@ async def test_a_malformed_id_list_is_a_client_error(area, admin):
         assert r.status_code == 400, r.text
         r = await c.post("/api/notifications/read", json={})
         assert r.status_code == 200, r.text
+
+
+# ================================================== alpha.102: the order burst
+async def test_a_copy_group_s_followers_leave_in_one_burst(area):
+    """Six followers on ONE broker login used to queue 60 ms apart, so the last
+    account was filled ~300 ms after the first. They now leave together, and past
+    the bucket the sustained rate is exactly what it was."""
+    import time as _t
+    from app import tradovate
+
+    class _Sess:
+        def __init__(self):
+            self._prio_lock = asyncio.Lock()
+            self._pace_lock = asyncio.Lock()
+            self._last_prio = _t.monotonic()
+            self._last_sent = 0.0
+            self._order_tokens = tradovate.ORDER_BURST
+            self.penalty_until = -1e9
+            self.rate_limits = 0
+            self.sent = []
+
+        async def _request_raw(self, method, path, **kw):
+            self.sent.append(_t.monotonic())
+            return {"orderId": len(self.sent)}
+
+        _take_order_token = tradovate.TradovateSession._take_order_token
+        _request_paced = tradovate.TradovateSession._request_paced
+
+    assert tradovate.ORDER_BURST >= 6, "a six-follower group must fit in the bucket"
+    s = _Sess()
+    t0 = _t.monotonic()
+    await asyncio.gather(*(s._request_paced("POST", "/order/placeorder", json={}) for _ in range(6)))
+    spread = (max(s.sent) - min(s.sent))
+    assert spread < tradovate.PRIORITY_SPACING_S, f"followers must not queue: {spread*1000:.0f} ms apart"
+
+    # the bucket is spent: a further burst falls back to the old sustained spacing
+    s._order_tokens = 0.0
+    s._last_prio = _t.monotonic()
+    t0 = _t.monotonic()
+    await asyncio.gather(*(s._request_paced("POST", "/order/placeorder", json={}) for _ in range(3)))
+    assert _t.monotonic() - t0 >= 2 * tradovate.PRIORITY_SPACING_S - 0.02
+
+
+def test_the_order_lane_can_be_switched_off_without_dividing_by_zero(area, monkeypatch):
+    """An operator who knows their own budget may set the spacing to 0."""
+    from app import tradovate
+
+    class _S:
+        _order_tokens = 0.0
+        _last_prio = 0.0
+    monkeypatch.setattr(tradovate, "PRIORITY_SPACING_S", 0.0)
+    assert tradovate.TradovateSession._take_order_token(_S()) == 0.0

@@ -4,6 +4,32 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.102
+**Copy trading fans out in one burst.** Orders decided in one moment now leave in one moment.
+
+Followers of a copy group are dispatched together in code (`asyncio.gather`), but the order
+lane of a broker login used to enforce a fixed 60 ms gap between any two orders (ProjectX
+100 ms). Six followers on one login therefore filled 300 ms apart, the last one 300 ms after
+the first — visible as a staircase in the copy event log's latency column.
+
+The lane is now a token bucket: `ORDER_BURST` orders may leave at the same instant, the bucket
+refills at exactly the old rate, and a burst that empties it falls back to exactly the old
+spacing. The load a broker sees over any window longer than a moment is unchanged — only its
+distribution inside that moment is. Measured with a fake broker (20 ms per call):
+
+| Case (one login) | alpha.101 | alpha.102 |
+|---|---|---|
+| Mirror 10 followers | 625 ms | 41 ms |
+| Flatten 10 followers | 1147 ms | 563 ms |
+| Spread first → last order | 605 ms | under 1 ms |
+| Sustained rate, 300 orders | 16.7 orders/s | 16.7 orders/s |
+
+- Defaults: 12 orders for Tradovate, 8 for ProjectX. Override with
+  `NEXUSPRED_TRADOVATE_ORDER_BURST` / `NEXUSPRED_PROJECTX_ORDER_BURST`.
+- Every 429 is now recorded on the login's status (`rate_limits`, `last_rate_limit`), so the
+  burst size can be tuned against evidence rather than guesswork.
+- A spacing of 0 switches the lane off entirely instead of dividing by zero.
+
 ## 5.0.0-alpha.101
 Review round 8: six reviews (red team, trade path, performance, new modules, frontend, operations)
 against alpha.100, every finding verified in the code before it was changed, each with a regression

@@ -61,13 +61,26 @@ async def test_http_200_with_failure_reason_is_a_rejection(admin):
         assert r["status"] == "submitted" and r["order_id"] == 5
 
 
-async def test_orders_are_spaced_and_wait_out_a_short_penalty(admin):
+async def test_orders_burst_together_then_keep_the_sustained_rate(admin, monkeypatch):
+    """alpha.102: orders decided in one moment leave in one moment — a copy group's
+    followers must not queue behind each other. Past the bucket the old sustained
+    spacing takes over, so the broker's per-minute view is unchanged."""
     sess, sent = _session()
-    monkey_spacing = tradovate.PRIORITY_SPACING_S
+    spacing = tradovate.PRIORITY_SPACING_S
+    monkeypatch.setattr(tradovate, "ORDER_BURST", 4.0)
+    sess._order_tokens = 4.0
     with context.use_area(1):
         t0 = time.monotonic()
         await asyncio.gather(*(sess.cancel_order(i) for i in range(4)))
-        assert time.monotonic() - t0 >= 3 * monkey_spacing - 0.02      # a burst is spaced, not fired at once
+        assert time.monotonic() - t0 < spacing, "a burst within the bucket leaves together"
+        assert len(sent) == 4
+
+        # the bucket is empty now: the next four fall back to the old spacing
+        t0 = time.monotonic()
+        await asyncio.gather(*(sess.cancel_order(100 + i) for i in range(4)))
+        assert time.monotonic() - t0 >= 3 * spacing - 0.02, "past the bucket the sustained rate holds"
+
+        sess._order_tokens = 4.0
         sess.penalty_until = time.monotonic() + 0.3                    # short penalty: waited out
         t0 = time.monotonic()
         await sess.cancel_order(9)
