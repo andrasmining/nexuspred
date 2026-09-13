@@ -78,8 +78,9 @@ Not yet verified with a real key; see [docs/PROJECTX.md](docs/PROJECTX.md).
 ### Rithmic accounts (beta)
 
 Logins can point at **Rithmic** (Apex, Topstep, MFFU … on R|Trader) instead of Tradovate:
-Settings → Broker Accounts → Broker *Rithmic*, then user, password, the system name your
-firm gives and the gateway (`chicago`, `europe`, `paper`). Everything else — webhooks, copy
+Settings → Broker Accounts → Broker *Rithmic*, then user, password, the gateway (`chicago`,
+`europe`, `paper`) and the system — a dropdown of the systems that gateway serves (asked from
+the gateway itself, no login needed; *Other system…* for a free entry). Everything else — webhooks, copy
 trading, risk guard, P&L — works the same. Not yet verified against a live Rithmic system;
 see [docs/RITHMIC.md](docs/RITHMIC.md) for the checklist and limits.
 

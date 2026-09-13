@@ -102,6 +102,94 @@ def _fingerprint(entry: dict[str, Any]) -> str:
 RECONNECT_GRACE_TICKS = 10        # 5 s for the library's own reconnect before a new client is built
 
 
+def resolve_gateway(value: str, environment: str = "demo") -> str:
+    """The websocket URL for a gateway key (``chicago`` …), a full Rithmic URL
+    or an empty value (the environment's default). ``ValueError`` for a host
+    that is not Rithmic's — the login's credentials go to this URL."""
+    gw = str(value or "").strip()
+    if not gw:
+        return GATEWAYS["paper" if environment != "live" else "chicago"]
+    if gw.lower() in GATEWAYS:
+        return GATEWAYS[gw.lower()]
+    if gateway_allowed(gw):
+        return gw
+    raise ValueError("rithmic_gateway must be test / paper / chicago / europe or a wss://…rithmic.com URL")
+
+
+SYSTEMS_TTL_S = 3600.0
+_systems_cache: dict[str, tuple[float, list[str]]] = {}     # gateway URL → (monotonic, names)
+
+
+async def _ws_connect(url: str) -> Any:
+    """A websocket to a Rithmic gateway, verified against Rithmic's own CA (the
+    library ships the certificate). Tests replace this."""
+    import websockets
+    from async_rithmic.client import _setup_ssl_context
+    return await websockets.connect(url, ssl=_setup_ssl_context(), open_timeout=10, ping_interval=None)
+
+
+async def list_systems(gateway: str, *, environment: str = "demo", fresh: bool = False, timeout: float = 10.0) -> list[str]:
+    """The system names a gateway serves (``Rithmic Paper Trading``, ``Apex``,
+    ``TopstepTrader`` …), asked the way every Rithmic client must before it
+    logs in (``RequestRithmicSystemInfo``, no credentials involved). Cached
+    per gateway for ``SYSTEMS_TTL_S``. Raises ``TradovateError`` when the
+    gateway cannot be reached or answers with an error."""
+    import time as _time
+    url = resolve_gateway(gateway, environment)
+    hit = _systems_cache.get(url)
+    if hit and not fresh and _time.monotonic() - hit[0] < SYSTEMS_TTL_S:
+        return list(hit[1])
+    try:
+        from async_rithmic.protocol_buffers import base_pb2, request_rithmic_system_info_pb2, response_rithmic_system_info_pb2
+    except ImportError as exc:  # pragma: no cover - environment without the package
+        raise TradovateError("Rithmic support needs the 'async_rithmic' package (pip install async_rithmic)") from exc
+    req = request_rithmic_system_info_pb2.RequestRithmicSystemInfo()
+    req.template_id = 16
+    req.user_msg.append(APP_NAME)
+    body = req.SerializeToString()
+    frame = len(body).to_bytes(4, byteorder="big", signed=True) + body
+    try:
+        ws = await asyncio.wait_for(_ws_connect(url), timeout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise TradovateError(f"Rithmic gateway {url} not reachable: {type(exc).__name__}: {exc}") from exc
+    try:
+        await asyncio.wait_for(ws.send(frame), timeout)
+        deadline = _time.monotonic() + timeout
+        while True:
+            left = deadline - _time.monotonic()
+            if left <= 0:
+                raise TradovateError(f"Rithmic gateway {url}: no system list within {timeout:.0f} s")
+            raw = await asyncio.wait_for(ws.recv(), left)
+            if not isinstance(raw, (bytes, bytearray)) or len(raw) <= 4:
+                continue
+            base = base_pb2.Base()
+            base.ParseFromString(bytes(raw[4:]))
+            if base.template_id != 17:
+                continue                                   # a heartbeat or another push: not the answer
+            resp = response_rithmic_system_info_pb2.ResponseRithmicSystemInfo()
+            resp.ParseFromString(bytes(raw[4:]))
+            codes = list(resp.rp_code)
+            if codes and codes[0] != "0":
+                raise TradovateError(f"Rithmic gateway {url} refused the system list: {' '.join(codes)[:200]}")
+            names = sorted({str(n).strip() for n in resp.system_name if str(n).strip()})
+            break
+    except asyncio.CancelledError:
+        raise
+    except TradovateError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise TradovateError(f"Rithmic gateway {url}: {type(exc).__name__}: {exc}") from exc
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+    _systems_cache[url] = (_time.monotonic(), names)
+    return list(names)
+
+
 def gateway_allowed(url: str) -> bool:
     """Only Rithmic's own websocket hosts may receive the user's credentials."""
     from urllib.parse import urlsplit
@@ -146,10 +234,12 @@ class RithmicSession(broker.BrokerSessionBase):
         self.user = str(entry.get("rithmic_user") or "")
         self.password = str(entry.get("rithmic_password") or "")
         self.system_name = str(entry.get("rithmic_system") or DEFAULT_SYSTEM[self.environment])
-        gw = str(entry.get("rithmic_gateway") or "").strip()
-        default_gw = GATEWAYS["paper" if self.environment == "demo" else "chicago"]
-        # a custom gateway must be a Rithmic websocket host (credentials go to it)
-        self.gateway = GATEWAYS.get(gw.lower()) or (gw if gateway_allowed(gw) else default_gw) if gw else default_gw
+        # a custom gateway must be a Rithmic websocket host (credentials go to it);
+        # anything else falls back to the environment's default
+        try:
+            self.gateway = resolve_gateway(entry.get("rithmic_gateway") or "", self.environment)
+        except ValueError:
+            self.gateway = resolve_gateway("", self.environment)
         self.exchanges = dict(entry.get("rithmic_exchanges") or {})
         self.account_spec = entry.get("account_spec") or ""
         self.account_id = int(entry.get("account_id") or 0)

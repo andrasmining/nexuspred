@@ -42,6 +42,22 @@ def trade_accounts_overview() -> list[dict[str, Any]]:
 
 
 # =============================================================== Token accounts
+@router.get("/rithmic/systems")
+async def api_rithmic_systems(gateway: str = "", environment: str = "demo", fresh: bool = False) -> dict[str, Any]:
+    """The system names a Rithmic gateway serves — the dropdown on the Broker
+    Accounts page. ``gateway`` is a key (chicago / europe / paper / test), a
+    Rithmic wss:// URL or empty (the environment's default)."""
+    try:
+        url = rithmic.resolve_gateway(gateway, environment)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        systems = await rithmic.list_systems(gateway, environment=environment, fresh=fresh)
+    except tradovate.TradovateError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"gateway": url, "systems": systems}
+
+
 @router.get("/token-accounts")
 async def api_token_accounts() -> list[dict[str, Any]]:
     return config.public_settings().get("token_accounts", [])

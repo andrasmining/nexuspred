@@ -4,6 +4,15 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.83
+- **Rithmic system dropdown**: on Settings → Broker Accounts a Rithmic login picks its system
+  from the list the chosen gateway serves (`Rithmic Paper Trading`, `Apex`, `TopstepTrader` …)
+  instead of typing it. The bridge asks the gateway the way every Rithmic client must before a
+  login (`RequestRithmicSystemInfo`, no credentials involved), cached per gateway for an hour
+  (`GET /api/rithmic/systems?gateway=…&environment=…`, `fresh=true` to re-ask). Changing the
+  gateway or the environment reloads the list; a stored name the gateway does not list stays
+  selectable, and *Other system…* keeps a free entry for gateways that cannot be reached.
+
 ## 5.0.0-alpha.82
 Selective adoption of the external PR #21 ("Harden execution reconciliation and platform
 safety") — everything that survived review, **without** the three policy reversals (alpha.72:

@@ -10,6 +10,19 @@ import { dataTable } from "../components/table.js";
 import { openDrawer, closeDrawer } from "../components/drawer.js";
 import { t, locale } from "../i18n.js";
 
+/** System names per Rithmic gateway (the gateway reports them before any login); one fetch per gateway per page. */
+const systemsCache = new Map();
+const systemsFor = (gateway, environment) => {
+  const key = gateway ? gateway.toLowerCase() : `default:${environment}`;
+  if (!systemsCache.has(key)) {
+    const p = api.get(`/api/rithmic/systems?gateway=${encodeURIComponent(gateway)}&environment=${encodeURIComponent(environment)}`)
+      .then((r) => (r && r.systems) || [])
+      .catch((e) => { systemsCache.delete(key); throw e; });
+    systemsCache.set(key, p);
+  }
+  return systemsCache.get(key);
+};
+
 export default {
   title: t("Broker Accounts"),
   render(root) {
@@ -31,16 +44,53 @@ export default {
       // Tradovate: access + check token. Rithmic: user, password, system, gateway.
       const tvCells = h("div", { class: (isR || isP) ? "hidden" : "", style: "display:flex;gap:6px;flex-wrap:wrap" },
         secretInput("ta-access", a.access_token, "access token"), secretInput("ta-md", a.md_token, "check token (optional)"));
+      const envSel = h("select", { class: "ta-env input-sm", style: "min-width:90px" }, h("option", { value: "demo", selected: a.environment !== "live" }, t("Demo")), h("option", { value: "live", selected: a.environment === "live" }, t("Live")));
+      // Rithmic system: a dropdown of the systems the chosen gateway reports (asked without credentials), with a free entry as fallback
+      const rsysSel = h("select", { class: "ta-rsys input-sm", style: "min-width:170px", title: t("The systems the gateway reports — pick the one Rithmic gave your prop firm / broker. Empty on demo = Rithmic Paper Trading.") });
+      const rsysCustom = h("input", { class: "ta-rsys-custom input-sm hidden", value: "", placeholder: t("system name"), list: "rithmic-systems", autocomplete: "off", style: "min-width:150px" });
+      const rsysNote = h("span", { class: "muted small" });
+      const rgw = h("input", { class: "ta-rgw input-sm", value: a.rithmic_gateway || "", placeholder: t("gateway (chicago / europe / paper)"), list: "rithmic-gateways", style: "min-width:150px", title: t("chicago (default live), europe, paper, test — or a full wss:// URL") });
+      const systemValue = () => (rsysSel.value === "__custom__" ? rsysCustom.value.trim() : rsysSel.value);
+      const fillSystems = (names, keep) => {
+        const cur = keep !== undefined ? keep : systemValue();
+        const list = [...new Set([...names, ...(cur && !names.includes(cur) ? [cur] : [])])];
+        rsysSel.replaceChildren(
+          h("option", { value: "" }, t("Default")),
+          ...list.map((x) => h("option", { value: x, selected: x === cur }, x)),
+          h("option", { value: "__custom__" }, t("Other system…")));
+        if (cur && !list.includes(cur)) { rsysSel.value = "__custom__"; rsysCustom.value = cur; }
+        rsysCustom.classList.toggle("hidden", rsysSel.value !== "__custom__");
+      };
+      fillSystems([], a.rithmic_system || "");
+      let loadSeq = 0;
+      const loadSystems = async () => {
+        if (brokerSel.value !== "rithmic") return;
+        const seq = ++loadSeq;
+        rsysNote.textContent = t("Loading systems…"); rsysNote.title = "";
+        try {
+          const names = await systemsFor(rgw.value.trim(), envSel.value);
+          if (seq !== loadSeq) return;
+          fillSystems(names);
+          rsysNote.textContent = names.length ? "" : t("The gateway reported no systems");
+        } catch (e) {
+          if (seq !== loadSeq) return;
+          fillSystems([]);
+          rsysNote.textContent = t("Systems could not be loaded — type the name"); rsysNote.title = e.message || "";
+        }
+      };
+      rsysSel.addEventListener("change", () => { rsysCustom.classList.toggle("hidden", rsysSel.value !== "__custom__"); if (rsysSel.value === "__custom__") rsysCustom.focus(); });
+      rgw.addEventListener("change", loadSystems);
+      envSel.addEventListener("change", loadSystems);
       const rCells = h("div", { class: isR ? "" : "hidden", style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center" },
         h("input", { class: "ta-ruser input-sm", value: a.rithmic_user || "", placeholder: t("Rithmic user"), autocomplete: "off", style: "min-width:120px" }),
         secretInput("ta-rpw", a.rithmic_password, "password"),
-        h("input", { class: "ta-rsys input-sm", value: a.rithmic_system || "", placeholder: t("system (Apex, TopstepTrader …)"), list: "rithmic-systems", style: "min-width:150px", title: t("The system name Rithmic gave your prop firm / broker. Demo = Rithmic Paper Trading when empty.") }),
-        h("input", { class: "ta-rgw input-sm", value: a.rithmic_gateway || "", placeholder: t("gateway (chicago / europe / paper)"), list: "rithmic-gateways", style: "min-width:150px", title: t("chicago (default live), europe, paper, test — or a full wss:// URL") }));
+        rsysSel, rsysCustom, rsysNote,
+        rgw);
       const tr = h("tr", { dataset: { lid: a.lid || "" } },
         h("td", null, h("input", { type: "checkbox", class: "switch ta-enabled", checked: !!a.enabled, title: t("Login enabled") })),
         h("td", null, h("input", { class: "ta-name input-sm", value: a.name || "", placeholder: t("Account 1"), style: "min-width:120px" })),
         h("td", null, brokerSel),
-        h("td", null, h("select", { class: "ta-env input-sm", style: "min-width:90px" }, h("option", { value: "demo", selected: a.environment !== "live" }, t("Demo")), h("option", { value: "live", selected: a.environment === "live" }, t("Live")))),
+        h("td", null, envSel),
         h("td", { colspan: 2 }, tvCells, rCells, pCells),
         h("td", null, h("input", { type: "number", class: "ta-mult input-sm", min: 0.1, step: 0.1, value: a.qty_multiplier ?? 1, style: "width:70px" })),
         h("td", null, h("select", { class: "ta-agent input-sm", style: "min-width:120px", title: t("Execute this login's broker calls through a paired agent (own IP) or directly from the bridge — Tradovate logins only") },
@@ -52,7 +102,9 @@ export default {
           if (a.name && !(await confirmDialog({ title: t("Remove login \"{name}\"?", { name: a.name }), body: t("Its token is dropped and every webhook routed to its accounts loses that route after you save."), confirmText: t("Remove"), danger: true }))) return;
           tr.remove(); markDirty();
         } }, icon("trash"))));
-      brokerSel.addEventListener("change", () => { const v = brokerSel.value; tvCells.classList.toggle("hidden", v !== "tradovate"); rCells.classList.toggle("hidden", v !== "rithmic"); pCells.classList.toggle("hidden", v !== "projectx"); });
+      brokerSel.addEventListener("change", () => { const v = brokerSel.value; tvCells.classList.toggle("hidden", v !== "tradovate"); rCells.classList.toggle("hidden", v !== "rithmic"); pCells.classList.toggle("hidden", v !== "projectx"); if (v === "rithmic") loadSystems(); });
+      if (isR) loadSystems();
+      tr.rithmicSystem = systemValue;
       tr.addEventListener("input", markDirty);
       tr.addEventListener("change", markDirty);
       return tr;
@@ -68,7 +120,7 @@ export default {
       md_token: tr.querySelector(".ta-md").value.trim(),
       rithmic_user: tr.querySelector(".ta-ruser").value.trim(),
       rithmic_password: tr.querySelector(".ta-rpw").value.trim(),
-      rithmic_system: tr.querySelector(".ta-rsys").value.trim(),
+      rithmic_system: (tr.rithmicSystem ? tr.rithmicSystem() : "").trim(),
       rithmic_gateway: tr.querySelector(".ta-rgw").value.trim(),
       px_user: tr.querySelector(".ta-pxuser").value.trim(),
       px_api_key: tr.querySelector(".ta-pxkey").value.trim(),
