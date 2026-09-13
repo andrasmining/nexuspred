@@ -4,6 +4,13 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.94
+- **Copy groups for every role.** A User creates and runs their own copy groups (a leader account
+  mirrored onto their own follower accounts); only publishing a group on the marketplace and managing
+  its followers stays with the Broadcaster. Withdrawing the Broadcaster role now takes the groups off
+  the marketplace and releases their marketplace followers, but leaves them running for the
+  workspace's own accounts.
+
 ## 5.0.0-alpha.93
 - **Three roles: Admin / Broadcaster / User.** Every account has one role; each includes the one below.
   A *User* trades its own accounts and webhooks, subscribes and follows on the marketplace, runs

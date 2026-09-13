@@ -32,7 +32,8 @@ def test_roles_are_ordered_and_capabilities_follow(trio):
     assert web.has_role(bc, "user") and web.has_role(bc, "broadcaster") and not web.has_role(bc, "admin")
     caps = web.capabilities(us)
     assert caps["webhooks"] and caps["agents"] and caps["subscribe"] and caps["follow"]      # a User consumes and runs own webhooks
-    assert not caps["publish"] and not caps["lead"] and not caps["simulator"] and not caps["admin"]
+    assert caps["lead"]                                                                     # own copy groups too (alpha.94)
+    assert not caps["publish"] and not caps["simulator"] and not caps["admin"]
     caps = web.capabilities(bc)
     assert caps["publish"] and caps["lead"] and caps["simulator"] and caps["settings_io"]
     assert not caps["discord"] and not caps["users"] and not caps["support"]                 # Discord stays with the operator
@@ -86,7 +87,8 @@ ROUTES = [
     ("POST", "/api/news/", "admin"),
     ("GET", "/api/simulator", "broadcaster"),
     ("GET", "/api/settings/export", "broadcaster"),
-    ("POST", "/api/copy/groups", "broadcaster"),
+    ("POST", "/api/copy/groups", "user"),
+    ("GET", "/api/copy/groups/cg_x/subscribers", "broadcaster"),
     ("GET", "/api/webhooks/w1/subscribers", "broadcaster"),
     ("GET", "/api/users/directory", "broadcaster"),
     ("GET", "/api/webhooks", "user"),
@@ -117,7 +119,8 @@ def test_min_role_for_matches_prefixes_and_methods():
     assert web.min_role_for("GET", "/api/payments/config") is None
     assert web.min_role_for("POST", "/api/payments/config") == "admin"
     assert web.min_role_for("GET", "/api/copy/groups") is None
-    assert web.min_role_for("DELETE", "/api/copy/groups/cg_1") == "broadcaster"
+    assert web.min_role_for("DELETE", "/api/copy/groups/cg_1") is None                 # own groups: every role (alpha.94)
+    assert web.min_role_for("POST", "/api/copy/groups") is None
     assert web.min_role_for("GET", "/api/copy/groups/cg_1/sharing") == "broadcaster"
     assert web.min_role_for("GET", "/api/webhooks/abc/sharing") == "broadcaster"
     assert web.min_role_for("POST", "/api/webhooks/abc/sharing/") == "broadcaster"
@@ -129,6 +132,19 @@ def test_min_role_for_matches_prefixes_and_methods():
     assert web.min_role_for("GET", "/api/users/directory") == "broadcaster"
     assert web.min_role_for("GET", "/api/users") == "admin"
     assert web.min_role_for("GET", "/api/support/enter") == "admin"
+
+
+async def test_user_leads_own_copy_groups_but_cannot_publish(trio):
+    _, _, us = trio
+    async with _client(us["id"]) as c:
+        r = await c.post("/api/copy/groups", json={"name": "Mine"})
+        assert r.status_code == 200, r.text
+        gid = r.json()["id"]
+        assert (await c.put(f"/api/copy/groups/{gid}", json={"name": "Renamed"})).status_code == 200
+        r = await c.put(f"/api/copy/groups/{gid}/sharing", json={"enabled": True})
+        assert r.status_code == 403 and "Broadcaster" in r.text
+        assert (await c.get(f"/api/copy/groups/{gid}/subscribers")).status_code == 403
+        assert (await c.delete(f"/api/copy/groups/{gid}")).status_code == 200
 
 
 async def test_user_runs_own_webhooks_but_cannot_publish(trio, monkeypatch):
@@ -243,7 +259,7 @@ async def test_losing_broadcaster_unpublishes_and_disables(trio, monkeypatch):
     with context.use_area(area):
         assert config.load_settings()["webhooks"][0]["sharing"]["enabled"] is False
         g2 = cp.load_groups(area)[0]
-        assert g2["enabled"] is False and g2["sharing"]["enabled"] is False
+        assert g2["enabled"] is True and g2["sharing"]["enabled"] is False           # off the marketplace, still running for own accounts
     assert db.list_subscriptions(db.user_primary_area(us["id"])) == []
     assert sorted(cancelled) == sorted([wh["id"], f"copy:{g['id']}"])
     assert db.get_user(bc["id"])["role"] == "user"

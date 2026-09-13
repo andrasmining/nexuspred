@@ -73,7 +73,7 @@ export default {
             const next = e.target.value;
             const losing = RANK[role] >= 1 && RANK[next] < 1;
             if (losing && !(await confirmDialog({ title: t("Withdraw the Broadcaster role from {email}?", { email: u.email }),
-              body: t("Their listings are unpublished, subscribers' subscriptions end (Stripe subscriptions are cancelled) and their copy groups are disabled. Nothing is deleted."), confirmText: t("Withdraw"), danger: true }))) { e.target.value = role; return; }
+              body: t("Their listings are unpublished and subscribers' subscriptions end (Stripe subscriptions are cancelled); their copy groups leave the marketplace but keep running for their own accounts. Nothing is deleted."), confirmText: t("Withdraw"), danger: true }))) { e.target.value = role; return; }
             try { const r = await api.post(`/api/users/${u.id}/role`, { role: next }); toast(t("Role of {email} set to {role}", { email: u.email, role: ROLE_LABEL[next] }), "success"); if (r.effects && r.effects.listings) toast(t("{n} listing(s) unpublished", { n: r.effects.listings }), "warn"); loadUsers(); loadAudit(); }
             catch (err) { e.target.value = role; toast(err.message, "error"); }
           } },
@@ -149,7 +149,7 @@ export default {
         h("div", { class: "grid grid-2" },
           h("div", { class: "field" }, h("label", null, t("Invitee email (optional)")), inviteEmail, h("div", { class: "field-hint" }, t("Pre-fills the sign-up form; leave empty for an open invite."))),
           h("div", null,
-            h("div", { class: "field" }, h("label", null, t("Role of the new account")), inviteRole, h("div", { class: "field-hint" }, t("User consumes and runs own webhooks · Broadcaster also publishes on the marketplace · Admin operates the platform."))),
+            h("div", { class: "field" }, h("label", null, t("Role of the new account")), inviteRole, h("div", { class: "field-hint" }, t("User consumes and runs own webhooks and copy groups · Broadcaster also publishes on the marketplace · Admin operates the platform."))),
             h("label", { class: "switch-row" }, h("span", null, t("Email the invite link"), h("small", null, t("Requires SMTP under Settings → Alerts."))), inviteSend))),
         h("div", { class: "form-actions" }, inviteBtn), inviteLink.el),
       card({ title: t("Accounts"), hint: t("Toggle Discord Signals to grant a user the Discord listener module — its navigation, settings and live connection appear only for users you enable it for.") }, users.el, resetLink.el),

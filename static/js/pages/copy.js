@@ -406,7 +406,6 @@ export default {
       if (!store.get("settings")) await actions.loadSettings().catch(() => {});
       groupDrawer({ name: t("Copy group {n}", { n: groups.length + 1 }), enabled: false, followers: [], symbols: [], feed: "auto", feed_loss_flatten_s: 30, copy_adds: true, copy_orders: true }, { reload: () => { load(); loadEvents(); }, onClose: null });
     } }, icon("plus"), t("Add copy group"));
-    if (!can(store.get("me"), "lead")) addBtn.classList.add("hidden");          // a User follows leaders; leading needs the Broadcaster role
 
     root.append(
       pageHead(t("Copy Trading"), t("Mirror one leader trade account onto any number of follower accounts, live: entries, adds, reductions, closes and reversals. Followers are sized by multiplier or a fixed number of contracts; a lost leader feed flattens them after a grace period."), [

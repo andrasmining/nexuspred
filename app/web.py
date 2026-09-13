@@ -88,7 +88,7 @@ def require_feature(request: Request, feature: str) -> None:
 # --------------------------------------------------------------------- roles
 # Three roles, one per user, platform-wide, each including the one below it:
 #   user         consumes — own broker logins, own webhooks, subscribes, follows, protects
-#   broadcaster  produces and sells — publishes listings, runs copy groups as leader, simulator
+#   broadcaster  produces and sells — publishes listings and copy groups, manages subscribers, simulator
 #   admin        operates — users and roles, payments, news, updates, Discord, moderation, support view
 ROLE_RANK = {"user": 0, "broadcaster": 1, "admin": 2}
 ROLE_LABEL = {"user": "User", "broadcaster": "Broadcaster", "admin": "Admin"}
@@ -124,7 +124,7 @@ def capabilities(user: dict[str, Any] | None) -> dict[str, bool]:
     r = role_of(user)
     bc, ad = has_role(user, "broadcaster"), has_role(user, "admin")
     return {"role": r, "trade": True, "webhooks": True, "subscribe": True, "follow": True, "agents": True,
-            "publish": bc, "lead": bc, "simulator": bc, "settings_io": bc,
+            "publish": bc, "lead": True, "simulator": bc, "settings_io": bc,
             "admin": ad, "users": ad, "payments_config": ad, "news": ad, "updates": ad, "discord": ad, "support": ad}
 
 
@@ -151,7 +151,6 @@ ROUTE_POLICY: list[tuple[tuple[str, ...] | None, str, str]] = [
 ROUTE_POLICY_EXACT: list[tuple[tuple[str, ...] | None, "re.Pattern[str]", str]] = [
     (None, re.compile(r"^/api/webhooks/[^/]+/(sharing|subscribers)(/|$)"), "broadcaster"),   # publish and manage subscribers
     (None, re.compile(r"^/api/copy/groups/[^/]+/(sharing|subscribers)(/|$)"), "broadcaster"),
-    (("POST", "PUT", "DELETE"), re.compile(r"^/api/copy/groups(/|$)"), "broadcaster"),        # groups as a leader; following is a subscription
     (("GET",), re.compile(r"^/api/users/directory$"), "broadcaster"),                        # the "selected users" pick list
     (None, re.compile(r"^/api/me(/|$)"), "user"),
 ]

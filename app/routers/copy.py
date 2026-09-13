@@ -151,7 +151,7 @@ async def api_group_remove_subscriber(group_id: str, sub_id: int, request: Reque
 
 @router.post("/groups")
 async def api_create_group(request: Request) -> dict[str, Any]:
-    require_role(request, "broadcaster")
+    require_role(request, "user")
     body = await request.json()
     groups = copy.load_groups()
     if len(groups) >= 50:
@@ -171,7 +171,7 @@ async def api_create_group(request: Request) -> dict[str, Any]:
 
 @router.put("/groups/{group_id}")
 async def api_update_group(group_id: str, request: Request) -> dict[str, Any]:
-    require_role(request, "broadcaster")
+    require_role(request, "user")
     body = await request.json()
     groups, i = _group_or_404(group_id)
     try:

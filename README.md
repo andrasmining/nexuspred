@@ -1006,9 +1006,9 @@ Every account has exactly one role; each role includes everything below it.
 
 | | User | Broadcaster | Admin |
 |---|:---:|:---:|:---:|
-| Trade own accounts, own webhooks, automations, risk guard, journal, alerts, execution agents | ✓ | ✓ | ✓ |
+| Trade own accounts, own webhooks, own copy groups (leader → own followers), automations, risk guard, journal, alerts, execution agents | ✓ | ✓ | ✓ |
 | Subscribe to marketplace signals, follow copy leaders, subscription journal | ✓ | ✓ | ✓ |
-| Publish webhooks and copy groups, manage subscribers, leader copy groups | – | ✓ | ✓ |
+| Publish webhooks and copy groups on the marketplace, manage subscribers | – | ✓ | ✓ |
 | Simulator, scenarios, settings export/import | – | ✓ | ✓ |
 | Users & roles, invites, audit, payments config, news, updates, Discord listener, support view | – | – | ✓ |
 
@@ -1018,8 +1018,9 @@ Every account has exactly one role; each role includes everything below it.
   the admins are notified (event log and alert e-mail) and approve it under
   **Settings → Users** (*Approve Broadcaster*). The request can be withdrawn.
 - **Withdrawing the Broadcaster role** unpublishes every listing of that workspace
-  (subscriptions end, Stripe subscriptions are cancelled) and disables every copy group.
-  Nothing is deleted — the webhooks and groups stay, switched off. The first account
+  (subscriptions end, Stripe subscriptions are cancelled) and takes every copy group off the
+  marketplace; the groups keep running for the workspace's own accounts. Nothing is deleted.
+  The first account
   (id 1) stays Admin, and the last Admin cannot demote themself.
 - **Support view:** an admin opens a user's workspace read-only (*Support view* on the
   Users page). Every page shows that user's data behind a banner; every write is refused

@@ -2,9 +2,9 @@
 
 A user who loses the Broadcaster role must not keep selling: every listing of
 their workspace is unpublished, its subscribers' Stripe subscriptions are
-cancelled and their rows removed, every copy group is disabled and its
-followers released. Nothing is deleted — webhooks and groups stay, switched
-off where the role no longer allows them.
+cancelled and their rows removed, every published copy group is taken off the
+marketplace and its marketplace followers released. Nothing is deleted — the
+webhooks and groups stay and keep running for the workspace's own accounts.
 """
 from __future__ import annotations
 
@@ -40,9 +40,8 @@ async def demote_publisher(area_id: int) -> dict[str, int]:
         gchanged = False
         for g in groups:
             sh = g.get("sharing") or {}
-            if sh.get("enabled") or g.get("enabled"):
-                g["sharing"] = {**sh, "enabled": False}
-                g["enabled"] = False
+            if sh.get("enabled"):
+                g["sharing"] = {**sh, "enabled": False}           # the group keeps running for its own followers
                 gchanged = True
                 out["groups"] += 1
                 key = f"copy:{g['id']}"
@@ -54,10 +53,10 @@ async def demote_publisher(area_id: int) -> dict[str, int]:
         if gchanged:
             cp.save_groups(groups, area_id=area_id)
             try:
-                await cp.sync_area(area_id)                 # runners of the disabled groups stop; followers are released
+                await cp.sync_area(area_id)                 # marketplace followers are released from the runners
             except Exception as exc:  # noqa: BLE001
                 log.warning("copy sync after demotion failed: %s", exc)
         if out["listings"] or out["groups"]:
-            state.log_event("warn", f"Broadcaster role withdrawn: {out['listings']} listing(s) unpublished, {out['groups']} copy group(s) disabled, "
+            state.log_event("warn", f"Broadcaster role withdrawn: {out['listings']} listing(s) unpublished, {out['groups']} copy group(s) taken off the marketplace, "
                                     f"{out['subscriptions']} subscription(s) ended")
     return out
