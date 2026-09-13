@@ -24,9 +24,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
+import tempfile
 import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -47,27 +48,27 @@ LEGACY_DB_FILE = ROOT_DIR / "app" / "data" / "fluxbridge.db"
 
 
 def migrate_legacy_db() -> bool:
-    """Move a database left at the alpha.74–85 default into ``data/`` — only when
-    the new location holds nothing yet and the old file carries users (the file
-    git tracked by mistake is an empty schema). Returns True when moved."""
+    """Publish a complete SQLite snapshot of the alpha.74–85 database before
+    retiring its old path. A failed write leaves no destination that could
+    suppress the next migration attempt or open a fresh first-run setup.
+    """
     if os.environ.get("NEXUSPRED_DATA_DIR") or DB_FILE.exists() or not LEGACY_DB_FILE.exists():
         return False
-    try:
-        c = sqlite3.connect(f"file:{LEGACY_DB_FILE}?mode=ro", uri=True)
+    with closing(sqlite3.connect(LEGACY_DB_FILE.resolve().as_uri() + "?mode=ro", uri=True)) as source:
+        if source.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+            return False
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".fluxbridge-migrate-", suffix=".db", dir=DATA_DIR)
+        os.close(fd)
+        temporary = Path(name)
         try:
-            has_users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
+            # backup includes committed WAL pages in one consistent snapshot;
+            # copying the database and its sidecars independently does not.
+            with closing(sqlite3.connect(temporary)) as target:
+                source.backup(target)
+            os.replace(temporary, DB_FILE)
         finally:
-            c.close()
-    except sqlite3.Error:
-        return False
-    if not has_users:
-        return False
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(LEGACY_DB_FILE, DB_FILE)
-    for suffix in ("-wal", "-shm"):
-        side = LEGACY_DB_FILE.with_name(LEGACY_DB_FILE.name + suffix)
-        if side.exists():
-            shutil.copy2(side, DB_FILE.with_name(DB_FILE.name + suffix))
+            temporary.unlink(missing_ok=True)
     LEGACY_DB_FILE.rename(LEGACY_DB_FILE.with_suffix(".db.migrated"))
     return True
 
@@ -170,8 +171,9 @@ def init() -> None:
         try:
             if migrate_legacy_db():
                 logging.getLogger(__name__).warning("database moved from the alpha.74–85 default app/data/ to %s", DB_FILE)
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             logging.getLogger(__name__).error("legacy database at %s could not be moved: %s", LEGACY_DB_FILE, exc)
+            raise                                       # never serve first-run setup after a failed migration
         with _connect() as c:
             c.executescript(
                 """

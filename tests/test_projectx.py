@@ -209,6 +209,7 @@ async def test_copy_engine_polls_a_projectx_leader(px, monkeypatch):
     s, gw = px["s"], px["gw"]
     await s.connect()
     ex = FakeExecutor("F1")
+    ex.session = s
 
     class Mgr:
         def all(self): return [s]

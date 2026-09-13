@@ -101,7 +101,6 @@ class GroupRunner:
         # a follower on another broker has its own contract ids: translated by name
         # once per login and contract (see _follower_cid), never guessed
         self._fcid: dict[tuple[str, int], tuple[int, float]] = {}    # (follower login key, leader cid) → (follower cid, when)
-        self._lcid: dict[tuple[str, int], int] = {}                  # (follower login key, follower cid) → leader cid
         self.follower_err: dict[str, str] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self._leader_seeded = False
@@ -202,26 +201,30 @@ class GroupRunner:
             return None
         try:
             fid = int(await session.contract_id(name))
-        except Exception as exc:  # noqa: BLE001
-            self.error = f"{name} on {getattr(session, 'name', '?')}: {exc}"[:200]
+        except Exception:  # noqa: BLE001
+            # This error is shared with the publisher: a subscriber's login
+            # name and the broker's raw error belong only to that subscriber.
+            self.error = f"{name}: follower contract lookup unavailable"[:200]
             return None
         if not fid:
             return None
         self._fcid[key] = (fid, time.monotonic())
-        self._lcid[(self._login_key(session), fid)] = cid
         return fid
 
-    async def _to_leader_cids(self, session: Any) -> Any:
-        """A mapper follower-contract-id → leader-contract-id for one follower
-        login (identity on the leader's broker). Rows of contracts the leader
-        never held map to ``None`` and are ignored — an id from another
-        broker's id space must never be mistaken for one of ours."""
+    async def _to_leader_cids(self, session: Any) -> tuple[Any, Optional[set[int]]]:
+        """Map this snapshot into leader ids and return the readable contracts.
+        Same-broker ids need no translation (``None`` means all are readable).
+        Build the reverse map only from successful lookups for this read, not
+        expired cache entries: unresolved exposure must never become flat.
+        """
         if str(getattr(session, "kind", "tradovate") or "tradovate") == self._leader_kind():
-            return lambda fid: fid
+            return (lambda fid: fid), None
+        reverse: dict[int, int] = {}
         for cid in list(self.contract_names):
-            await self._follower_cid(session, cid)
-        lk = self._login_key(session)
-        return lambda fid: self._lcid.get((lk, fid))
+            fid = await self._follower_cid(session, cid)
+            if fid is not None:
+                reverse[fid] = cid
+        return reverse.get, set(reverse.values())
 
     def _wanted(self, contract_id: int) -> bool:
         roots = [str(r).upper() for r in (self.group.get("symbols") or [])]
@@ -348,9 +351,13 @@ class GroupRunner:
                 continue
             if not isinstance(raw, list):
                 continue
-            to_leader = await self._to_leader_cids(s)
-            for key in [k for k in self.follower_pos if k[0] in ids.values()]:
-                self.follower_pos.pop(key, None)              # rebuild this login's picture from the broker
+            to_leader, readable = await self._to_leader_cids(s)
+            for key in [k for k in self.follower_pos if k[0] in ids.values() and (readable is None or k[1] in readable)]:
+                self.follower_pos.pop(key, None)              # retain exposure whose contract could not be resolved
+            if readable is not None:
+                for spec in ids.values():
+                    for cid in readable:
+                        self.follower_pos[(spec, cid)] = 0    # confirmed absent from this readable snapshot
             for p in raw:
                 spec = ids.get(int(p.get("accountId") or 0))
                 cid = to_leader(int(p.get("contractId") or 0))
@@ -796,6 +803,17 @@ class GroupRunner:
                 actual = await self._broker_net(ex, cid)
                 if actual is not None:
                     self.follower_pos[(spec, cid)] = actual
+            if ((spec, cid) not in self.follower_pos
+                    and str(getattr(ex.session, "kind", "tradovate") or "tradovate") != self._leader_kind()):
+                # The startup follower seed precedes the leader's contract
+                # names. A new cross-broker contract is unknown, not flat;
+                # establish its actual exposure once before the first delta.
+                actual = await self._broker_net(ex, cid)
+                if actual is None:
+                    self.follower_err[spec] = "position unreadable — cross-broker contract not seeded"
+                    self._record("skipped", follower=spec, symbol=name, detail=f"{reason}: position unreadable")
+                    return
+                self.follower_pos[(spec, cid)] = actual
             have = self.follower_pos.get((spec, cid), 0)
             delta = target - have
             if delta == 0:
@@ -891,7 +909,7 @@ class GroupRunner:
                 continue
             if not isinstance(raw, list):
                 continue
-            to_leader = await self._to_leader_cids(s)
+            to_leader, readable = await self._to_leader_cids(s)
             actual: dict[tuple[str, int], int] = {}
             for p in raw:
                 f = ids.get(int(p.get("accountId") or 0))
@@ -906,6 +924,8 @@ class GroupRunner:
                 if risk.is_locked(farea, spec) or news.flattened_lock(farea):
                     continue                                    # the risk guard (or a news flatten) closed this account for now
                 for cid, net in list(self.leader_net.items()):
+                    if readable is not None and cid not in readable:
+                        continue                            # no mapping means unreadable, never zero exposure
                     if cid in self.baseline or not self._wanted(cid):
                         continue
                     if self.orders.twins_for(spec, cid):
