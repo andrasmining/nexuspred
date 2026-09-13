@@ -105,7 +105,7 @@ async def test_set_sl_tp_reports_failed_open_account(admin):
     assert active["wh:MNQ"]["accounts"]["A"]["qty"] == 2
 
 
-async def test_simple_partial_entry_failure_remains_compatible_but_visible(admin):
+async def test_simple_partial_entry_failure_is_visible_and_truthful(admin):
     a, b = FakeExecutor("A"), FakeExecutor("B", fail_place=True)
     config.save_settings({"entry_order_type": "Market"})
     active = {}
@@ -113,7 +113,7 @@ async def test_simple_partial_entry_failure_remains_compatible_but_visible(admin
         {"qty": 1}, "buy", "MNQ", "MNQ", [a, b], active, "",
         {"id": "wh", "name": "simple", "default_qty": 1},
     )
-    assert result["status"] == "ok"
+    assert result["status"] == "error"
     assert result["failed"] == ["B"]
     assert result["accounts"] == [{"account": "A", "qty": 1}]
     assert list(active["wh:MNQ"]["accounts"]) == ["A"]
