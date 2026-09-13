@@ -182,15 +182,21 @@ def public_view(g: dict[str, Any], area_id: int, email: Optional[str] = None) ->
     """What a subscriber may see of a published group: no accounts, no logins."""
     from .. import marketplace
     sh = sharing_of(g)
-    lead_idx = int((g.get("leader") or {}).get("token_idx") or 0)
+    lead = g.get("leader") or {}
+    lead_idx = int(lead.get("token_idx") or 0)
     tokens = config.load_settings(area_id=area_id).get("token_accounts") or []
     env = str(tokens[lead_idx].get("environment") or "demo") if 0 <= lead_idx < len(tokens) else "demo"
     r = _runners.get((area_id, g["id"]))
-    lead_id = int((g.get("leader") or {}).get("account_id") or 0)
+    lead_id = int(lead.get("account_id") or 0)
+    lead_spec = str(lead.get("spec") or "")
     lead_tier = None
-    if lead_id:
+    if lead_id and lead_spec:
         from .. import sizing, state
-        bal = next((a.get("cash") for a in (state.pnl(area_id).get("accounts") or []) if int(a.get("account_id") or 0) == lead_id), None)
+        matches = [a.get("cash") for a in (state.pnl(area_id).get("accounts") or [])
+                   if int(a.get("account_id") or 0) == lead_id and str(a.get("spec") or "") == lead_spec]
+        # Broker account ids are broker-local. A duplicate id must never borrow
+        # another account's size and suggest the wrong follower multiplier.
+        bal = matches[0] if len(matches) == 1 else None
         lead_tier = sizing.size_tier(bal)            # coarse (50K …): lets a follower size to the same risk share; never the balance itself
     return {"kind": "copy", "publisher_area_id": area_id, "group_id": g["id"],
             "leader_tier": (lead_tier or {}).get("tier"), "leader_size": (lead_tier or {}).get("size"),
