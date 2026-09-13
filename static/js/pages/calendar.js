@@ -1,7 +1,7 @@
 /* Calendar: every economic-calendar entry (feed + manual events) with filters —
    time range (default: next 7 days), currency, impact, text, lock-relevant only.
    The news-lock rules themselves live under Settings → News & Calendar. */
-import { h, card, tag, toast, pageHead, clear } from "../ui.js";
+import { h, card, tag, toast, pageHead, clear, everyVisible } from "../ui.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { dataTable } from "../components/table.js";
@@ -119,7 +119,7 @@ export default {
       card({ title: t("Events"), actions: [countEl] }, table.el),
     );
     load();
-    const timer = setInterval(load, 60000);
-    return () => clearInterval(timer);
+    const stopPoll = everyVisible(60000, load);
+    return () => stopPoll();
   },
 };

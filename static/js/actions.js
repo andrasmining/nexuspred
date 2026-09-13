@@ -100,7 +100,7 @@ export const actions = {
   }),
   async setTrading(enabled) {
     await actions.saveSettings({ trading_enabled: !!enabled });
-    toast(enabled ? t("Trading ENABLED") : t("Trading disabled"), enabled ? "warn" : "success");
+    toast(enabled ? t("Trading enabled") : t("Trading disabled"), enabled ? "warn" : "success");
   },
   async flattenAll() {
     const r = await api.post("/api/flatten-all");

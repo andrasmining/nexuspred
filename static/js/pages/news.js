@@ -1,6 +1,6 @@
 /* Settings → News & Calendar: economic-calendar lock (no new entries around
    high-impact releases), upcoming events with their lock windows, manual events. */
-import { h, card, tag, toast, pageHead, clear } from "../ui.js";
+import { h, card, tag, toast, pageHead, clear, everyVisible } from "../ui.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { t, locale } from "../i18n.js";
@@ -50,8 +50,8 @@ export default {
       else if (st.next) statusBox.append(h("strong", null, t("Next lock: ")), t("{title} — {from} to {until}.", { title: st.next.title, from: fmtTime(st.next.lock_from), until: fmtClock(st.next.lock_until) }));
       else statusBox.append(t("Enabled — no matching event in the next 48 hours."));
       statusBox.append(h("div", { class: "muted", style: "margin-top:4px;font-size:12px" }, t("Past events are archived 8 h after their time.")));
-      const feed = st.feed_events ? `${st.feed_events} events loaded` : "no calendar loaded yet";
-      statusBox.append(h("div", { class: "muted", style: "margin-top:6px;font-size:12.5px" }, `Calendar: ${feed}${st.feed_error ? " · feed problem: " + st.feed_error : ""}`));
+      const feed = st.feed_events ? t("{n} events loaded", { n: st.feed_events }) : t("no calendar loaded yet");
+      statusBox.append(h("div", { class: "muted", style: "margin-top:6px;font-size:12.5px" }, t("Calendar: {feed}", { feed }), st.feed_error ? t(" · feed problem: {error}", { error: st.feed_error }) : ""));
     }
     async function load() {
       try {
@@ -75,17 +75,17 @@ export default {
       card({ title: t("News lock"), hint: t("Applies to every webhook, Discord signal and marketplace subscription of this workspace. The Simulator is never blocked.") },
         h("div", { class: "stack" },
           h("label", { class: "switch-row" }, h("span", null, t("News lock enabled"), h("small", null, t("Off = the calendar is informational only."))), enabled),
-          row("Currencies", currencies, "Comma separated. US index and metal futures react to USD releases; add EUR / GBP for FX-driven products."),
-          row("Impact levels", h("div", { style: "display:flex;gap:14px;flex-wrap:wrap" }, ...Object.entries(impacts).map(([k, el]) => h("label", { style: "display:flex;gap:6px;align-items:center" }, el, k)))),
-          h("div", { style: "display:flex;gap:16px;flex-wrap:wrap" }, row("Minutes before", before), row("Minutes after", after)),
-          row("Action", action, "Flatten closes every position on every account of this workspace when the window opens — the same as the SOS button."),
+          row(t("Currencies"), currencies, t("Comma separated. US index and metal futures react to USD releases; add EUR / GBP for FX-driven products.")),
+          row(t("Impact levels"), h("div", { style: "display:flex;gap:14px;flex-wrap:wrap" }, ...Object.entries(impacts).map(([k, el]) => h("label", { style: "display:flex;gap:6px;align-items:center" }, el, k)))),
+          h("div", { style: "display:flex;gap:16px;flex-wrap:wrap" }, row(t("Minutes before"), before), row(t("Minutes after"), after)),
+          row(t("Action"), action, t("Flatten closes every position on every account of this workspace when the window opens — the same as the Flatten all button.")),
           h("label", { class: "switch-row" }, h("span", null, t("Alert when a window opens"), h("small", null, t("Discord and push."))), alertSw),
           h("h3", null, t("Manual events")), h("p", { class: "hint" }, t("Speeches, earnings, anything the feed does not carry. Same before / after window.")), manualBox,
           h("div", { class: "form-actions" }, saveBtn, refreshBtn))),
       card({ title: t("Status") }, statusBox, h("p", { class: "hint", style: "margin-top:10px" }, t("The full calendar with filters (range, currency, impact, search) is on the "), h("a", { href: "#/calendar" }, t("Calendar page")), ".")),
     );
     load();
-    const timer = setInterval(load, 60000);
-    return () => clearInterval(timer);
+    const stopPoll = everyVisible(60000, load);
+    return () => stopPoll();
   },
 };

@@ -35,16 +35,16 @@ export default {
       passwordInput({ class: `${cls} input-sm`, value: value || "", placeholder, style: "min-width:160px" }, { small: true }).el;
     const row = (a = {}) => {
       const isR = a.broker === "rithmic", isP = a.broker === "projectx";
-      const brokerSel = h("select", { class: "ta-broker input-sm", style: "min-width:100px", title: t("Broker this login belongs to") },
-        h("option", { value: "tradovate", selected: !isR && !isP }, t("Tradovate")), h("option", { value: "projectx", selected: isP }, t("ProjectX (Topstep …) beta")), // Rithmic waits for its conformance sign-off: not selectable for a new login, an existing Rithmic login stays editable
-        h("option", { value: "rithmic", selected: isR, disabled: !isR, title: t("Available once the Rithmic conformance review is complete") }, isR ? t("Rithmic (beta)") : t("Rithmic (coming soon…)")));
+      const brokerSel = h("select", { class: "ta-broker input-sm sel-broker", title: t("Broker this login belongs to") },
+        h("option", { value: "tradovate", selected: !isR && !isP }, t("Tradovate")), h("option", { value: "projectx", selected: isP, title: t("ProjectX (Topstep …) beta") }, t("ProjectX")), // Rithmic waits for its conformance sign-off: not selectable for a new login, an existing Rithmic login stays editable
+        h("option", { value: "rithmic", selected: isR, disabled: !isR, title: t("Available once the Rithmic conformance review is complete") }, isR ? t("Rithmic") : t("Rithmic (coming soon…)")));
       const pCells = h("div", { class: isP ? "" : "hidden", style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center" },
         h("input", { class: "ta-pxuser input-sm", value: a.px_user || "", placeholder: t("ProjectX user name"), autocomplete: "off", style: "min-width:140px" }),
-        secretInput("ta-pxkey", a.px_api_key, "API key"),
+        secretInput("ta-pxkey", a.px_api_key, t("API key")),
         h("input", { class: "ta-pxfirm input-sm", value: a.px_firm || "topstep", placeholder: t("firm (topstep, bulenox …)"), list: "px-firms", style: "min-width:140px", title: t("The prop firm's ProjectX gateway: topstep, alphaticks, bulenox, blusky, e8x, tradeify … or a full https:// URL") }));
       // Tradovate: access + check token. Rithmic: user, password, system, gateway.
       const tvCells = h("div", { class: (isR || isP) ? "hidden" : "", style: "display:flex;gap:6px;flex-wrap:wrap" },
-        secretInput("ta-access", a.access_token, "access token"), secretInput("ta-md", a.md_token, "check token (optional)"));
+        secretInput("ta-access", a.access_token, t("access token")), secretInput("ta-md", a.md_token, t("check token (optional)")));
       const envSel = h("select", { class: "ta-env input-sm", style: "min-width:90px" }, h("option", { value: "demo", selected: a.environment !== "live" }, t("Demo")), h("option", { value: "live", selected: a.environment === "live" }, t("Live")));
       // Rithmic system: a dropdown of the systems the chosen gateway reports (asked without credentials), with a free entry as fallback
       const rsysSel = h("select", { class: "ta-rsys input-sm", style: "min-width:170px", title: t("The systems the gateway reports — pick the one Rithmic gave your prop firm / broker. Empty on demo = Rithmic Paper Trading.") });
@@ -84,7 +84,7 @@ export default {
       envSel.addEventListener("change", loadSystems);
       const rCells = h("div", { class: isR ? "" : "hidden", style: "display:flex;gap:6px;flex-wrap:wrap;align-items:center" },
         h("input", { class: "ta-ruser input-sm", value: a.rithmic_user || "", placeholder: t("Rithmic user"), autocomplete: "off", style: "min-width:120px" }),
-        secretInput("ta-rpw", a.rithmic_password, "password"),
+        secretInput("ta-rpw", a.rithmic_password, t("password")),
         rsysSel, rsysCustom, rsysNote,
         rgw);
       const tr = h("tr", { dataset: { lid: a.lid || "" } },
@@ -139,7 +139,7 @@ export default {
         dirty = false;
         store.set("tokenAccounts", list);
         paint(list);
-        toast(t("Token accounts saved"), "success");
+        toast(t("Broker logins saved"), "success");
         actions.refreshStatus(); actions.loadTradeAccounts();
       } catch (e) { toast(e.message, "error"); }
       finally { saveBtn.disabled = false; }
@@ -169,7 +169,7 @@ export default {
       const tzSel = h("select", null, h("option", { value: "local", selected: (r.flatten_tz || "local") === "local" }, t("Journal timezone")), h("option", { value: "ny", selected: r.flatten_tz === "ny" }, t("New York (exchange time)")));
       const lock = a.locked;
       const lockBox = lock
-        ? h("div", { class: "callout warn" }, h("strong", null, t("Locked for today: ")), lock.reason, h("div", { class: "hint", style: "margin-top:4px" }, `Since ${new Date(lock.at).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" })} · P&L at trigger ${Number(lock.pnl).toLocaleString(locale(), { maximumFractionDigits: 2 })}. Bridge orders for this account are refused; a position that reappears is closed again. The lock ends with the Tradovate trading day (17:00 New York).`))
+        ? h("div", { class: "callout warn" }, h("strong", null, t("Locked for today: ")), lock.reason, h("div", { class: "hint", style: "margin-top:4px" }, t("Since {when} · P&L at trigger {pnl}. Bridge orders for this account are refused; a position that reappears is closed again. The lock ends with the Tradovate trading day (17:00 New York).", { when: new Date(lock.at).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" }), pnl: Number(lock.pnl).toLocaleString(locale(), { maximumFractionDigits: 2 }) })))
         : h("div", { class: "callout" }, t("Not locked. When a rule fires, every working order is cancelled, every position closed at market and the account locked until the next local day."));
       const unlockBtn = lock ? h("button", { type: "button", class: "btn btn-ghost btn-danger", onClick: async () => {
         if (!(await confirmDialog({ title: t("Unlock {spec}?", { spec: maskAccount(a.spec) }), body: t("Bridge orders are accepted again today. The rules stay in place and can fire again."), confirmText: t("Unlock"), danger: true }))) return;
@@ -205,11 +205,11 @@ export default {
         { label: t("Login"), render: (a) => a.token_name || "—" },
         { label: t("Account"), render: (a) => h("code", null, maskAccount(a.spec) || "—") },
         { label: t("Env"), render: (a) => tag((a.environment || "—").toUpperCase(), a.environment === "live" ? "live" : "demo") },
-        { label: t("Login enabled"), render: (a) => h("span", { class: a.token_enabled ? "pos" : "muted" }, a.token_enabled ? "yes" : "no") },
+        { label: t("Login enabled"), render: (a) => h("span", { class: a.token_enabled ? "pos" : "muted" }, a.token_enabled ? t("yes") : t("no")) },
         { label: t("Status"), render: (a) => h("span", { class: a.connected ? "pos" : "neg" }, a.connected ? t("Connected") : t("Not connected")) },
         { label: t("Risk guard"), render: (a) => h("span", { class: "inline-actions" },
-          a.locked ? tag("locked", "warn") : null,
-          h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Daily loss / profit limit, flatten time"), onClick: () => riskDrawer(a) }, icon("shield"), riskSummary(a) || "Set rules")) },
+          a.locked ? tag(t("locked"), "warn") : null,
+          h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Daily loss / profit limit, flatten time"), onClick: () => riskDrawer(a) }, icon("shield"), riskSummary(a) || t("Set rules"))) },
       ],
     });
 

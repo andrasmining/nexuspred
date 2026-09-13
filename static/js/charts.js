@@ -71,6 +71,12 @@ function bindTip(el, rowsFn) {
    build(widthPx) now and again whenever the container resizes, so bars stay
    ≤24px and type stays at its true size instead of scaling with a viewBox. */
 const observers = new WeakMap();
+/** Stop watching a chart container (page cleanup) — the ResizeObserver would otherwise outlive the page. */
+export function unmount(container) {
+  const ro = observers.get(container);
+  if (ro) { ro.disconnect(); observers.delete(container); }
+  container._vizBuild = null;
+}
 export function mount(container, build) {
   container._vizBuild = build;
   const render = () => {
@@ -81,7 +87,7 @@ export function mount(container, build) {
     container.append(container._vizBuild(w));
   };
   if (!observers.has(container) && typeof ResizeObserver !== "undefined") {
-    const ro = new ResizeObserver(() => { container._vizW = null; render(); });
+    const ro = new ResizeObserver(() => { if (!container._vizBuild) return; container._vizW = null; render(); });
     ro.observe(container);
     observers.set(container, ro);
   }
@@ -115,7 +121,7 @@ export function columnChart(data, { width = 760, height = 220, valueFmt = fmtSig
   const n = data.length;
   const pad = { l: 56, r: 12, t: 16, b: 28 };
   const { svg, plot } = frame({ width, height, pad });
-  if (!n) { svg.append(svgEl("text", { x: width / 2, y: height / 2, "text-anchor": "middle", class: "viz-empty" }, "No data")); return svg; }
+  if (!n) { svg.append(svgEl("text", { x: width / 2, y: height / 2, "text-anchor": "middle", class: "viz-empty" }, t("No data"))); return svg; }
   const vals = data.map((d) => Number(d.value) || 0);
   const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
   const y = yAxis(svg, plot, lo, hi, (v) => fmtMoney(v));
@@ -156,7 +162,7 @@ export function lineChart(points, { width = 760, height = 220, valueFmt = fmtSig
   const n = points.length;
   const pad = { l: 56, r: 16, t: 12, b: 28 };
   const { svg, plot } = frame({ width, height, pad });
-  if (!n) { svg.append(svgEl("text", { x: width / 2, y: height / 2, "text-anchor": "middle", class: "viz-empty" }, "No data")); return svg; }
+  if (!n) { svg.append(svgEl("text", { x: width / 2, y: height / 2, "text-anchor": "middle", class: "viz-empty" }, t("No data"))); return svg; }
   const vals = points.map((p) => Number(p.value) || 0);
   const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
   const y = yAxis(svg, plot, lo, hi, (v) => fmtMoney(v));
@@ -207,6 +213,12 @@ export function barList(data, { valueFmt = fmtSigned } = {}) {
   return el;
 }
 
+/** Short weekday names in the UI language, Monday first (0 = Mon … 6 = Sun). */
+export function weekdayNames() {
+  return [0, 1, 2, 3, 4, 5, 6].map((i) => new Date(Date.UTC(2024, 0, 1 + i)).toLocaleDateString(locale(), { weekday: "short", timeZone: "UTC" }));   // 2024-01-01 is a Monday
+}
+const tradesWord = (n) => (n === 1 ? t("trade") : t("trades"));
+
 /* ------------------------------------------------------- calendar heat-map
    days: [{day: 'YYYY-MM-DD', weekday: 0..6 (Mon=0), net_pnl, trades}] for one month. */
 /** A signed amount for a calendar cell: the full figure, plus a compact "+1.2k"
@@ -219,7 +231,7 @@ function calVal(v) {
 
 export function calendarHeatmap(days, { onSelect = null } = {}) {
   const el = h("div", { class: "viz-cal" });
-  for (const w of ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Week"]) el.append(h("div", { class: "viz-cal-head" }, w));
+  for (const w of [...weekdayNames(), t("Week")]) el.append(h("div", { class: "viz-cal-head" }, w));
   if (!days.length) return el;
   const max = Math.max(1, ...days.map((d) => Math.abs(Number(d.net_pnl) || 0)));
   for (let i = 0; i < days[0].weekday; i++) el.append(h("div", { class: "viz-cal-cell blank" }));
@@ -230,7 +242,7 @@ export function calendarHeatmap(days, { onSelect = null } = {}) {
       h("span", { class: "viz-cal-day" }, t("Total")),
       week.trades ? calVal(week.net) : null);
     const net = week.net, trades = week.trades, from = week.from;
-    bindTip(cell, () => [{ value: fmtSigned(net, 2), label: `week of ${from} – ${last}` }, { value: String(trades), label: trades === 1 ? "trade" : "trades" }]);
+    bindTip(cell, () => [{ value: fmtSigned(net, 2), label: t("week of {from} – {to}", { from, to: last }) }, { value: String(trades), label: tradesWord(trades) }]);
     el.append(cell);
   };
   for (const d of days) {
@@ -239,7 +251,7 @@ export function calendarHeatmap(days, { onSelect = null } = {}) {
     const cell = h("div", { class: `viz-cal-cell ${d.trades ? (v >= 0 ? "pos" : "neg") : "flat"} l${level}` },
       h("span", { class: "viz-cal-day" }, String(Number(d.day.slice(8)))),
       d.trades ? calVal(v) : null);
-    bindTip(cell, () => [{ value: fmtSigned(v, 2), label: d.day }, { value: String(d.trades), label: d.trades === 1 ? "trade" : "trades" }]);
+    bindTip(cell, () => [{ value: fmtSigned(v, 2), label: d.day }, { value: String(d.trades), label: tradesWord(d.trades) }]);
     if (onSelect && d.trades) { cell.style.cursor = "pointer"; cell.addEventListener("click", () => onSelect(d)); }
     el.append(cell);
     week.net += v; week.trades += Number(d.trades) || 0;

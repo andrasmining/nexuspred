@@ -1,6 +1,6 @@
 /* Settings → Automations: "when <event> [matching …] then <action>" rules the
    bridge runs on its own, plus the log of recent firings. */
-import { h, tag, card, pageHead, clear, toast, fmtDateTime, confirmDialog } from "../ui.js";
+import { h, tag, card, pageHead, clear, toast, fmtDateTime, confirmDialog, everyVisible } from "../ui.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { store } from "../store.js";
@@ -109,7 +109,7 @@ export default {
       empty: t("No automations yet — add a rule such as “Risk guard fired → switch trading off”."),
       onRow: (r) => ruleDrawer(r, (out) => saveRules(rules.map((x) => (x.id === r.id ? out : x)))),
       columns: [
-        { label: t("On"), render: (r) => h("input", { type: "checkbox", class: "switch", checked: r.enabled, onChange: (e) => saveRules(rules.map((x) => (x.id === r.id ? { ...x, enabled: e.target.checked } : x))).catch(() => { e.target.checked = !e.target.checked; }) }) },
+        { label: t("On"), render: (r) => h("input", { type: "checkbox", class: "switch", checked: r.enabled, "aria-label": t("Enable rule {name}", { name: r.name }), onChange: (e) => saveRules(rules.map((x) => (x.id === r.id ? { ...x, enabled: e.target.checked } : x))).catch((err) => { e.target.checked = !e.target.checked; toast(err.message, "error"); }) }) },
         { label: t("Name"), render: (r) => h("strong", null, r.name) },
         { label: t("When"), render: (r) => label(EVENTS, r.event) },
         { label: t("Matching"), render: (r) => h("span", { class: "muted" }, filters(r)) },
@@ -117,7 +117,7 @@ export default {
         { label: t("Cooldown"), className: "num", render: (r) => `${r.cooldown_s}s` },
         { label: "", render: (r) => h("button", { type: "button", class: "btn btn-ghost btn-icon btn-sm", title: t("Delete"), onClick: async () => {
           if (!(await confirmDialog({ title: t("Delete this automation?"), body: r.name, confirmText: t("Delete"), danger: true }))) return;
-          await saveRules(rules.filter((x) => x.id !== r.id));
+          try { await saveRules(rules.filter((x) => x.id !== r.id)); } catch (e) { toast(e.message, "error"); }
         } }, icon("trash")) },
       ],
     });
@@ -152,7 +152,7 @@ export default {
       card({ title: t("Recent firings"), actions: [h("button", { class: "btn btn-ghost btn-sm", onClick: load }, icon("refresh"), t("Refresh"))] }, log.el),
     );
     load();
-    const timer = setInterval(load, 15000);
-    return () => clearInterval(timer);
+    const stopPoll = everyVisible(15000, load);
+    return () => stopPoll();
   },
 };

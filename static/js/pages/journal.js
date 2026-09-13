@@ -6,12 +6,11 @@ import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { dataTable } from "../components/table.js";
 import { openDrawer, closeDrawer } from "../components/drawer.js";
-import { columnChart, lineChart, barList, calendarHeatmap, mount, fmtMoney, fmtSigned } from "../charts.js";
+import { columnChart, lineChart, barList, calendarHeatmap, mount, unmount, weekdayNames, fmtMoney, fmtSigned } from "../charts.js";
 import { t } from "../i18n.js";
 
 const RANGES = [["today", t("Today")], ["week", t("This week")], ["month", t("This month")], ["30d", t("Last 30 days")], ["90d", t("Last 90 days")], ["ytd", t("Year to date")], ["all", t("All time")]];
 const PERIODS = [["day", t("Daily")], ["week", t("Weekly")], ["month", t("Monthly")]];
-const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function kpi(label) {
   const v = h("div", { class: "v" }, h("span", null, "—"));
@@ -59,7 +58,7 @@ export default {
     // ---- KPIs ----------------------------------------------------------
     const hero = h("div", { class: "journal-hero" }, "—");
     const heroSub = h("div", { class: "muted", style: "font-size:12.5px" }, "");
-    const k = { win: kpi("Win rate"), pf: kpi("Profit factor"), trades: kpi("Trades"), avg: kpi("Avg win / loss"), exp: kpi("Expectancy / trade"), dd: kpi("Max drawdown"), fees: kpi("Fees"), days: kpi("Trading days") };
+    const k = { win: kpi(t("Win rate")), pf: kpi(t("Profit factor")), trades: kpi(t("Trades")), avg: kpi(t("Avg win / loss")), exp: kpi(t("Expectancy / trade")), dd: kpi(t("Max drawdown")), fees: kpi(t("Fees")), days: kpi(t("Trading days")) };
 
     // ---- chart holders -------------------------------------------------
     const periodChart = h("div"), periodTable = h("div");
@@ -119,12 +118,12 @@ export default {
       heroSub.textContent = t("Net P&L · {range} · gross {gross} · {tz}", { range: RANGES.find(([v]) => v === f.range)?.[1] || f.range, gross: fmtSigned(st.gross_pnl, 2), tz: ov.range.timezone });
       k.win.set(st.trades ? `${Math.round(st.win_rate * 100)}%` : "—", "", st.trades ? t("{w} W / {l} L", { w: st.wins, l: st.losses }) : "");
       k.pf.set(st.profit_factor == null ? (st.wins ? "∞" : "—") : String(st.profit_factor), st.profit_factor >= 1.5 ? "on" : st.profit_factor && st.profit_factor < 1 ? "off" : "", t("gross win ÷ gross loss"));
-      k.trades.set(String(st.trades), "", `${st.contracts} contracts`);
+      k.trades.set(String(st.trades), "", t("{n} contracts", { n: st.contracts }));
       k.avg.set(st.trades ? `${fmtSigned(st.avg_win)} / ${fmtSigned(st.avg_loss)}` : "—", "", t("best {best} · worst {worst}", { best: fmtSigned(st.largest_win), worst: fmtSigned(st.largest_loss) }));
       k.exp.set(st.trades ? fmtSigned(st.expectancy, 2) : "—", st.expectancy > 0 ? "on" : st.expectancy < 0 ? "off" : "", t("net ÷ trades"));
       k.dd.set(st.trades ? fmtSigned(st.max_drawdown, 2) : "—", st.max_drawdown < 0 ? "warn" : "", t("peak-to-trough of the equity curve"));
       k.fees.set(fmtMoney(st.fees, 2), "", t("commissions + exchange fees"));
-      k.days.set(String(st.trading_days), "", st.trading_days ? `${fmtSigned(st.avg_per_day)} per day` : "");
+      k.days.set(String(st.trading_days), "", st.trading_days ? t("{amount} per day", { amount: fmtSigned(st.avg_per_day) }) : "");
 
       const period = f.period;
       const buckets = ov.summary;
@@ -133,20 +132,21 @@ export default {
       clear(periodTable); periodTable.append(bucketTable(buckets));
       const pts = buckets.map((b) => ({ x: bucketLabel(b, period), tip: b.bucket, value: b.cumulative }));
       mount(equityChart, (w) => lineChart(pts, { width: w }));
-      clear(equityTable); equityTable.append(simpleTable(["Period", "Net", "Cumulative"], buckets.map((b) => [b.bucket, pnl(b.net_pnl), pnl(b.cumulative)])));
+      clear(equityTable); equityTable.append(simpleTable([t("Period"), t("Net"), t("Cumulative")], buckets.map((b) => [b.bucket, pnl(b.net_pnl), pnl(b.cumulative)])));
 
       const bd = (rows, keyFn) => rows.map((r) => ({ label: keyFn(r.key), value: r.net_pnl, sub: t("{n} trades · {pct}% win", { n: r.trades, pct: Math.round(r.win_rate * 100) }) }));
-      const bt = (rows, keyFn) => simpleTable(["Key", "Trades", "Win rate", "Net"], rows.map((r) => [keyFn(r.key), String(r.trades), `${Math.round(r.win_rate * 100)}%`, pnl(r.net_pnl)]));
+      const bt = (rows, keyFn) => simpleTable([t("Key"), t("Trades"), t("Win rate"), t("Net")], rows.map((r) => [keyFn(r.key), String(r.trades), `${Math.round(r.win_rate * 100)}%`, pnl(r.net_pnl)]));
       clear(bySymbol); bySymbol.append(barList(bd(st.by_symbol, (x) => x)));
       clear(bySymbolTable); bySymbolTable.append(bt(st.by_symbol, (x) => x));
       clear(byAccount); byAccount.append(barList(bd(st.by_account, (x) => x)));
       clear(byAccountTable); byAccountTable.append(bt(st.by_account, (x) => x));
       const wd = [...st.by_weekday].sort((a, b) => a.key - b.key);
-      const wdCols = wd.map((r) => ({ label: WEEKDAYS[r.key] || String(r.key), value: r.net_pnl, sub: `${r.trades} trades` }));
+      const WEEKDAYS = weekdayNames();   // Mon=0 … Sun=6 in the UI language
+      const wdCols = wd.map((r) => ({ label: WEEKDAYS[r.key] || String(r.key), value: r.net_pnl, sub: t("{n} trades", { n: r.trades }) }));
       mount(byWeekday, (w) => columnChart(wdCols, { width: w, height: 170 }));
       clear(byWeekdayTable); byWeekdayTable.append(bt(wd, (x) => WEEKDAYS[x] || String(x)));
       const hr = [...st.by_hour].sort((a, b) => a.key - b.key);
-      const hrCols = hr.map((r) => ({ label: `${String(r.key).padStart(2, "0")}h`, value: r.net_pnl, sub: `${r.trades} trades` }));
+      const hrCols = hr.map((r) => ({ label: `${String(r.key).padStart(2, "0")}h`, value: r.net_pnl, sub: t("{n} trades", { n: r.trades }) }));
       mount(byHour, (w) => columnChart(hrCols, { width: w, height: 170, maxLabels: 24 }));
       clear(byHourTable); byHourTable.append(bt(hr, (x) => `${String(x).padStart(2, "0")}:00`));
 
@@ -159,7 +159,7 @@ export default {
     }
 
     function bucketTable(buckets) {
-      return simpleTable(["Period", "Trades", "Win rate", "Gross", "Fees", "Net", "Cumulative"],
+      return simpleTable([t("Period"), t("Trades"), t("Win rate"), t("Gross"), t("Fees"), t("Net"), t("Cumulative")],
         buckets.map((b) => [b.bucket, String(b.trades), `${Math.round(b.win_rate * 100)}%`, pnl(b.gross_pnl), fmtMoney(b.fees, 2), pnl(b.net_pnl), pnl(b.cumulative)]));
     }
     function simpleTable(head, rows) {
@@ -173,7 +173,7 @@ export default {
         const cal = await api.get(`/api/journal/calendar?month=${month}&account=${encodeURIComponent(f.account)}&symbol=${encodeURIComponent(f.symbol)}`);
         calTitle.textContent = t("{month} · {pnl} · {n} trades", { month, pnl: fmtSigned(cal.net_pnl, 2), n: cal.trades });
         clear(calBox); calBox.append(calendarHeatmap(cal.days, { onSelect: (d) => showDay(d.day) }));
-        clear(calTable); calTable.append(simpleTable(["Day", "Trades", "Net"], cal.days.filter((d) => d.trades).map((d) => [d.day, String(d.trades), pnl(d.net_pnl)])));
+        clear(calTable); calTable.append(simpleTable([t("Day"), t("Trades"), t("Net")], cal.days.filter((d) => d.trades).map((d) => [d.day, String(d.trades), pnl(d.net_pnl)])));
       } catch (e) { toast(e.message, "error"); }
     }
     function shiftMonth(delta) {
@@ -183,7 +183,9 @@ export default {
       loadCalendar();
     }
     async function showDay(day) {
-      const r = await api.get(`/api/journal/trades?frm=${day}&to=${day}&account=${encodeURIComponent(f.account)}&symbol=${encodeURIComponent(f.symbol)}&limit=500`);
+      let r;
+      try { r = await api.get(`/api/journal/trades?frm=${day}&to=${day}&account=${encodeURIComponent(f.account)}&symbol=${encodeURIComponent(f.symbol)}&limit=500`); }
+      catch (e) { toast(e.message, "error"); return; }
       const dt = dataTable({ compact: true, onRow: (x) => openTrade(x), columns: [
         { label: t("Closed"), render: (x) => fmtDateTime(x.exit_ts) }, { label: t("Symbol"), render: (x) => x.symbol },
         { label: t("Side"), render: (x) => x.side }, { label: t("Qty"), render: (x) => String(x.qty) }, { label: t("Net"), render: (x) => pnl(x.net_pnl) },
@@ -228,10 +230,11 @@ export default {
     function showImportDetail(r) {
       let pretty = r.detail || "";
       try { pretty = JSON.stringify(JSON.parse(r.detail), null, 2); } catch (e) { /* plain text */ }
-      const pre = h("pre", { class: "code", style: "white-space:pre-wrap;font-size:11.5px;max-height:60vh;overflow:auto" }, pretty || "No diagnostics recorded for this run.");
+      const pre = h("pre", { class: "code", style: "white-space:pre-wrap;font-size:11.5px;max-height:60vh;overflow:auto" }, pretty || t("No diagnostics recorded for this run."));
       openDrawer({ title: t("Import {when} · {status}", { when: fmtDateTime(r.ts), status: r.status }), width: "640px",
         body: h("div", null,
-          h("p", { class: "hint" }, `${r.trigger}${r.by ? " by " + r.by : ""} · ${r.logins} login(s), ${r.accounts} account(s) · ${r.fills} fills (${r.fills_new} new) · ${r.trades} trades (${r.trades_new} new) · ${r.history_new || 0} from history · ${r.duration_ms} ms`),
+          h("p", { class: "hint" }, t("{trigger}{by} · {logins} login(s), {accounts} account(s) · {fills} fills ({fillsNew} new) · {trades} trades ({tradesNew} new) · {history} from history · {ms} ms",
+            { trigger: r.trigger, by: r.by ? t(" by {who}", { who: r.by }) : "", logins: r.logins, accounts: r.accounts, fills: r.fills, fillsNew: r.fills_new, trades: r.trades, tradesNew: r.trades_new, history: r.history_new || 0, ms: r.duration_ms })),
           r.error ? h("div", { class: "callout danger" }, r.error) : null,
           h("div", { class: "hint" }, t("What each Tradovate endpoint returned (counts and column names only — no prices, ids or balances). Copy this when reporting an empty import.")),
           pre),
@@ -286,11 +289,12 @@ export default {
       note.value = tr.note || "";
       const tags = h("input", { class: "input", placeholder: t("tags, comma separated (e.g. breakout, fomo, news)"), value: (tr.tags || []).join(", ") });
       const save = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
+        save.disabled = true;
         try {
           const upd = await api.put(`/api/journal/trades/${tr.id}`, { note: note.value, tags: tags.value.split(",") });
           const i = tradeRows.findIndex((x) => x.id === tr.id); if (i >= 0) { tradeRows[i] = upd; trades.update(tradeRows); }
           toast(t("Note saved"), "success"); closeDrawer();
-        } catch (e) { toast(e.message, "error"); }
+        } catch (e) { toast(e.message, "error"); } finally { save.disabled = false; }
       } }, t("Save note"));
       const row = (l, v) => h("div", { class: "kv" }, h("dt", null, l), h("dd", null, v));
       openDrawer({ title: `${tr.symbol} ${tr.side} × ${tr.qty}`, width: "520px",
@@ -312,22 +316,22 @@ export default {
       h("div", { class: "journal-toolbar" }, rangeSel, periodSel, accountSel, symbolSel, sideSel, h("span", { class: "spacer" }), importInfo),
       card({ title: t("Net result") }, hero, heroSub),
       h("div", { class: "kpis" }, Object.values(k).map((x) => x.el)),
-      vizCard("P&L per period", "Net realised P&L per day / week / month (switch above). Click a day to open its month in the calendar.", periodChart, periodTable),
-      vizCard("Equity curve", "Cumulative net P&L over the selected range.", equityChart, equityTable),
+      vizCard(t("P&L per period"), t("Net realised P&L per day / week / month (switch above). Click a day to open its month in the calendar."), periodChart, periodTable),
+      vizCard(t("Equity curve"), t("Cumulative net P&L over the selected range."), equityChart, equityTable),
       card({ title: t("Calendar"), actions: [
         h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: () => shiftMonth(-1) }, "‹"), calTitle,
         h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: () => shiftMonth(1) }, "›"),
         h("button", { type: "button", class: "btn btn-ghost btn-sm viz-table-toggle", onClick: (e) => { const on = calTable.hidden = !calTable.hidden; calBox.hidden = !on; e.target.textContent = on ? t("Table") : t("Chart"); } }, t("Table")),
       ] }, calBox, (() => { calTable.hidden = true; return calTable; })()),
       h("div", { class: "grid grid-2" },
-        vizCard("By symbol", null, bySymbol, bySymbolTable),
-        vizCard("By account", null, byAccount, byAccountTable),
-        vizCard("By weekday", null, byWeekday, byWeekdayTable),
-        vizCard(`By hour of day`, "Exit time, journal timezone.", byHour, byHourTable)),
+        vizCard(t("By symbol"), null, bySymbol, bySymbolTable),
+        vizCard(t("By account"), null, byAccount, byAccountTable),
+        vizCard(t("By weekday"), null, byWeekday, byWeekdayTable),
+        vizCard(t("By hour of day"), t("Exit time, journal timezone."), byHour, byHourTable)),
       card({ title: t("Trades"), hint: t("Click a trade to add a note and tags.") }, trades.el, h("div", { class: "form-actions", style: "margin-top:8px" }, moreBtn)),
       card({ title: t("Imports"), hint: t("Every import reads the fills of every enabled login: Tradovate's session plus its cash-balance log and reports for past trades (\"From history\"); ProjectX and Rithmic through their trade / fill history (up to a year on an account's first run, the last 7 days after that). Runs daily after the CME close (Settings → General → Trading journal) or on demand with Import now; a Tradovate CSV export (Import CSV) remains available as a fallback.") }, imports.el),
     );
     load();
-    return () => { closeDrawer(); };
+    return () => { closeDrawer(); [periodChart, equityChart, byWeekday, byHour].forEach(unmount); };
   },
 };

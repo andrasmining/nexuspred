@@ -1,6 +1,6 @@
 /* Fluxbridge dashboard — bootstrap, hash router, shell (sidebar + topbar),
    live stream and the reconcile polling. Build-free ES modules. */
-import { $, h, clear, toast, closeDialogs } from "./ui.js";
+import { $, h, clear, toast, closeDialogs, everyVisible } from "./ui.js";
 import { store, can } from "./store.js";
 import { actions } from "./actions.js";
 import { connectStream } from "./stream.js";
@@ -107,11 +107,12 @@ async function boot() {
   actions.loadDiscordFeed();
   if (can(store.get("me"), "admin") && (store.get("settings") || {}).auto_check_updates !== false) actions.checkUpdate();
 
-  // Reconcile polling — the stream delivers changes instantly; these catch anything missed.
-  setInterval(actions.refreshStatus, 15000);
-  setInterval(actions.refreshOrders, 60000);
-  setInterval(actions.refreshLogs, 60000);
-  setInterval(actions.refreshDiscordStatus, 10000);
+  // Reconcile polling — the stream delivers changes instantly; these catch anything
+  // missed. Paused while the tab is hidden, one catch-up poll when it comes back.
+  everyVisible(15000, actions.refreshStatus);
+  everyVisible(60000, actions.refreshOrders);
+  everyVisible(60000, actions.refreshLogs);
+  everyVisible(10000, actions.refreshDiscordStatus);
   let dirtyTimer = null;
   store.subscribe("statusDirty", () => { clearTimeout(dirtyTimer); dirtyTimer = setTimeout(actions.refreshStatus, 600); });
   store.subscribe("streamResync", () => { actions.refreshOrders(); actions.refreshLogs(); });   // after a stream gap: re-pull what we missed

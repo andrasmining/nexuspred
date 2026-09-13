@@ -18,7 +18,7 @@ export function unsupportedReason() {
       ? t("On iPhone/iPad, add this app to the Home Screen first (Share → Add to Home Screen) and open it from there — Safari only allows push for installed apps.")
       : t("This browser does not support Web Push.");
   }
-  if (!window.isSecureContext) return "Push needs HTTPS.";
+  if (!window.isSecureContext) return t("Push needs HTTPS.");
   return "";
 }
 

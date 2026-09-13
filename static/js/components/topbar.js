@@ -6,7 +6,7 @@ import { store } from "../store.js";
 import { actions } from "../actions.js";
 import { getTheme, setTheme } from "../theme.js";
 import { isPrivate, setPrivate } from "../privacy.js";
-import { t } from "../i18n.js";
+import { t, locale } from "../i18n.js";
 
 export function renderTopbar(root, { navigate, onHamburger, onPrivacy }) {
   clear(root);
@@ -24,13 +24,13 @@ export function renderTopbar(root, { navigate, onHamburger, onPrivacy }) {
   // Trading kill-switch
   const tradingText = h("strong", null, "—");
   const tradingPill = h("button", { type: "button", class: "pill clickable", title: t("Toggle the trading master switch") },
-    icon("zap", "ic"), h("span", { class: "pill-text" }, t("Trading ")), tradingText);
+    icon("zap", "ic"), tradingText);
   tradingPill.addEventListener("click", async () => {
     const cur = !!(store.get("settings") || {}).trading_enabled;
     const ok = await confirmDialog({
       title: cur ? t("Disable trading?") : t("Enable trading?"),
       body: cur ? t("Incoming signals will be logged but NOT executed until you enable trading again.")
-        : t("Incoming signals on enabled webhooks will place REAL orders on the routed accounts."),
+        : t("Incoming signals on enabled webhooks will place real orders on the routed accounts."),
       confirmText: cur ? t("Disable trading") : t("Enable trading"), danger: !cur,
     });
     if (!ok) return;
@@ -42,10 +42,10 @@ export function renderTopbar(root, { navigate, onHamburger, onPrivacy }) {
     icon("alert", "ic"), h("span", { class: "pill-text" }, t("News lock")));
 
   // SOS
-  const sosBtn = h("button", { type: "button", class: "btn btn-sos btn-sm", title: t("Flatten ALL accounts now") }, "🆘", h("span", { class: "pill-text" }, t("Flatten all")));
+  const sosBtn = h("button", { type: "button", class: "btn btn-sos btn-sm", title: t("Flatten all accounts now"), "aria-label": t("Flatten all accounts now") }, icon("alertOctagon"), h("span", { class: "pill-text" }, t("Flatten all")));
   sosBtn.addEventListener("click", async () => {
     const ok = await confirmDialog({
-      title: t("🆘 Flatten ALL accounts"),
+      title: t("Flatten all accounts"),
       body: t("Cancel every working order and close every open position on ALL of your trade accounts (every broker), right now — even if trading is paused.\n\nThis cannot be undone."),
       confirmText: t("Flatten everything"), danger: true,
     });
@@ -130,11 +130,11 @@ export function renderTopbar(root, { navigate, onHamburger, onPrivacy }) {
       connPill.className = "pill clickable " + (c.connected ? "on" : total ? "off" : "");
       const nl = s && s.news_lock;
       newsPill.classList.toggle("hidden", !(nl && nl.active));
-      if (nl && nl.active) newsPill.title = `News lock: ${nl.active.title} — no new entries until ${new Date(nl.active.lock_until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+      if (nl && nl.active) newsPill.title = t("News lock: {title} — no new entries until {until}", { title: nl.active.title, until: new Date(nl.active.lock_until).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" }) });
     }, { immediate: true }),
     store.subscribe("settings", (st) => {
       const on = !!(st && st.trading_enabled);
-      tradingText.textContent = on ? "ON" : "OFF";
+      tradingText.textContent = on ? t("Trading ON") : t("Trading OFF");
       tradingPill.className = "pill clickable " + (on ? "on" : "off");
     }, { immediate: true }),
     store.subscribe("update", (u) => updateBtn.classList.toggle("hidden", !(u && u.update_available && store.get("me")?.is_admin)), { immediate: true }),

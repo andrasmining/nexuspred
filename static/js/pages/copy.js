@@ -3,7 +3,7 @@
    table shows the live feed / latency / pause state per group; a drawer edits
    the group and shows leader vs follower positions and the group's actions.
    Deep link: #/copy/<id>. */
-import { h, card, tag, toast, confirmDialog, pageHead, clear, fmtDateTime, fmtTime } from "../ui.js";
+import { h, card, tag, toast, confirmDialog, pageHead, clear, fmtDateTime, fmtTime, errText, everyVisible } from "../ui.js";
 import { maskAccount } from "../privacy.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
@@ -33,13 +33,13 @@ const orderText = (o) => `${o.action} ${o.qty} ${o.type}${o.price != null ? ` @ 
 
 function feedTag(g) {
   const s = g.status;
-  if (!g.enabled) return tag("off", "off");
-  if (!s) return tag("starting…", "");
-  if (s.paused) return tag("paused", "warn");
-  if (!s.feed_ok) return tag("feed lost", "off");
-  if (s.throttled) return tag("live · throttled", "warn");
+  if (!g.enabled) return tag(t("off"), "off");
+  if (!s) return tag(t("starting…"), "");
+  if (s.paused) return tag(t("paused"), "warn");
+  if (!s.feed_ok) return tag(t("feed lost"), "off");
+  if (s.throttled) return tag(t("live · throttled"), "warn");
   if (s.feed === "websocket") return tag(s.ws_ok ? t("socket + poll · live") : t("poll · live (socket down)"), "on");
-  return tag(`poll${s.poll_interval > 1 ? ` ${s.poll_interval}s` : ""} · live`, "on");
+  return tag(t("poll{every} · live", { every: s.poll_interval > 1 ? ` ${s.poll_interval}s` : "" }), "on");
 }
 
 function latencyText(s) {
@@ -88,15 +88,15 @@ function groupDrawer(group, { reload, onClose = null }) {
     compact: true,
     empty: t("No trade accounts discovered yet — add a login under Settings → Broker Accounts and Connect & Verify."),
     columns: [
-      { label: t("Follow"), render: (a) => h("input", { type: "checkbox", class: "switch cp-on", checked: !!(selected.get(accountKey(a.token_idx, a.spec)) || {}).enabled && selected.has(accountKey(a.token_idx, a.spec)), dataset: { key: accountKey(a.token_idx, a.spec) } }) },
+      { label: t("Follow"), render: (a) => h("input", { type: "checkbox", class: "switch cp-on", "aria-label": t("Follow with {account}", { account: maskAccount(a.spec) }), checked: !!(selected.get(accountKey(a.token_idx, a.spec)) || {}).enabled && selected.has(accountKey(a.token_idx, a.spec)), dataset: { key: accountKey(a.token_idx, a.spec) } }) },
       { label: t("Account"), render: (a) => h("span", null, h("code", null, maskAccount(a.spec)), h("small", { class: "muted", style: "display:block" }, `${a.token_name} · ${(a.environment || "").toUpperCase()}`)) },
-      { label: t("Mode"), render: (a) => { const f = selected.get(accountKey(a.token_idx, a.spec)) || {}; return h("select", { class: "cp-mode input-sm", dataset: { key: accountKey(a.token_idx, a.spec) } },
+      { label: t("Mode"), render: (a) => { const f = selected.get(accountKey(a.token_idx, a.spec)) || {}; return h("select", { class: "cp-mode input-sm sel-sizing", dataset: { key: accountKey(a.token_idx, a.spec) } },
         h("option", { value: "multiplier", selected: (f.mode || "multiplier") === "multiplier" }, t("Multiplier")), h("option", { value: "fixed", selected: f.mode === "fixed" }, t("Fixed"))); } },
       { label: "×", render: (a) => h("input", { type: "number", class: "cp-mult input-sm", min: 0.01, step: 0.01, style: "width:70px", value: (selected.get(accountKey(a.token_idx, a.spec)) || {}).multiplier ?? 1, dataset: { key: accountKey(a.token_idx, a.spec) } }) },
       { label: t("Fixed"), render: (a) => h("input", { type: "number", class: "cp-fixed input-sm", min: 1, step: 1, style: "width:64px", value: (selected.get(accountKey(a.token_idx, a.spec)) || {}).fixed ?? 1, dataset: { key: accountKey(a.token_idx, a.spec) } }) },
       { label: t("Max"), render: (a) => h("input", { type: "number", class: "cp-max input-sm", min: 0, step: 1, style: "width:64px", title: t("0 = no cap"), value: (selected.get(accountKey(a.token_idx, a.spec)) || {}).max_contracts ?? 0, dataset: { key: accountKey(a.token_idx, a.spec) } }) },
       { label: t("Direction"), render: (a) => { const f = selected.get(accountKey(a.token_idx, a.spec)) || {}; return h("select", { class: "cp-dir input-sm", dataset: { key: accountKey(a.token_idx, a.spec) } },
-        ["both", "long", "short"].map((d) => h("option", { value: d, selected: (f.direction || "both") === d }, d))); } },
+        [["both", t("both")], ["long", t("long")], ["short", t("short")]].map(([d, l]) => h("option", { value: d, selected: (f.direction || "both") === d }, l))); } },
     ],
   });
   const paintFollowers = () => fTable.update(known.filter((a) => accountKey(a.token_idx, a.spec) !== leaderSel.value));
@@ -129,26 +129,26 @@ function groupDrawer(group, { reload, onClose = null }) {
     clear(liveBox);
     if (!st) { liveBox.append(h("p", { class: "hint" }, g.enabled ? t("Starting…") : t("Group is off — enable it to start mirroring."))); return; }
     const head = h("div", { class: "inline-actions", style: "flex-wrap:wrap;margin-bottom:8px" },
-      st.paused ? tag("paused", "warn") : !st.feed_ok ? tag("feed lost", "off") : st.feed === "websocket" ? tag(st.ws_ok ? t("socket + poll · live") : t("poll · live (socket down)"), "on") : tag("poll · live", "on"),
-      h("span", { class: "muted" }, `latency ${latencyText(st)}`),
-      st.last_event_ts ? h("span", { class: "muted" }, `last leader change ${fmtTime(st.last_event_ts)}`) : null);
+      st.paused ? tag(t("paused"), "warn") : !st.feed_ok ? tag(t("feed lost"), "off") : st.feed === "websocket" ? tag(st.ws_ok ? t("socket + poll · live") : t("poll · live (socket down)"), "on") : tag(t("poll · live"), "on"),
+      h("span", { class: "muted" }, t("latency {ms}", { ms: latencyText(st) })),
+      st.last_event_ts ? h("span", { class: "muted" }, t("last leader change {when}", { when: fmtTime(st.last_event_ts) })) : null);
     const notes = [];
     if (st.pause_reason) notes.push(h("div", { class: "callout warn" }, st.pause_reason));
-    if (st.error) notes.push(h("div", { class: "callout danger" }, st.error));
+    if (st.error) notes.push(h("div", { class: "callout danger" }, errText(st.error)));
     if (st.feed === "websocket" && !st.ws_ok && st.ws_error) notes.push(h("div", { class: "hint" }, t("Socket accelerator down (the 1-second poll carries the feed): "), st.ws_error));
     const rows = [];
-    if (st.orders_error) notes.push(h("div", { class: "callout danger" }, t("Orders: "), st.orders_error));
+    if (st.orders_error) notes.push(h("div", { class: "callout danger" }, t("Orders: "), errText(st.orders_error)));
     for (const f of st.followers || []) {
-      if (f.error) rows.push(h("div", { class: "callout danger" }, h("code", null, maskAccount(f.spec)), " ", f.error));
+      if (f.error) rows.push(h("div", { class: "callout danger" }, h("code", null, maskAccount(f.spec)), " ", errText(f.error)));
       for (const o of f.orders || []) {
-        rows.push(h("div", { class: "cp-pos" }, h("code", null, maskAccount(f.spec)), h("span", null, o.symbol), tag("working order", "accent"), h("span", null, orderText(o)),
-          h("span", { class: "muted" }, `twin of leader #${o.leader_order_id}`)));
+        rows.push(h("div", { class: "cp-pos" }, h("code", null, maskAccount(f.spec)), h("span", null, o.symbol), tag(t("working order"), "accent"), h("span", null, orderText(o)),
+          h("span", { class: "muted" }, t("twin of leader #{id}", { id: o.leader_order_id }))));
       }
       for (const p of f.positions || []) {
         rows.push(h("div", { class: "cp-pos" }, h("code", null, maskAccount(f.spec)), h("span", null, p.symbol),
-          h("span", { class: "muted" }, `leader ${signed(p.leader)}`), h("span", null, `target ${signed(p.target)}`),
-          h("span", { class: p.actual === p.target ? "pos" : "neg" }, `actual ${signed(p.actual)}`),
-          p.baseline ? tag("baseline · not copied", "warn") : null));
+          h("span", { class: "muted" }, t("leader {n}", { n: signed(p.leader) })), h("span", null, t("target {n}", { n: signed(p.target) })),
+          h("span", { class: p.actual === p.target ? "pos" : "neg" }, t("actual {n}", { n: signed(p.actual) })),
+          p.baseline ? tag(t("baseline · not copied"), "warn") : null));
       }
     }
     const diag = st.diag || {};
@@ -181,9 +181,9 @@ function groupDrawer(group, { reload, onClose = null }) {
     return btn;
   };
   const actionRow = isNew ? null : h("div", { class: "inline-actions", style: "flex-wrap:wrap;margin-top:8px" },
-    act("resume", "Group resumed", { label: t("Resume"), icon: "play" }),
-    act("sync", "Synced to the leader", { label: t("Sync now"), icon: "refresh", confirm: { title: t("Copy the leader's current positions now?"), body: t("Every follower gets a market order to match the leader's open positions right away (including positions that existed before the group started)."), confirmText: t("Sync now") } }),
-    act("flatten", "Followers flattened", { label: t("Flatten followers"), icon: "alert", cls: "btn-danger", confirm: { title: t("Flatten all followers?"), body: t("Every mirrored position on every follower is closed at market and the group pauses until you resume it."), confirmText: t("Flatten"), danger: true } }));
+    act("resume", t("Group resumed"), { label: t("Resume"), icon: "play" }),
+    act("sync", t("Synced to the leader"), { label: t("Sync now"), icon: "refresh", confirm: { title: t("Copy the leader's current positions now?"), body: t("Every follower gets a market order to match the leader's open positions right away (including positions that existed before the group started)."), confirmText: t("Sync now") } }),
+    act("flatten", t("Followers flattened"), { label: t("Flatten followers"), icon: "alert", cls: "btn-danger", confirm: { title: t("Flatten all followers?"), body: t("Every mirrored position on every follower is closed at market and the group pauses until you resume it."), confirmText: t("Flatten"), danger: true } }));
 
   // --- Save / delete
   const saveBtn = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
@@ -263,17 +263,17 @@ function groupDrawer(group, { reload, onClose = null }) {
       h("h3", null, t("Followers from the marketplace")), subsTable.el);
   }
 
-  let timer = null;
+  let stopPoll = null;
   if (!isNew) {
-    timer = setInterval(async () => {
+    stopPoll = everyVisible(3000, async () => {
       try { const st = await api.get("/api/copy/status"); paintLive(st[g.id] || null); } catch { /* keep the last picture */ }
-    }, 3000);
+    });
   }
 
   openDrawer({
     title: isNew ? t("New copy group") : g.name,
     width: "760px",
-    onClose: () => { if (timer) clearInterval(timer); if (onClose) onClose(); },
+    onClose: () => { if (stopPoll) stopPoll(); if (onClose) onClose(); },
     body: [
       h("div", { class: "grid grid-2" },
         h("div", { class: "field" }, h("label", null, t("Name")), nameInp),
@@ -290,7 +290,7 @@ function groupDrawer(group, { reload, onClose = null }) {
         h("label", { class: "switch-row" }, h("span", null, t("Fixed mode follows adds / reductions"), h("small", null, t("On: 2 fixed contracts become 4 when the leader doubles up. Off: always the fixed size."))), addsSw)),
       h("label", { class: "switch-row" }, h("span", null, t("Mirror working orders (limits, stops, brackets)"), h("small", null, t("Every working limit / stop order of the leader gets a twin on each follower, sized by the same rule, following the leader's modifications and cancelled when the leader's order is gone. A stop / target pair becomes an OCO pair on the follower. When a leader order fills, the follower's twin is cancelled first and the follower's real broker position decides the market order — a twin that already filled is never doubled."))), ordersSw),
       h("h3", null, t("Followers")),
-      h("p", { class: "hint" }, "Multiplier: leader size × factor (rounded, never below 1 while the leader holds). Fixed: this many contracts for the leader's entry. Max caps the size; Direction copies only longs or only shorts. A follower account is exclusive: the mirror treats its whole position in a contract as its own, so do not trade a follower by hand or through another route, and an account can follow one leader only."),
+      h("p", { class: "hint" }, t("Multiplier: leader size × factor (rounded, never below 1 while the leader holds). Fixed: this many contracts for the leader's entry. Max caps the size; Direction copies only longs or only shorts. A follower account is exclusive: the mirror treats its whole position in a contract as its own, so do not trade a follower by hand or through another route, and an account can follow one leader only.")),
       fTable.el,
       h("div", { class: "callout", style: "margin-top:10px" }, t("Positions the leader already holds when the group starts are not copied (baseline). Mirroring of such a contract begins once the leader is flat again — or right away with Sync now.")),
       h("h3", null, t("Live")),
@@ -309,15 +309,15 @@ export default {
       empty: t("No copy groups yet — pick a leader account and the accounts that should follow it."),
       onRow: (g) => navigate(`/copy/${g.id}`),
       columns: [
-        { label: t("On"), render: (g) => h("input", { type: "checkbox", class: "switch", checked: !!g.enabled, title: t("Enable / disable"), onChange: async (e) => {
+        { label: t("On"), render: (g) => h("input", { type: "checkbox", class: "switch", checked: !!g.enabled, title: t("Enable / disable"), "aria-label": t("Enable copy group {name}", { name: g.name }), onChange: async (e) => {
           try { await api.post(`/api/copy/groups/${g.id}/${e.target.checked ? "enable" : "disable"}`); toast(e.target.checked ? t("Copy group enabled") : t("Copy group disabled"), "success"); load(); }
           catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
         } }) },
         { label: t("Name"), render: (g) => h("span", { class: "wh-name" }, g.name) },
         { label: t("Leader"), render: (g) => h("code", null, g.leader && g.leader.spec ? maskAccount(g.leader.spec) : "—") },
-        { label: t("Symbols"), render: (g) => (g.symbols || []).length ? g.symbols.join(", ") : h("span", { class: "muted" }, "all") },
-        { label: t("Followers"), className: "num", render: (g) => [String((g.followers || []).filter((f) => f.enabled).length), g.subscriber_count ? h("small", { class: "muted" }, ` +${g.subscriber_count} mkt`) : null] },
-        { label: t("Shared"), render: (g) => (g.sharing && g.sharing.enabled) ? tag(`published · ${g.subscriber_count || 0}`, "accent") : h("span", { class: "muted" }, "—") },
+        { label: t("Symbols"), render: (g) => (g.symbols || []).length ? g.symbols.join(", ") : h("span", { class: "muted" }, t("all")) },
+        { label: t("Followers"), className: "num", render: (g) => [String((g.followers || []).filter((f) => f.enabled).length), g.subscriber_count ? h("small", { class: "muted" }, t(" +{n} mkt", { n: g.subscriber_count })) : null] },
+        { label: t("Shared"), render: (g) => (g.sharing && g.sharing.enabled) ? tag(t("published · {n}", { n: g.subscriber_count || 0 }), "accent") : h("span", { class: "muted" }, "—") },
         { label: t("Feed"), render: feedTag },
         { label: t("Latency"), className: "num", render: (g) => latencyText(g.status) },
         { label: t("Note"), render: (g) => { const s = g.status || {}; const note = s.pause_reason || s.error || ""; return h("span", { class: "muted cp-note", title: note }, note); } },
@@ -343,17 +343,17 @@ export default {
       compact: true,
       empty: t("You follow no leader from the marketplace. Marketplace → Follow."),
       columns: [
-        { label: t("On"), render: (f) => h("input", { type: "checkbox", class: "switch", checked: !!f.enabled, title: t("Enable / disable"), onChange: async (e) => {
+        { label: t("On"), render: (f) => h("input", { type: "checkbox", class: "switch", checked: !!f.enabled, title: t("Enable / disable"), "aria-label": t("Enable following {name}", { name: f.title }), onChange: async (e) => {
           try { await api.put(`/api/subscriptions/${f.sub_id}`, { enabled: e.target.checked }); toast(e.target.checked ? t("Following enabled") : t("Following disabled"), "success"); loadFollowing(); }
           catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
         } }) },
         { label: t("Leader"), render: (f) => [h("span", { class: "wh-name" }, f.title), h("small", { class: "muted", style: "display:block" }, f.publisher_email)] },
-        { label: t("Status"), render: (f) => !f.published ? tag(t("unpublished"), "warn") : f.status === "unpaid" ? tag(t("unpaid"), "off") : f.status === "pending" ? tag(t("awaiting approval"), "warn") : f.status === "paused" ? tag(t("paused by publisher"), "warn") : !f.enabled ? tag("off", "off") : f.paused ? tag(t("paused"), "warn") : f.running && f.feed_ok ? tag("live", "on") : f.running ? tag("feed lost", "off") : tag("group off", "warn") },
+        { label: t("Status"), render: (f) => !f.published ? tag(t("unpublished"), "warn") : f.status === "unpaid" ? tag(t("unpaid"), "off") : f.status === "pending" ? tag(t("awaiting approval"), "warn") : f.status === "paused" ? tag(t("paused by publisher"), "warn") : !f.enabled ? tag(t("off"), "off") : f.paused ? tag(t("paused"), "warn") : f.running && f.feed_ok ? tag(t("live"), "on") : f.running ? tag(t("feed lost"), "off") : tag(t("group off"), "warn") },
         { label: t("My accounts"), render: (f) => h("div", null, (f.followers || []).length ? f.followers.map((a) => h("div", { class: "cp-pos" }, h("code", null, maskAccount(a.spec)),
-          a.error ? h("span", { class: "neg" }, a.error) : null,
-          ...(a.positions || []).map((p) => h("span", null, `${p.symbol} target ${signed(p.target)} · `, h("span", { class: p.actual === p.target ? "pos" : "neg" }, `actual ${signed(p.actual)}`), p.baseline ? t(" (baseline)") : "")),
-          !(a.positions || []).length && !a.error ? h("span", { class: "muted" }, "flat") : null)) : (f.accounts || []).map((a) => h("code", null, maskAccount(a.spec)))) },
-        { label: t("Leader positions"), render: (f) => (f.leader_positions || []).length ? f.leader_positions.map((p) => h("div", null, `${p.symbol} ${signed(p.net)}`)) : h("span", { class: "muted" }, "flat") },
+          a.error ? h("span", { class: "neg" }, errText(a.error)) : null,
+          ...(a.positions || []).map((p) => h("span", null, t("{symbol} target {n} · ", { symbol: p.symbol, n: signed(p.target) }), h("span", { class: p.actual === p.target ? "pos" : "neg" }, t("actual {n}", { n: signed(p.actual) })), p.baseline ? t(" (baseline)") : "")),
+          !(a.positions || []).length && !a.error ? h("span", { class: "muted" }, t("flat")) : null)) : (f.accounts || []).map((a) => h("code", null, maskAccount(a.spec)))) },
+        { label: t("Leader positions"), render: (f) => (f.leader_positions || []).length ? f.leader_positions.map((p) => h("div", null, `${p.symbol} ${signed(p.net)}`)) : h("span", { class: "muted" }, t("flat")) },
         { label: t("Latency"), className: "num", render: (f) => f.latency_ms != null ? `${f.latency_ms} ms` : "—" },
         { label: "", render: (f) => h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: () => openCopySubscriptionDrawer({ publisher_area_id: f.publisher_area_id, group_id: f.group_id, title: f.title, publisher_email: f.publisher_email, symbols: f.symbols,
           paid: !!f.paid, price_cents: f.price_cents, currency: f.currency, trial_days: f.trial_days, kind: "copy",
@@ -421,7 +421,7 @@ export default {
       const want = (store.get("route") || {}).params?.id || (params && params.id);   // the deep link current now
       if (want && !leaving) openFor(want);
     })();
-    const timer = setInterval(() => { load(); loadEvents(); loadFollowing(); }, 5000);
-    return () => { leaving = true; clearInterval(timer); unsub(); openId = null; closeDrawer(); boot.catch(() => {}); };
+    const stopPoll = everyVisible(5000, () => { load(); loadEvents(); loadFollowing(); });
+    return () => { leaving = true; stopPoll(); unsub(); openId = null; closeDrawer(); boot.catch(() => {}); };
   },
 };

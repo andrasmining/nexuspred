@@ -1,6 +1,6 @@
 /* Settings pages that are plain forms over /api/settings: general, alerts,
    security, updates, symbol map, account. Each page posts only its own keys. */
-import { h, card, tag, toast, confirmDialog, pageHead, fmtDateTime, clear } from "../ui.js";
+import { h, card, tag, toast, confirmDialog, pageHead, fmtDateTime, clear, errText } from "../ui.js";
 import { maskAccount } from "../privacy.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
@@ -239,13 +239,13 @@ function pushPanel() {
   const disableBtn = h("button", { type: "button", class: "btn btn-ghost", hidden: true }, t("Disable on this device"));
   const testAllBtn = h("button", { type: "button", class: "btn btn-secondary", hidden: true }, icon("send"), t("Test push"));
   const table = dataTable({ empty: t("No device registered yet."), compact: true, columns: [
-    { label: t("Device"), render: (d) => [h("strong", null, d.device || "Device"), " ", h("span", { class: "muted" }, d.endpoint_host || "")] },
+    { label: t("Device"), render: (d) => [h("strong", null, d.device || t("Device")), " ", h("span", { class: "muted" }, d.endpoint_host || "")] },
     { label: t("Added"), render: (d) => fmtDateTime(d.created_at) },
     { label: t("Last push"), render: (d) => d.last_used_at ? fmtDateTime(d.last_used_at) : "—" },
-    { label: t("Status"), render: (d) => d.failures ? [tag(`failing (${d.failures})`, "error"), d.last_error ? h("div", { class: "muted", style: "font-size:.8em;margin-top:4px;max-width:260px;word-break:break-word" }, d.last_error) : null] : tag("ok", "ok") },
+    { label: t("Status"), render: (d) => d.failures ? [tag(t("failing ({n})", { n: d.failures }), "error"), d.last_error ? h("div", { class: "muted", style: "font-size:11px;margin-top:4px;max-width:260px;word-break:break-word" }, errText(d.last_error)) : null] : tag(t("ok"), "ok") },
     { label: "", render: (d) => h("div", { class: "inline-actions" },
       h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Send a test push to this device"), onClick: async () => {
-        try { const r = await api.post("/api/push/test", { id: d.id }); toast(r.sent ? t("Test push sent") : `Not delivered: ${r.gone ? t("device unsubscribed") : t("push service rejected it")}`, r.sent ? "success" : "error"); load(); }
+        try { const r = await api.post("/api/push/test", { id: d.id }); toast(r.sent ? t("Test push sent") : t("Not delivered: {why}", { why: r.gone ? t("device unsubscribed") : t("push service rejected it") }), r.sent ? "success" : "error"); load(); }
         catch (e) { toast(e.message, "error"); }
       } }, icon("send")),
       h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Remove"), onClick: async () => {
@@ -439,7 +439,7 @@ export const symbols = {
         h("td", null, h("code", null, w.contract)),
         h("td", null, `${w.date_kind} ${w.date} · `, h("span", { class: w.days_left < 0 ? "neg" : "warn" }, w.days_left < 0 ? `${-w.days_left}d ago` : w.days_left === 0 ? "today" : `in ${w.days_left}d`)),
         h("td", null, h("input", { class: "ro-next input-sm", value: w.next || "", style: "width:110px", dataset: { tv: w.tv_symbol } })),
-        h("td", null, w.next_source === "broker" ? tag("broker listing", "on") : tag("estimated", "warn"), w.next_expiry ? h("small", { class: "muted", style: "display:block" }, `expires ${w.next_expiry}`) : null))));
+        h("td", null, w.next_source === "broker" ? tag(t("broker listing"), "on") : tag(t("estimated"), "warn"), w.next_expiry ? h("small", { class: "muted", style: "display:block" }, t("expires {date}", { date: w.next_expiry })) : null))));
     }
     async function loadRollover(refresh = false) {
       try { const r = await api.get(`/api/rollover${refresh ? "?refresh=1" : ""}`); paintRollover(r.rollover); }
@@ -484,22 +484,26 @@ export const account = {
     const nw = h("input", { type: "password", autocomplete: "new-password", required: true, minlength: 8 });
     const nw2 = h("input", { type: "password", autocomplete: "new-password", required: true, minlength: 8 });
     const hint = h("span", { class: "save-hint" });
+    const submitBtn = h("button", { type: "submit", class: "btn btn-primary" }, t("Change password"));
     const form = h("form", { autocomplete: "off", onSubmit: async (e) => {
       e.preventDefault();
+      if (submitBtn.disabled) return;
       if (nw.value !== nw2.value) { hint.textContent = t("New passwords don't match."); hint.className = "save-hint err"; return; }
       if (nw.value.length < 8) { hint.textContent = t("New password must be at least 8 characters."); hint.className = "save-hint err"; return; }
       hint.textContent = t("Saving…"); hint.className = "save-hint";
+      submitBtn.disabled = true;
       try {
         await api.post("/api/account/password", { current: cur.value, new: nw.value });
         form.reset(); hint.textContent = t("Password changed."); hint.className = "save-hint ok"; toast(t("Password changed"), "success");
       } catch (err) { hint.textContent = err.message; hint.className = "save-hint err"; toast(err.message, "error"); }
+      finally { submitBtn.disabled = false; }
     } },
       h("div", { class: "grid grid-2" },
         h("div", { class: "field" }, h("label", null, t("Current password")), cur),
         h("div"),
         h("div", { class: "field" }, h("label", null, t("New password (min 8 characters)")), nw),
         h("div", { class: "field" }, h("label", null, t("Confirm new password")), nw2)),
-      h("div", { class: "form-actions" }, h("button", { type: "submit", class: "btn btn-primary" }, t("Change password")), hint));
+      h("div", { class: "form-actions" }, submitBtn, hint));
     // ---- two-factor authentication
     const mfaBody = h("div", null, t("Loading…"));
     const codesList = (codes) => h("div", null,
@@ -568,7 +572,7 @@ export const account = {
         card({ title: t("Two-factor authentication") }, mfaBody),
         card({ title: t("Your account") },
           h("dl", { class: "kv" }, h("dt", null, t("Email")), h("dd", null, me.email || "—"), h("dt", null, t("Role")), h("dd", null, me.is_admin ? t("Administrator") : t("User")),
-            h("dt", null, t("Discord Signals")), h("dd", null, (me.features || {}).discord_signals === false ? t("not enabled") : "enabled")),
+            h("dt", null, t("Discord Signals")), h("dd", null, (me.features || {}).discord_signals === false ? t("not enabled") : t("enabled"))),
           h("div", { class: "form-actions", style: "margin-top:14px" },
             h("button", { type: "button", class: "btn btn-ghost", onClick: async () => {
               try { await fetch("/logout", { method: "POST", credentials: "same-origin", redirect: "manual" }); } catch { /* cookie cleared server-side */ }

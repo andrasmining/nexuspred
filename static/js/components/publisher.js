@@ -36,7 +36,7 @@ export function subscriberStatusTag(s) {
   if (s.status === "unpaid") return tag(t("unpaid"), "off");
   if (s.status === "pending") return tag(t("awaiting approval"), "warn");
   if (s.status === "paused") return tag(t("paused by you"), "warn");
-  return s.enabled ? tag("on", "on") : tag("off", "off");
+  return s.enabled ? tag(t("on"), "on") : tag(t("off"), "off");
 }
 
 /** Approve / pause / resume buttons for one subscriber row. `base` = the subscribers URL. */

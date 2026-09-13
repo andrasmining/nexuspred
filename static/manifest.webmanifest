@@ -1,7 +1,7 @@
 {
   "name": "Fluxbridge",
   "short_name": "Fluxbridge",
-  "description": "TradingView → Tradovate webhook bridge: live signals, orders and the emergency Flatten-all button.",
+  "description": "TradingView → your broker webhook bridge: live signals, orders and the emergency Flatten all button.",
   "id": "/",
   "start_url": "/?source=pwa",
   "scope": "/",

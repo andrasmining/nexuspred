@@ -187,7 +187,7 @@ function webhookDrawer(wh, { navigate }) {
       h("p", { class: "hint" }, t("Paste into the alert's Message box (Notifications → Webhook URL = the URL above).")),
       tmplPre, h("div", { class: "form-actions" }, copyButton(() => tmplPre.textContent, "Copy message", "btn btn-secondary btn-sm")), tmplHint),
     test: h("div", null,
-      h("div", { class: "callout warn" }, t("Runs the full live pipeline for this webhook: with trading enabled this places REAL orders on the routed accounts.")),
+      h("div", { class: "callout warn" }, t("Runs the full live pipeline for this webhook: with trading enabled this places real orders on the routed accounts.")),
       presetRow, payloadTa, forwardRow, h("div", { class: "form-actions" }, sendBtn), testResult),
     sharing: sharingPane,
     danger: h("div", null,
@@ -212,7 +212,7 @@ function webhookDrawer(wh, { navigate }) {
           } catch (e) { toast(e.message, "error"); }
         } }, icon("trash"), t("Delete webhook")))),
   };
-  const tabNames = [["general", t("General")], ["accounts", `${t("Accounts")} (${(w.accounts || []).filter((a) => a.enabled).length})`], ["template", t("Alert template")], ["test", t("Test signal")]];
+  const tabNames = [["general", t("General")], ["accounts", t("Accounts ({n})", { n: (w.accounts || []).filter((a) => a.enabled).length })], ["template", t("Alert template")], ["test", t("Test signal")]];
   if (sharingPane) tabNames.push(["sharing", `${t("Sharing")}${w.subscriber_count ? ` (${w.subscriber_count})` : ""}`]);
   tabNames.push(["danger", t("Danger zone")]);
   const body = h("div");
@@ -231,13 +231,13 @@ function webhookDrawer(wh, { navigate }) {
     saveBtn.disabled = true;
     try {
       const updated = await saveWebhook(w.id, {
-        name: nameInp.value.trim() || "Untitled", enabled: enabledSw.checked, strategy: stratSel.value,
+        name: nameInp.value.trim() || t("Untitled"), enabled: enabledSw.checked, strategy: stratSel.value,
         default_qty: Number(defQty.value) || 1, tp_qty: Number(tpQty.value) || 1, accounts: collectAccounts(),
         trade_window: collectWindow(),
       });
       w = { ...w, ...updated };
       drawer.setTitle(w.name);
-      tabsEl.querySelector('[data-tab="accounts"]').textContent = `Accounts (${(w.accounts || []).filter((a) => a.enabled).length})`;
+      tabsEl.querySelector('[data-tab="accounts"]').textContent = t("Accounts ({n})", { n: (w.accounts || []).filter((a) => a.enabled).length });
       toast(t("Webhook saved"), "success");
     } catch (e) { toast(e.message, "error"); } finally { saveBtn.disabled = false; }
   } }, icon("check"), t("Save"));
@@ -257,7 +257,7 @@ export default {
       empty: t("No webhooks yet — create one per strategy."),
       onRow: (w) => navigate(`/webhooks/${w.id}`),
       columns: [
-        { label: t("On"), render: (w) => h("input", { type: "checkbox", class: "switch", checked: !!w.enabled, title: t("Enable / disable"), onChange: async (e) => {
+        { label: t("On"), render: (w) => h("input", { type: "checkbox", class: "switch", checked: !!w.enabled, title: t("Enable / disable"), "aria-label": t("Enable webhook {name}", { name: w.name }), onChange: async (e) => {
           try { await saveWebhook(w.id, { enabled: e.target.checked }); toast(e.target.checked ? t("Webhook enabled") : t("Webhook disabled"), "success"); }
           catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
         } }) },
@@ -273,7 +273,7 @@ export default {
     const addBtn = h("button", { class: "btn btn-primary", onClick: async () => {
       try {
         const n = (store.get("webhooks") || []).length + 1;
-        const wh = await api.post("/api/webhooks", { name: `Strategy ${n}`, strategy: "simple", default_qty: 1, tp_qty: 1 });
+        const wh = await api.post("/api/webhooks", { name: t("Strategy {n}", { n }), strategy: "simple", default_qty: 1, tp_qty: 1 });
         store.update("webhooks", (list) => [...list, wh]);
         toast(t("Webhook created"), "success");
         navigate(`/webhooks/${wh.id}`);
@@ -284,7 +284,7 @@ export default {
     const subsTable = dataTable({
       empty: t("You haven't subscribed to any published signal."),
       columns: [
-        { label: t("On"), render: (s) => h("input", { type: "checkbox", class: "switch", checked: !!s.enabled, title: t("Enable / disable"), onChange: async (e) => {
+        { label: t("On"), render: (s) => h("input", { type: "checkbox", class: "switch", checked: !!s.enabled, title: t("Enable / disable"), "aria-label": t("Enable subscription {name}", { name: s.webhook ? s.webhook.title : s.webhook_id }), onChange: async (e) => {
           try { await api.put(`/api/subscriptions/${s.id}`, { enabled: e.target.checked }); toast(e.target.checked ? t("Subscription enabled") : t("Subscription disabled"), "success"); loadSubs(); }
           catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
         } }) },
@@ -292,7 +292,7 @@ export default {
         { label: t("Publisher"), render: (s) => (s.webhook && s.webhook.publisher_email) || "—" },
         { label: t("Strategy"), render: (s) => s.webhook ? tag(STRATEGY_LABEL[s.webhook.strategy] || s.webhook.strategy, s.webhook.strategy) : "—" },
         { label: t("Accounts"), className: "num", render: (s) => String((s.accounts || []).filter((a) => a.enabled).length) },
-        { label: t("Status"), render: (s) => !s.webhook ? tag("unpublished by publisher", "warn") : !s.webhook.webhook_enabled ? tag("paused by publisher", "warn") : s.enabled ? tag("active", "on") : tag("off", "off") },
+        { label: t("Status"), render: (s) => !s.webhook ? tag(t("unpublished by publisher"), "warn") : !s.webhook.webhook_enabled ? tag(t("paused by publisher"), "warn") : s.enabled ? tag(t("active"), "on") : tag(t("off"), "off") },
         { label: "", render: (s) => h("div", { class: "inline-actions" },
           h("button", { type: "button", class: "btn btn-ghost btn-sm", disabled: !s.webhook, onClick: () => openSubscriptionDrawer({ ...(s.webhook || {}), subscription: s }, loadSubs) }, t("Manage"), icon("chevron")),
           h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => {

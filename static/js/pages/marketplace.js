@@ -158,7 +158,7 @@ export function openCopySubscriptionDrawer(item, onDone) {
     width: "760px",
     body: [
       h("div", { class: "callout" },
-        h("div", null, h("strong", null, t("Leader: ")), item.publisher_email || "—", " · ", tag("copy trading", "accent"), " ", tag((item.environment || "demo").toUpperCase(), item.environment === "live" ? "live" : "demo"),
+        h("div", null, h("strong", null, t("Leader: ")), item.publisher_email || "—", " · ", tag(t("copy trading"), "accent"), " ", tag((item.environment || "demo").toUpperCase(), item.environment === "live" ? "live" : "demo"),
           (item.symbols || []).length ? [" · ", h("strong", null, t("Symbols: ")), item.symbols.join(", ")] : [" · ", h("span", { class: "muted" }, t("every contract the leader trades"))]),
         item.description ? h("div", { style: "margin-top:6px;white-space:pre-line" }, item.description) : null),
       h("label", { class: "switch-row" }, h("span", null, t("Subscription active"), h("small", null, t("Off = your accounts leave the mirror (positions stay). Your own Trading switch and risk locks apply as well."))), enabledSw),
@@ -304,7 +304,7 @@ export default {
             h("div", { class: "mk-foot" }, state,
               h("div", { class: "inline-actions" },
                 sub && sub.status === "unpaid" && it.paid ? h("button", { type: "button", class: "btn btn-primary btn-sm", onClick: () => startCheckout(it) }, icon("external"), t("Pay now")) : null,
-                sub ? h("input", { type: "checkbox", class: "switch", checked: !!sub.enabled, title: t("Enable / disable"), onChange: async (e) => {
+                sub ? h("input", { type: "checkbox", class: "switch", checked: !!sub.enabled, title: t("Enable / disable"), "aria-label": t("Enable subscription {name}", { name: it.title }), onChange: async (e) => {
                   const sw = e.target; sw.disabled = true;
                   try { await api.put(`/api/subscriptions/${sub.id}`, { enabled: sw.checked }); toast(sw.checked ? t("Subscription enabled") : t("Subscription disabled"), "success"); load(); }
                   catch (err) { sw.checked = !sw.checked; toast(err.message, "error"); } finally { sw.disabled = false; }

@@ -1,6 +1,6 @@
 /* Settings → Execution Agents: pair helper agents that run on a VPS and execute
    Tradovate calls for assigned logins, so each account trades from its own IP. */
-import { h, card, tag, toast, confirmDialog, pageHead, fmtDateTime, copyText, clear } from "../ui.js";
+import { h, card, tag, toast, confirmDialog, promptDialog, pageHead, fmtDateTime, copyText, clear, everyVisible } from "../ui.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { dataTable } from "../components/table.js";
@@ -68,14 +68,15 @@ export default {
 
     const table = dataTable({ empty: t("No agents paired yet. Create a pairing code, then start the agent on your VPS."), compact: true, columns: [
       { label: t("Agent"), render: (a) => [h("strong", null, a.name), " ", h("span", { class: "muted" }, `#${a.id}`)] },
-      { label: t("Status"), render: (a) => a.online ? tag("online", "ok") : tag("offline", "error") },
-      { label: t("Last seen"), render: (a) => a.last_seen_at ? fmtDateTime(a.last_seen_at) : "never" },
+      { label: t("Status"), render: (a) => a.online ? tag(t("online"), "ok") : tag(t("offline"), "error") },
+      { label: t("Last seen"), render: (a) => a.last_seen_at ? fmtDateTime(a.last_seen_at) : t("never") },
       { label: "IP", render: (a) => h("code", null, a.last_ip || "—") },
       { label: t("Version"), render: (a) => a.version || "—" },
       { label: t("Queued"), className: "num", render: (a) => String(a.pending_jobs || 0) },
       { label: "", render: (a) => h("div", { class: "inline-actions" },
         h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Rename"), onClick: async () => {
-          const name = window.prompt("New name for this agent", a.name);
+          const v = await promptDialog({ title: t("Rename agent"), label: t("New name for this agent"), value: a.name, confirmText: t("Rename") });
+          const name = v == null ? "" : v.trim();
           if (!name || name === a.name) return;
           try { await api.put(`/api/agents/${a.id}`, { name }); load(); } catch (e) { toast(e.message, "error"); }
         } }, icon("edit")),
@@ -85,7 +86,6 @@ export default {
         } }, icon("trash"))) },
     ] });
 
-    let timer = null;
     async function load() {
       try { table.update(await api.get("/api/agents")); } catch (e) { /* ignore */ }
     }
@@ -104,7 +104,7 @@ export default {
       ] }, table.el),
     );
     load();
-    timer = setInterval(load, 10000);
-    return () => { if (timer) clearInterval(timer); };
+    const stopPoll = everyVisible(10000, load);
+    return () => stopPoll();
   },
 };

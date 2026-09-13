@@ -50,13 +50,16 @@ export function firstChild(me, item) {
   return (item.children || []).find((c) => visible(me, c));
 }
 
-/** Title for the topbar from the current path. */
+/** "/copy/abc" → "/copy": a deep link belongs to its parent route's sidebar item. */
+const baseRoute = (path) => path.split("/").slice(0, 2).join("/") || "/";
+const isActive = (item, path) => item.path === path || (item.path !== "/" && baseRoute(path) === item.path);
+
+/** Title for the topbar from the current path (deep links use the parent route's title). */
 export function titleFor(path) {
   for (const g of NAV) for (const it of g.items) {
-    if (it.path === path) return it.label;
     for (const c of it.children || []) if (c.path === path) return `${it.label} · ${c.label}`;
+    if (isActive(it, path)) return it.label;
   }
-  if (path.startsWith("/webhooks/")) return "Webhooks";
   return "Fluxbridge";
 }
 
@@ -88,7 +91,7 @@ export function renderSidebar(root, { me, path, collapsed, onToggleCollapse, nav
           icon(it.icon), h("span", { class: "lbl" }, it.label), icon("chevron", "caret"));
         nav.append(parent, childrenEl);
       } else {
-        nav.append(h("a", { class: `nav-item ${it.path === path ? "active" : ""}`, href: "#" + it.path, title: it.label,
+        nav.append(h("a", { class: `nav-item ${isActive(it, path) ? "active" : ""}`, href: "#" + it.path, title: it.label,
           onClick: (e) => { e.preventDefault(); navigate(it.path); } },
           icon(it.icon), h("span", { class: "lbl" }, it.label)));
       }

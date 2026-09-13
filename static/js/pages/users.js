@@ -31,8 +31,9 @@ export default {
     const inviteEmail = h("input", { type: "email", placeholder: t("name@example.com"), autocomplete: "off" });
     const inviteAdmin = h("input", { type: "checkbox", class: "switch" });
     const inviteSend = h("input", { type: "checkbox", class: "switch" });
-    const inviteLink = linkBox("Invite link — share it with the new user");
+    const inviteLink = linkBox(t("Invite link — share it with the new user"));
     const inviteBtn = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
+      inviteBtn.disabled = true;   // one invite per click
       try {
         const email = inviteEmail.value.trim();
         // `elevated`, not `is_admin`: some WAFs block bodies containing is_admin.
@@ -43,13 +44,13 @@ export default {
         if (inviteSend.checked && email) toast(r.emailed ? t("Invite emailed to {email}", { email }) : t("Invite created — email not sent (SMTP not configured)"), r.emailed ? "success" : "warn");
         else toast(t("Invite link created and copied"), "success");
         loadInvites(); loadAudit();
-      } catch (e) { toast(e.message, "error"); }
+      } catch (e) { toast(e.message, "error"); } finally { inviteBtn.disabled = false; }
     } }, icon("plus"), t("Create invite"));
 
     const invites = dataTable({ empty: t("No open invites"), columns: [
       { label: t("Invite link"), render: (i) => h("code", { style: "font-size:11px" }, `${window.location.origin}/register?code=${i.code}`) },
-      { label: t("For"), render: (i) => i.email || "anyone" },
-      { label: t("Admin"), render: (i) => i.is_admin ? tag("admin", "accent") : "—" },
+      { label: t("For"), render: (i) => i.email || t("anyone") },
+      { label: t("Admin"), render: (i) => i.is_admin ? tag(t("admin"), "accent") : "—" },
       { label: t("Created"), render: (i) => fmtDateTime(i.created_at) },
       { label: "", render: (i) => h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => {
         try { await api.del(`/api/invites/${i.code}`); toast(t("Invite revoked")); loadInvites(); loadAudit(); } catch (e) { toast(e.message, "error"); }
@@ -57,10 +58,10 @@ export default {
     ] });
 
     // ---- users
-    const resetLink = linkBox("Password-reset link");
+    const resetLink = linkBox(t("Password-reset link"));
     const users = dataTable({ empty: t("No users"), columns: [
-      { label: t("Email"), render: (u) => [u.email, u.id === me.id ? [" ", tag("you")] : null] },
-      { label: t("Role"), render: (u) => u.is_admin ? tag("admin", "accent") : "user" },
+      { label: t("Email"), render: (u) => [u.email, u.id === me.id ? [" ", tag(t("you"))] : null] },
+      { label: t("Role"), render: (u) => u.is_admin ? tag(t("admin"), "accent") : t("user") },
       { label: t("Discord Signals"), render: (u) => h("input", { type: "checkbox", class: "switch", checked: (u.features || {}).discord_signals === true, title: t("Grant the Discord listener module"), onChange: async (e) => {
         try { await api.post(`/api/users/${u.id}/features`, { feature: "discord_signals", enabled: e.target.checked }); toast(t("Discord Signals {state} for {email}", { state: e.target.checked ? t("enabled") : t("disabled"), email: u.email }), "success"); loadAudit(); }
         catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
@@ -109,7 +110,7 @@ export default {
     const logins = dataTable({ empty: t("No sign-ins recorded yet"), compact: true, columns: [
       { label: t("When"), render: (r) => fmtDateTime(r.created_at) },
       { label: t("Email"), render: (r) => r.actor_email || "—" },
-      { label: t("Result"), render: (r) => r.action === "login_ok" ? tag("ok", "ok") : r.action === "login_blocked" ? tag("rate limited", "warn") : tag("failed", "error") },
+      { label: t("Result"), render: (r) => r.action === "login_ok" ? tag(t("ok"), "ok") : r.action === "login_blocked" ? tag(t("rate limited"), "warn") : tag(t("failed"), "error") },
       { label: "IP", render: (r) => h("code", null, r.target || "—") },
       { label: t("Detail"), render: (r) => r.detail || "" },
     ] });

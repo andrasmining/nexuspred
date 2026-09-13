@@ -55,7 +55,9 @@ export function fmtDateTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(locale(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const opts = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";   // last year's entry needs its year
+  return d.toLocaleString(locale(), opts);
 }
 
 export function fmtNum(v, digits = 2) {
@@ -87,7 +89,7 @@ export function closeDialogs() {
 }
 
 /** Accessible confirm dialog. Resolves true/false. */
-export function confirmDialog({ title, body, confirmText = "Confirm", cancelText = "Cancel", danger = false }) {
+export function confirmDialog({ title, body, confirmText = t("Confirm"), cancelText = t("Cancel"), danger = false }) {
   return new Promise((resolve) => {
     let done = false;
     const finish = (v) => { if (done) return; done = true; _openDialogs.delete(finish); dlg.close(); dlg.remove(); resolve(v); };
@@ -103,6 +105,30 @@ export function confirmDialog({ title, body, confirmText = "Confirm", cancelText
     document.body.append(dlg);
     dlg.showModal();
     (danger ? dlg.querySelector(".btn-ghost") : ok).focus();
+  });
+}
+
+/** Accessible one-field prompt (replaces window.prompt). Resolves the string, or null when cancelled. */
+export function promptDialog({ title, body = null, label = null, value = "", placeholder = "", confirmText = t("OK"), cancelText = t("Cancel"), type = "text" }) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; _openDialogs.delete(finish); dlg.close(); dlg.remove(); resolve(v); };
+    _openDialogs.add(finish);
+    const input = h("input", { type, value, placeholder, autocomplete: "off" });
+    const ok = h("button", { type: "submit", class: "btn btn-primary" }, confirmText);
+    const form = h("form", { onSubmit: (e) => { e.preventDefault(); finish(input.value); } },
+      h("div", { class: "dlg-body" }, h("h2", null, title), body ? h("p", null, body) : null,
+        h("div", { class: "field" }, label ? h("label", null, label) : null, input)),
+      h("div", { class: "dlg-actions" },
+        h("button", { type: "button", class: "btn btn-ghost", onClick: () => finish(null) }, cancelText),
+        ok));
+    const dlg = h("dialog", { class: "dlg" }, form);
+    dlg.addEventListener("cancel", (e) => { e.preventDefault(); finish(null); });
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) finish(null); });
+    document.body.append(dlg);
+    dlg.showModal();
+    input.focus();
+    input.select();
   });
 }
 
@@ -131,7 +157,7 @@ export async function copyText(text) {
   }
 }
 
-export function copyButton(getText, label = "Copy", cls = "btn btn-ghost btn-sm") {
+export function copyButton(getText, label = t("Copy"), cls = "btn btn-ghost btn-sm") {
   return h("button", {
     type: "button", class: cls,
     onClick: async () => toast((await copyText(getText())) ? t("Copied") : t("Copy failed"), "success"),
@@ -139,6 +165,25 @@ export function copyButton(getText, label = "Copy", cls = "btn btn-ghost btn-sm"
 }
 
 /* ------------------------------------------------------------- utilities */
+/** A raw error / exception string for a table cell: truncated, the full text in a title. */
+export function errText(s, max = 120) {
+  const text = String(s == null ? "" : s).trim();
+  if (text.length <= max) return text;
+  return h("span", { title: text }, text.slice(0, max - 1).trimEnd() + "…");
+}
+
+/** setInterval that only ticks while the tab is visible; when the tab comes back
+    fn runs once right away (catch-up). Returns a stop function for the page cleanup. */
+export function everyVisible(ms, fn) {
+  let timer = null;
+  const start = () => { if (timer === null) timer = setInterval(fn, ms); };
+  const stop = () => { if (timer !== null) { clearInterval(timer); timer = null; } };
+  const onVisibility = () => { if (document.hidden) stop(); else { start(); fn(); } };
+  document.addEventListener("visibilitychange", onVisibility);
+  if (!document.hidden) start();
+  return () => { stop(); document.removeEventListener("visibilitychange", onVisibility); };
+}
+
 export function debounce(fn, ms) {
   let timer = null;
   const wrapped = (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };

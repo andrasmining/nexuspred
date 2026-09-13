@@ -1,5 +1,6 @@
 /* Data table: columns describe how to render each cell; update(rows) re-renders. */
 import { h, clear } from "../ui.js";
+import { t } from "../i18n.js";
 
 /**
  * dataTable({
@@ -7,7 +8,7 @@ import { h, clear } from "../ui.js";
  *   empty: "message", onRow(row, tr), rowClass(row), compact
  * }) → { el, update(rows), tbody }
  */
-export function dataTable({ columns, empty = "Nothing here yet", onRow = null, rowClass = null, compact = false }) {
+export function dataTable({ columns, empty = t("Nothing here yet"), onRow = null, rowClass = null, compact = false }) {
   const tbody = h("tbody");
   const table = h("table", { class: `data-table ${compact ? "compact" : ""}` },
     h("thead", null, h("tr", null, columns.map((c) => h("th", { class: c.className || null }, c.label)))),

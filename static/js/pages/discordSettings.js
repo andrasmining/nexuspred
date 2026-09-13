@@ -90,6 +90,7 @@ export default {
 
     const hint = h("span", { class: "save-hint" });
     const saveBtn = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
+      saveBtn.disabled = true;
       try {
         const cfg = await api.post("/api/discord/config", { discord_enabled: enabled.checked, discord_dry_run: dryRun.checked, discord_user_token: token.value, discord_channels: collect() });
         store.set("discordConfig", cfg);
@@ -97,6 +98,7 @@ export default {
         toast(t("Discord settings saved"), "success");
         actions.refreshDiscordStatus();
       } catch (e) { hint.textContent = e.message; hint.className = "save-hint err"; toast(e.message, "error"); }
+      finally { saveBtn.disabled = false; }
     } }, icon("check"), t("Save Discord settings"));
 
     root.append(

@@ -85,6 +85,9 @@ select { appearance: none; -webkit-appearance: none; padding-right: 30px;
   background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%; background-size: 5px 5px; background-repeat: no-repeat; }
 input[type="number"] { -moz-appearance: textfield; }
 .input-sm { padding: 6px 9px !important; font-size: 12.5px !important; }
+/* selects lose their native arrow (appearance: none + 30px right padding): give short ones room */
+.sel-sizing { min-width: 120px; }
+.sel-broker { min-width: 160px; }
 
 .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 0; border-bottom: 1px solid var(--border); color: var(--text); font-size: 13px; cursor: pointer; }
 .switch-row:last-child { border-bottom: none; }
@@ -124,7 +127,7 @@ input[type="number"] { -moz-appearance: textfield; }
 .tag.sell, .tag.rejected, .tag.error, .tag.off, .tag.red { background: var(--red-soft); color: var(--red); border-color: transparent; }
 .tag.sim, .tag.warn, .tag.amber { background: var(--amber-soft); color: var(--amber); border-color: transparent; }
 .tag.accent, .tag.simple, .tag.bracket, .tag.ts_hunter { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
-.tag.live { background: var(--red-soft); color: var(--red); border-color: transparent; }
+.tag.live { background: var(--amber-soft); color: var(--amber); border-color: transparent; }   /* live = attention, not an error */
 .tag.demo { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 8px var(--red); flex: 0 0 auto; }
 .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
