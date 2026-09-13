@@ -7,6 +7,7 @@ import { api } from "../api.js";
 import { dataTable } from "../components/table.js";
 import { passwordInput } from "../components/form.js";
 import { t } from "../i18n.js";
+import { platformOpsCard, broadcastCard } from "../components/ops.js";
 
 const STATUS_TONE = { pending: "warn", sent: "on", failed: "off" };
 const HEALTH_TONE = { ok: "on", degraded: "warn", down: "off" };
@@ -195,7 +196,7 @@ export default {
         h("div", { class: "form-actions" }, saveBtn, hint, testBtn, testHint),
         h("p", { class: "hint" }, t("Delivery is queued: a failed send is retried after 1, 5, 15, 60 and 360 minutes, then marked failed. An address that keeps failing is flagged on the user's dashboard."))),
       card({ title: t("Mail log"), actions: [h("button", { class: "btn btn-ghost btn-sm", onClick: loadLog }, icon("refresh"), t("Refresh"))] }, log.el),
-      health.el, heartbeatCard(), incidentsCard(),
+      health.el, heartbeatCard(), incidentsCard(), platformOpsCard(), broadcastCard(),
     );
     api.get("/api/mail/config").then((c) => { if (alive) fill(c); }).catch((e) => { if (alive) toast(e.message, "error"); });
     loadLog();

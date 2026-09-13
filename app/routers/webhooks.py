@@ -8,7 +8,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import config, context, db, marketplace, payments, security, signals, sizing, state, track_record, trade_window
+from .. import web, config, context, db, marketplace, payments, security, signals, sizing, state, track_record, trade_window
 from ..tradovate import TradovateError
 from ..web import require_role
 
@@ -138,6 +138,7 @@ def _sized_for(raw: Any) -> int:
 
 @router.post("/api/webhooks")
 async def api_create_webhook(request: Request) -> dict[str, Any]:
+    web.check_quota(context.get_area(), request.state.user, "webhooks")        # alpha.99
     body = await request.json()
     try:
         wh = config.new_webhook(

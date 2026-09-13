@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import alerts, config, context, db, mailer, state
+from .. import alerts, config, context, db, mailer, platform, state
 from ..discord_signals import listener as discord_listener
 from .. import roles, web
 from ..web import base_url, require_admin, require_role, set_session_cookie
@@ -33,7 +33,9 @@ async def api_me(request: Request) -> dict[str, Any]:
             "features": db.user_features(u["id"]),
             "support": {"area_id": support["area_id"], "email": support["email"]} if support else None,
             "totp_enabled": bool(u.get("totp_enabled")), "totp_required": bool(u.get("totp_required")),
-            "mail_blocked": mailer.address_blocked(u["email"])}
+            "mail_blocked": mailer.address_blocked(u["email"]),
+            "quotas": web.quota_usage(context.get_area(), u), "banner": platform.banner_for(u),
+            "support_grant": web.support_grant(context.get_area())}
 
 
 @router.post("/me/role-request")
@@ -132,6 +134,42 @@ async def api_set_role(request: Request, user_id: int) -> dict[str, Any]:
                   + (f" ({effects['listings']} listings unpublished, {effects['groups']} groups disabled)" if effects else ""))
     state.log_event("info", f"Role of {target['email']} set to {role} by {admin['email']}")
     return {"user_id": user_id, "role": role, "effects": effects, "expires_at": db.get_user(user_id).get("role_expires_at", "")}
+
+
+@router.put("/users/{user_id}/quota")
+async def api_set_quota(request: Request, user_id: int) -> dict[str, Any]:
+    """Admin: per-user limits (webhooks / groups / agents); null = unlimited, absent = the role's default."""
+    import json
+    admin = require_admin(request)
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected an object")
+    q: dict[str, Any] = {}
+    for k in ("webhooks", "groups", "agents"):
+        if k in body:
+            v = body[k]
+            if v in (None, "", "unlimited"):
+                q[k] = None
+            else:
+                try:
+                    q[k] = max(0, min(int(v), 10000))
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail=f"{k} must be a number or null")
+    db.meta_set(f"quota:{user_id}", json.dumps(q) if q else "")
+    db.log_action(admin["id"], admin["email"], "quota_set", target["email"], json.dumps(q) if q else "defaults")
+    return {"user_id": user_id, "quota": web.quota_for(target), "usage": web.quota_usage(db.user_primary_area(user_id) or 0, target)}
+
+
+@router.get("/users/{user_id}/quota")
+async def api_get_quota(request: Request, user_id: int) -> dict[str, Any]:
+    require_admin(request)
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    return {"user_id": user_id, "quota": web.quota_for(target), "usage": web.quota_usage(db.user_primary_area(user_id) or 0, target)}
 
 
 @router.post("/users/{user_id}/support")

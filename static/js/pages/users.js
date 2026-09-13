@@ -1,5 +1,5 @@
 /* Settings → Users (admin): invites, accounts & feature grants, password resets, audit log. */
-import { h, card, tag, toast, confirmDialog, copyText, pageHead, fmtDateTime } from "../ui.js";
+import { h, card, tag, toast, confirmDialog, copyText, pageHead, fmtDateTime, promptDialog } from "../ui.js";
 import { icon } from "../icons.js";
 import { openDrawer, closeDrawer } from "../components/drawer.js";
 import { api } from "../api.js";
@@ -14,7 +14,8 @@ const ACTION_LABEL = {
   flatten_all: t("Flatten all"), subscribe: t("Subscribed"), unsubscribe: t("Unsubscribed"),
   webhook_share: t("Marketplace publish"), subscriber_remove: t("Subscriber removed"),
   mail_config: t("Platform mailer"), backup_config: t("Backup settings"), backup_run: t("Backup run"), backup_download: t("Backup downloaded"), backup_delete: t("Backup deleted"),
-  heartbeat_config: t("Heartbeat"), incident: t("Incident"), announce: t("Announcement"),
+  heartbeat_config: t("Heartbeat"), incident: t("Incident"), announce: t("Announcement"), quota_set: t("Quota changed"), broadcast: t("Broadcast"), platform_config: t("Platform config"),
+  support_grant: t("Support access"), support_note: t("Support note"), support_write: t("Support change"), settings_restore: t("Settings restored"), update_rollback: t("Rollback"),
   login_ok: t("Signed in"), login_failed: t("Failed sign-in"), login_blocked: t("Rate limited"),
   agent_pairing_code: t("Agent pairing code"), agent_bundle: t("Agent download (preconfigured)"), agent_paired: t("Agent paired"), agent_pair_failed: t("Agent pairing failed"), agent_revoke: t("Agent revoked"),
 };
@@ -157,6 +158,16 @@ export default {
         u.id === me.id ? null : h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Open this user's workspace read-only to help with a support question. Every read shows their data; nothing can be changed; the visit is logged."), onClick: async () => {
           try { await api.post(`/api/users/${u.id}/support`); window.location.hash = "#/"; window.location.reload(); } catch (e) { toast(e.message, "error"); }
         } }, icon("user"), t("Support view")),
+        h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Limits for webhooks, copy groups and agents (empty = the role's default, 0 = unlimited)"), onClick: async () => {
+          try {
+            const q = await api.get(`/api/users/${u.id}/quota`);
+            const ask = async (label, cur) => { const v = await promptDialog({ title: label, value: cur == null ? "" : String(cur), placeholder: t("empty = default, 0 = unlimited") }); return v === null ? undefined : (v.trim() === "" ? undefined : (Number(v) === 0 ? null : Number(v))); };
+            const body = {}; const w = await ask(t("Webhooks for {email}", { email: u.email }), q.quota.webhooks); if (w !== undefined) body.webhooks = w;
+            const g = await ask(t("Copy groups for {email}", { email: u.email }), q.quota.groups); if (g !== undefined) body.groups = g;
+            const a = await ask(t("Execution agents for {email}", { email: u.email }), q.quota.agents); if (a !== undefined) body.agents = a;
+            const r = await api.put(`/api/users/${u.id}/quota`, body); toast(t("Quota: {w} webhooks · {g} groups · {a} agents", { w: r.quota.webhooks ?? "∞", g: r.quota.groups ?? "∞", a: r.quota.agents ?? "∞" }), "success"); loadAudit();
+          } catch (e) { toast(e.message, "error"); }
+        } }, icon("shield"), t("Quota")),
         u.id === me.id ? null : h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => {
           if (!(await confirmDialog({ title: t("Delete {email}?", { email: u.email }), body: t("Their area and all its data (webhooks, tokens, logs) are removed. This cannot be undone."), confirmText: t("Delete user"), danger: true }))) return;
           try { await api.del(`/api/users/${u.id}`); toast(t("User deleted"), "success"); loadUsers(); loadAudit(); } catch (e) { toast(e.message, "error"); }

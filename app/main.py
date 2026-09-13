@@ -6,6 +6,7 @@ streams) is in-process by design."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import contextlib
 import gc
 import secrets
@@ -16,7 +17,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, auth, automations, backups, broadcaster, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, readiness, releases, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
+from . import alerts, auth, automations, backups, broadcaster, canary, config, context, copy, crypto, db, drawdown, health, history, http, journal, escalation, mailer, metrics, news, pnl, push, readiness, releases, security, signals, state, telegram, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
 from .discord_signals.routes import router as discord_router
 from .routers import ROUTERS
 from . import web
@@ -26,7 +27,14 @@ _loop_tasks: list[asyncio.Task] = []
 
 
 async def _startup() -> None:
+    try:
+        restored = backups.apply_pending_restore()          # alpha.99: a rollback's database, before the first open
+    except Exception as exc:  # noqa: BLE001
+        restored = None
+        logging.getLogger(__name__).error("pending restore failed: %s", exc)
     db.init()
+    if restored:
+        state.log_event("warn", f"Database restored from snapshot {restored}")
     # Default each area's alert "Notify email" to its owner's address where unset.
     try:
         if db.backfill_alert_emails():
@@ -93,7 +101,10 @@ async def _startup() -> None:
                       asyncio.create_task(readiness.readiness_loop(), name="readiness-loop"),
                       asyncio.create_task(readiness.heartbeat_loop(), name="platform-heartbeat-loop"),
                       asyncio.create_task(alerts.digest_loop(), name="alert-digest-loop"),
-                      asyncio.create_task(broadcaster.loop(), name="broadcaster-loop")]
+                      asyncio.create_task(broadcaster.loop(), name="broadcaster-loop"),
+                      asyncio.create_task(escalation.loop(), name="escalation-loop"),
+                      asyncio.create_task(telegram.poll_loop(), name="telegram-loop"),
+                      asyncio.create_task(canary.loop(), name="canary-loop")]
     try:
         n = releases.mail_release()                 # alpha.97: release notes once per version
         if n:
@@ -112,6 +123,7 @@ async def _history_prune_loop() -> None:
             await asyncio.to_thread(db.outbox_prune)
             await asyncio.to_thread(db.prune_deliveries)
             await asyncio.to_thread(db.prune_notifications)
+            await asyncio.to_thread(db.prune_escalations)
         except Exception as exc:  # noqa: BLE001
             state.log_event("warn", f"history prune failed: {exc}")
 
@@ -263,14 +275,18 @@ class GateMiddleware:
             # the target's area for every read, nothing else
             support = web.read_support_cookie(request.cookies.get(web.SUPPORT_COOKIE), user["id"])
             if support:
-                if request.method not in ("GET", "HEAD") and path != "/api/support/exit":
-                    return JSONResponse({"detail": "Support view is read-only — leave it to make changes"}, status_code=403)
+                if request.method not in ("GET", "HEAD") and path not in ("/api/support/exit", "/api/support/note"):
+                    if not web.support_grant_active(support["area_id"]):           # alpha.99: the user may grant 24 h of write access
+                        return JSONResponse({"detail": "Support view is read-only — leave it to make changes"}, status_code=403)
+                    db.log_action(user["id"], user["email"], "support_write", support.get("email", ""), f"{request.method} {path}")
+                    support = {**support, "write": True}
                 area_id = support["area_id"]
         need = web.min_role_for(request.method, path)
         if need and not web.has_role(user, need):
             return JSONResponse({"detail": f"{web.ROLE_LABEL[need]} role required"}, status_code=403)
         scope["state"]["user"] = user
         scope["state"]["area_id"] = area_id
+        context.set_actor(str(user.get("email") or "") + (" (support)" if support else ""))
         scope["state"]["support"] = support
         return None
 

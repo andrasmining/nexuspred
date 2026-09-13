@@ -365,11 +365,48 @@ async def mail_weekly_reports(now: Optional[datetime] = None) -> int:
     return n
 
 
+async def roles_report(now: Optional[datetime] = None) -> int:
+    """alpha.99: on the 1st of the month, once: who holds which role, which
+    Broadcasters sent no signal in 30 days, open requests, support views last month."""
+    from . import alerts
+    now = now or datetime.now(timezone.utc)
+    if now.day != 1:
+        return 0
+    stamp = now.strftime("%Y-%m")
+    if db.meta_get("roles_report") == stamp:
+        return 0
+    db.meta_set("roles_report", stamp)
+    users = db.list_users()
+    by_role = {r: sum(1 for u in users if web.role_of(u) == r) for r in ("admin", "broadcaster", "user")}
+    since = track_record._iso_days_ago(30, now)
+    idle = []
+    for u in users:
+        if web.role_of(u) != "broadcaster":
+            continue
+        area = db.user_primary_area(u["id"])
+        n = sum(db.count_signal_outcomes(area, k, since) for k, _ in listing_keys(area) if not k.startswith("copy:")) if area else 0
+        if n == 0:
+            idle.append(u["email"])
+    pending = [u["email"] for u in users if u.get("role_request")]
+    trials = [f"{u['email']} until {u['role_expires_at'][:10]}" for u in users if u.get("role_expires_at")]
+    month_ago = (now - timedelta(days=31)).isoformat()
+    views = [a for a in db.list_audit(500) if a.get("action") in ("support_view", "support_write") and str(a.get("ts") or a.get("created_at") or "") >= month_ago]
+    lines = [f"Roles: {by_role['admin']} admin, {by_role['broadcaster']} broadcaster, {by_role['user']} user.",
+             f"Broadcasters without a signal in 30 days: {', '.join(idle) or 'none'}.",
+             f"Open Broadcaster requests: {', '.join(pending) or 'none'}.",
+             f"Trials: {', '.join(trials) or 'none'}.",
+             f"Support views last month: {len(views)}."]
+    await alerts.notify_admins("notice", {"title": f"Roles report {stamp}", "message": "\n".join(lines), "button": "Open Users", "url": (config.PUBLIC_URL or "") + "/#/settings/users"},
+                               inbox=("roles.report", "info", f"Roles report {stamp}", "/#/settings/users"))
+    return len(users)
+
+
 async def loop() -> None:
     while True:
         try:
             await mail_weekly_reports()
             await trial_check()
+            await roles_report()
         except Exception as exc:  # noqa: BLE001
             log.warning("broadcaster loop tick failed: %s", exc)
         await asyncio.sleep(LOOP_TICK_S)

@@ -532,6 +532,44 @@ def path_of(name: str) -> Optional[Path]:
     return p if p.exists() and any(r["name"] == name for r in _index()) else None
 
 
+RESTORE_FILE = "restore.pending"
+
+
+def schedule_restore(name: str) -> None:
+    """alpha.99: the next start copies this snapshot over the live database (the
+    live file is kept as fluxbridge.db.pre-rollback)."""
+    if not path_of(name):
+        raise ValueError("no such backup")
+    (Path(config.DATA_DIR) / RESTORE_FILE).write_text(name, encoding="utf-8")
+
+
+def apply_pending_restore() -> Optional[str]:
+    """Called before the database is opened at startup."""
+    marker = Path(config.DATA_DIR) / RESTORE_FILE
+    if not marker.exists():
+        return None
+    name = marker.read_text(encoding="utf-8").strip()
+    marker.unlink()
+    src = backup_dir() / name
+    if not src.exists():
+        log.error("pending restore: snapshot %s is gone", name)
+        return None
+    live = Path(db.DB_FILE)
+    db.disconnect()
+    if live.exists():
+        shutil.copy2(live, live.with_suffix(".db.pre-rollback"))
+    for suffix in ("-wal", "-shm"):
+        try:
+            (live.parent / (live.name + suffix)).unlink()
+        except OSError:
+            pass
+    tmp = live.with_suffix(".db.restoring")
+    shutil.copy2(src, tmp)
+    os.replace(tmp, live)                              # a new inode: a connection someone still holds never sees a half-written file
+    log.warning("database restored from %s (previous copy kept as %s)", name, live.with_suffix(".db.pre-rollback").name)
+    return name
+
+
 def _cli(argv: list[str]) -> int:
     if len(argv) == 3 and argv[0] == "decrypt":
         decrypt_file(Path(argv[1]), Path(argv[2]))

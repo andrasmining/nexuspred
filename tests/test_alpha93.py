@@ -86,7 +86,7 @@ ROUTES = [
     ("PUT", "/api/payments/config", "admin"),
     ("POST", "/api/news/", "admin"),
     ("GET", "/api/simulator", "broadcaster"),
-    ("GET", "/api/settings/export", "broadcaster"),
+    ("GET", "/api/settings/export", "user"),
     ("POST", "/api/copy/groups", "user"),
     ("GET", "/api/copy/groups/cg_x/subscribers", "broadcaster"),
     ("GET", "/api/webhooks/w1/subscribers", "broadcaster"),

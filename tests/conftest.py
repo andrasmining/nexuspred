@@ -31,6 +31,9 @@ from app import payments as payments_mod  # noqa: E402
 from app import mailer as mailer_mod  # noqa: E402
 from app import backups as backups_mod  # noqa: E402
 from app import alerts as alerts_mod  # noqa: E402
+from app import canary as canary_mod  # noqa: E402
+from app import platform as platform_mod  # noqa: E402
+from app import telegram as telegram_mod  # noqa: E402
 from app import readiness as readiness_mod  # noqa: E402
 from app import pnl as pnl_mod  # noqa: E402
 from app import drawdown as drawdown_mod  # noqa: E402
@@ -91,6 +94,9 @@ def _reset_runtime() -> None:
     backups_mod.reset()
     readiness_mod.reset()
     alerts_mod.reset_digest()
+    canary_mod.reset()
+    platform_mod.reset()
+    telegram_mod.reset()
     metrics.reset()
     events.reset()
     pnl_mod.reset()

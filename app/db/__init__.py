@@ -35,6 +35,7 @@ from .core import (  # noqa: F401
     _agent_touch_at,
     _bump_areas_generation,
     mark_uninitialized,
+    disconnect,
     set_db_file,
 )
 from .users import (
@@ -97,6 +98,10 @@ from .mail import (  # noqa: F401
 )
 from .announcements import (  # noqa: F401
     add_announcement, list_announcements, announcements_today, publisher_subscribers,
+)
+from .ops import (  # noqa: F401
+    add_escalation, get_escalation, open_escalations, list_escalations, step_escalation, ack_escalation, prune_escalations,
+    add_settings_version, last_settings_snapshot, list_settings_versions, get_settings_version,
 )
 from .notifications import (  # noqa: F401
     add_notification, list_notifications, unread_count, mark_read, prune_notifications,

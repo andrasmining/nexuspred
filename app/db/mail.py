@@ -173,7 +173,7 @@ def delivery_status(area_id: int) -> dict[str, dict[str, Any]]:
     init()
     out: dict[str, dict[str, Any]] = {}
     with _connect() as c:
-        for ch in ("push", "email", "discord"):
+        for ch in ("push", "email", "discord", "telegram"):
             rows = c.execute("SELECT ok, error, created_at, title FROM alert_deliveries WHERE area_id=? AND channel=? ORDER BY id DESC LIMIT 20",
                              (area_id, ch)).fetchall()
             last_ok = next((r["created_at"] for r in rows if r["ok"]), None)

@@ -17,6 +17,7 @@ import { sizingOf } from "../sizing.js";
 import { tradeWindowEditor } from "../components/tradeWindow.js";
 import { publisherControls, subscriberStatusTag, subscriberActions } from "../components/publisher.js";
 import { t } from "../i18n.js";
+import { quotaHint } from "../components/ops.js";
 
 
 /** The sizing rule of a routed account (older entries carry only qty_multiplier). */
@@ -308,7 +309,7 @@ export default {
     const loadSubs = () => api.get("/api/subscriptions").then((l) => subsTable.update(l)).catch(() => subsTable.update([]));
 
     root.append(
-      pageHead(t("Webhooks"), t("Each strategy gets its own secret URL, its own routed trade accounts and qty multipliers — signals never cross strategies."), [addBtn]),
+      pageHead(t("Webhooks"), t("Each strategy gets its own secret URL, its own routed trade accounts and qty multipliers — signals never cross strategies."), [quotaHint("webhooks"), addBtn]),
       card({ title: t("Strategy webhooks") }, table.el),
       card({ title: t("Subscribed signals"), actions: [h("button", { class: "btn btn-ghost btn-sm", onClick: () => navigate("/marketplace") }, icon("store"), t("Marketplace"))],
         hint: t("Signals published by other users that run on your accounts. Your own Trading switch, symbol mapping, alerts and logs apply.") }, subsTable.el),

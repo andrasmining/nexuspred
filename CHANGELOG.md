@@ -4,6 +4,39 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.99
+Package 5 of the operations roadmap: professional operations.
+- **Escalation with acknowledgement.** With *Escalate critical alerts* on, a critical alert (risk guard,
+  unprotected position, feed loss with flatten, unknown order outcome) opens an escalation: push at
+  once with an acknowledge link, e-mail after 2 minutes, Telegram and SMS (Twilio) after 5 — until
+  someone acknowledges via the link (`/ack`), the inbox or Settings → Alerts.
+- **Telegram channel.** The admin adds a bot token under Settings → Platform; a user links their chat
+  with a one-time `/start <code>` from Settings → Alerts. Own switch and severity threshold; the
+  delivery log and the alert channel health cover it like the other channels.
+- **Latency watchdog and canary.** Admins hear once when the signal latency p95 or the event-loop lag
+  exceeds the platform thresholds, and again when it recovers. A canary signal runs the whole path
+  (receipt, parsing, sizing, order, bookkeeping) in the simulator every N minutes, timed; a failing or
+  slow canary alarms the admins and shows in `/readyz`.
+- **Token expiry pre-warning.** A broker token whose refresh keeps failing is announced 30 minutes
+  before it lapses — before the connection is lost, not after.
+- **Rollback after an update.** Every one-click update first writes a snapshot and remembers the
+  revision; Settings → Updates offers *Roll back code* and *Roll back code + database* (the previous
+  file is kept as `fluxbridge.db.pre-rollback`).
+- **Settings history with undo.** The last 30 versions of a workspace's settings — who changed what,
+  when — under Settings → General, restorable with one click (the current state stays as a version).
+  Machine state (risk / drawdown counters) never creates a version.
+- **Workspace file for every role.** Settings export / import is available to Users too; a User's
+  file carries no sharing blocks.
+- **Assisted support.** A user can grant support write access for 24 hours (Settings → Account);
+  every change in the support view is then logged under the admin's name and appears in the settings
+  history as "admin (support)". Without a grant the admin can leave a note the user sees in their inbox.
+- **Quotas per role.** User 5 webhooks / 3 copy groups / 2 agents, Broadcaster 25 / 10 / 5, Admin
+  unlimited; overridable per user on the Users page; the pages show "3 of 5" before the limit bites.
+- **Monthly roles report** to the admins on the 1st: roles, Broadcasters without a signal in 30 days,
+  open requests, trials, support views.
+- **Admin broadcast.** A message to everyone or one role as inbox row, e-mail and a dismissable banner
+  for a set number of hours (Settings → Platform).
+
 ## 5.0.0-alpha.98
 Package 4 of the operations roadmap: the Broadcaster's business.
 - **Announcements to subscribers.** A Broadcaster writes to the subscribers of one listing or of all

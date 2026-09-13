@@ -2,6 +2,8 @@
 Discord listener health, for every area concurrently."""
 from __future__ import annotations
 
+from typing import Any
+
 import asyncio
 import time
 
@@ -19,6 +21,7 @@ RETRY_MAX_S = 600.0
 
 
 def reset() -> None:
+    _warned.clear()
     _next_at.clear()
     _retry_s.clear()
 
@@ -33,6 +36,7 @@ async def _refresh_session(sess, interval: int = 60) -> float:
     except Exception as exc:  # noqa: BLE001 - never let the loop die
         state.log_event("warn", f"[{sess.name}] refresh error: {exc}")
         ok = False
+        _warn_expiring(sess, str(exc))
     key = (sess.area_id, sess.name)
     if ok:
         _retry_s.pop(key, None)
@@ -41,6 +45,28 @@ async def _refresh_session(sess, interval: int = 60) -> float:
         delay = _retry_s[key] = min(RETRY_MAX_S, _retry_s.get(key, RETRY_MIN_S / 2) * 2)
     _next_at[key] = time.monotonic() + delay
     return delay
+
+
+_warned: dict[tuple[int, str], str] = {}
+TOKEN_WARN_S = 30 * 60
+
+
+def _warn_expiring(sess: Any, error: str) -> None:
+    """alpha.99: the refresh failed and the token lapses within 30 minutes → one warning per expiry."""
+    from datetime import datetime, timezone
+    from . import events
+    exp = getattr(sess, "_token_expires", None)
+    if not exp:
+        return
+    left = (exp - datetime.now(timezone.utc)).total_seconds()
+    if not 0 < left <= TOKEN_WARN_S:
+        return
+    key = (sess.area_id, sess.name)
+    stamp = exp.isoformat()
+    if _warned.get(key) == stamp:
+        return
+    _warned[key] = stamp
+    events.emit("token.expiring", account=sess.name, minutes=max(1, int(left // 60)), error=error[:160])
 
 
 async def _session_due(sess, interval: int) -> float:

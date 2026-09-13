@@ -47,7 +47,8 @@ _last_result: Optional[dict[str, Any]] = None
 
 
 def reset() -> None:
-    global _last_result
+    global _last_result, _latency_state
+    _latency_state = "ok"
     _lag_samples.clear()
     _latency.clear()
     _heartbeat_state.update({"last_at": None, "ok": None, "error": ""})
@@ -169,6 +170,13 @@ async def check() -> dict[str, Any]:
     # latency
     lw = latency_window()
     put("latency", "ok", f"p95 {lw['p95_ms']} ms over {lw['count']} signal(s)" if lw["count"] else "no signals in the last hour", **lw)
+    # canary (alpha.99)
+    from . import canary
+    cs = canary.status()
+    if cs["enabled"]:
+        last = cs["last"] or {}
+        put("canary", "down" if last and not last.get("ok") else "degraded" if last.get("slow") else "ok",
+            f"{last.get('detail')} in {last.get('ms')} ms" if last else "no run yet", **{k: v for k, v in cs.items() if k != "last"})
     order = ("ok", "degraded", "down")
     overall = max((c["status"] for c in checks.values()), key=order.index)
     _last_result = {"status": overall, "version": config.get_version(), "uptime_s": int(time.time() - STARTED_AT),
@@ -365,12 +373,40 @@ async def _daily_update_check() -> None:
                                inbox=("update.available", "info", f"Update available: {latest}", "/#/settings/updates"))
 
 
+_latency_state = "ok"
+
+
+async def _latency_watch() -> None:
+    """alpha.99: p95 signal latency or event-loop lag over the platform thresholds → admins, once per state change."""
+    global _latency_state
+    from . import alerts, platform
+    cfg = platform.get_config()
+    lw = latency_window()
+    lag = loop_lag()
+    bad = []
+    if lw["count"] >= 3 and lw["p95_ms"] is not None and lw["p95_ms"] > cfg["latency_p95_warn_ms"]:
+        bad.append(f"signal latency p95 {lw['p95_ms']} ms over {lw['count']} signals (threshold {cfg['latency_p95_warn_ms']} ms)")
+    if lag["max_ms"] > cfg["loop_lag_warn_ms"]:
+        bad.append(f"event-loop lag max {lag['max_ms']} ms (threshold {cfg['loop_lag_warn_ms']} ms)")
+    st = "slow" if bad else "ok"
+    if st == _latency_state:
+        return
+    _latency_state = st
+    if st == "slow":
+        await alerts.notify_admins("notice", {"title": "Latency over threshold", "message": "; ".join(bad), "button": "Open Platform", "url": (config.PUBLIC_URL or "") + "/#/settings/platform"},
+                                   inbox=("latency.slow", "warn", "Latency over threshold: " + bad[0], "/#/settings/platform"))
+    else:
+        await alerts.notify_admins("notice", {"title": "Latency back to normal", "message": f"p95 {lw['p95_ms']} ms, loop lag max {lag['max_ms']} ms."},
+                                   inbox=("latency.ok", "info", "Latency back to normal", "/#/settings/platform"), mail=False)
+
+
 async def readiness_loop() -> None:
     """Refresh the cached result every 30 s so the public page never triggers a check."""
     while True:
         try:
             res = await check()
             await _notify_transition(res)
+            await _latency_watch()
             await _daily_update_check()
         except Exception as exc:  # noqa: BLE001
             log.warning("readiness check failed: %s", exc)
