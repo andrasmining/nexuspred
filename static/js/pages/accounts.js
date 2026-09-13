@@ -1,6 +1,7 @@
 /* Settings → Broker Accounts: broker logins (Tradovate / Rithmic / ProjectX) + the discovered trade accounts. */
 import { h, card, tag, toast, confirmDialog, pageHead } from "../ui.js";
 import { maskAccount } from "../privacy.js";
+import { sizePill, percentChips, sizeOf } from "../components/accountSize.js";
 import { icon } from "../icons.js";
 import { passwordInput } from "../components/form.js";
 import { api } from "../api.js";
@@ -188,11 +189,13 @@ export default {
         finally { saveRisk.disabled = false; }
       } }, icon("check"), t("Save rules"));
       openDrawer({
-        title: t("Risk guard · {spec}", { spec: maskAccount(a.spec) }),
+        title: t("Risk guard · {spec}", { spec: maskAccount(a.spec) }) + (a.tier ? ` · ${a.tier.tier}` : ""),
         body: [
           lockBox,
-          h("div", { class: "field" }, h("label", null, t("Daily loss limit")), lossInp, h("div", { class: "field-hint" }, t("Account currency. Fires when today's P&L (realised + open, the broker's figures) reaches −limit. 0 = off."))),
-          h("div", { class: "field" }, h("label", null, t("Daily profit target")), profitInp, h("div", { class: "field-hint" }, t("Fires when today's P&L reaches +target — locks in the day. 0 = off."))),
+          h("div", { class: "field" }, h("label", null, t("Daily loss limit")), lossInp, percentChips(sizeOf(a.tier), (v) => { lossInp.value = String(v); }),
+            h("div", { class: "field-hint" }, t("Account currency. Fires when today's P&L (realised + open, the broker's figures) reaches −limit. 0 = off."), sizeOf(a.tier) ? [" ", t("The chips are shares of the {tier} account size.", { tier: a.tier.tier })] : null)),
+          h("div", { class: "field" }, h("label", null, t("Daily profit target")), profitInp, percentChips(sizeOf(a.tier), (v) => { profitInp.value = String(v); }, [1, 2, 4]),
+            h("div", { class: "field-hint" }, t("Fires when today's P&L reaches +target — locks in the day. 0 = off."))),
           h("div", { class: "field" }, h("label", null, t("Flatten at")), h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, timeInp, tzSel), h("div", { class: "field-hint" }, t("Everything on this account is closed at that time and the account is locked for the rest of the trading day. New York time follows the exchange through the daylight-saving weeks; the journal timezone is your own clock. Empty = off."))),
           h("p", { class: "hint" }, t("Checked on every live P&L poll (Settings → General → Live P&L refresh, at least every few seconds while a rule is set). Applies to every path that trades this account: webhooks, Discord signals, marketplace subscriptions and copy trading.")),
         ],
@@ -203,7 +206,7 @@ export default {
       empty: t("No accounts yet — add a login above, save, then Connect & Verify."),
       columns: [
         { label: t("Login"), render: (a) => a.token_name || "—" },
-        { label: t("Account"), render: (a) => h("code", null, maskAccount(a.spec) || "—") },
+        { label: t("Account"), render: (a) => h("span", null, h("code", null, maskAccount(a.spec) || "—"), " ", sizePill(a)) },
         { label: t("Env"), render: (a) => tag((a.environment || "—").toUpperCase(), a.environment === "live" ? "live" : "demo") },
         { label: t("Login enabled"), render: (a) => h("span", { class: a.token_enabled ? "pos" : "muted" }, a.token_enabled ? t("yes") : t("no")) },
         { label: t("Status"), render: (a) => h("span", { class: a.connected ? "pos" : "neg" }, a.connected ? t("Connected") : t("Not connected")) },

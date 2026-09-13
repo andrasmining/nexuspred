@@ -115,6 +115,7 @@ def webhook_record(publisher_area_id: int, webhook: dict[str, Any], *, detail: b
         trades = db.list_journal_trades(publisher_area_id, accounts=specs) if specs else []
         out = summarize_trades(trades, _zone(publisher_area_id), detail=detail)
         out.update({"basis": "accounts" if specs else "none", "accounts_n": len(specs),
+                    "size": int(webhook.get("sized_for_k") or 0) * 1000 or None,     # "sized for 50K": the figures as a share of it
                     "signals": db.signal_stats(publisher_area_id, wid),
                     "signals_30d": db.signal_stats(publisher_area_id, wid, _iso_days_ago(30)),
                     "latency": latency_summary(db.signal_latencies(publisher_area_id, wid)),
@@ -133,13 +134,25 @@ def copy_record(publisher_area_id: int, group: dict[str, Any], *, detail: bool =
         trades = db.list_journal_trades(publisher_area_id, accounts=[spec]) if spec else []
         out = summarize_trades(trades, _zone(publisher_area_id), detail=detail)
         out.update({"basis": "leader" if spec else "none", "accounts_n": 1 if spec else 0, "signals": None, "signals_30d": None, "latency": None,
+                    "size": _leader_size(publisher_area_id, int((group.get("leader") or {}).get("account_id") or 0)),
                     "computed_at": datetime.now(timezone.utc).isoformat()})
         return out
     rec = _cached("copy-detail" if detail else "copy", publisher_area_id, gid, build)
     return rec if detail else compact(rec)
 
 
-COMPACT_KEYS = ("basis", "accounts_n", "verified", "verified_share", "trades", "win_rate", "profit_factor", "net_pnl", "max_drawdown",
+def _leader_size(area_id: int, account_id: int) -> Optional[int]:
+    """The leader account's coarse size (50K …) from the P&L tick — the record's
+    figures as a share of it; never the balance itself."""
+    from . import sizing, state
+    if not account_id:
+        return None
+    bal = next((a.get("cash") for a in (state.pnl(area_id).get("accounts") or []) if int(a.get("account_id") or 0) == account_id), None)
+    tier = sizing.size_tier(bal)
+    return int(tier["size"]) if tier and tier.get("exact") else None      # a live account's drifting balance is no basis for a percentage
+
+
+COMPACT_KEYS = ("basis", "accounts_n", "size", "verified", "verified_share", "trades", "win_rate", "profit_factor", "net_pnl", "max_drawdown",
                 "net_30d", "trades_30d", "net_90d", "trading_days", "first_trade_at", "last_trade_at", "signals", "signals_30d", "latency", "computed_at")
 
 

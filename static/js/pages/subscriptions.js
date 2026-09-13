@@ -10,6 +10,7 @@ import { STRATEGY_LABEL } from "../templates.js";
 import { openSubscriptionDrawer, openCopySubscriptionDrawer, startCheckout } from "./marketplace.js";
 import { store } from "../store.js";
 import { t } from "../i18n.js";
+import { shareOf } from "../components/accountSize.js";
 
 const money = (v) => h("span", { class: `pnl ${Number(v) > 0 ? "pos" : Number(v) < 0 ? "neg" : ""}` }, fmtSigned(v, 2));
 const pct = (v) => `${Math.round((v || 0) * 100)}%`;
@@ -22,7 +23,7 @@ export function recordStrip(rec, { compact = false } = {}) {
     [t("Trades"), String(rec.trades)],
     [t("Win rate"), pct(rec.win_rate)],
     [t("Profit factor"), rec.profit_factor == null ? "∞" : String(rec.profit_factor)],
-    [t("Net"), money(rec.net_pnl)],
+    [t("Net"), rec.size ? `${money(rec.net_pnl)} (${shareOf(rec.net_pnl, rec.size)})` : money(rec.net_pnl)],
     [t("30 d"), money(rec.net_30d)],
     [t("Max DD"), money(rec.max_drawdown)],
   ];

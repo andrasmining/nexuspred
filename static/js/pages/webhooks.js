@@ -47,6 +47,9 @@ function webhookDrawer(wh, { navigate }) {
   const tpQty = h("input", { type: "number", min: 1, value: w.tp_qty ?? 1 });
   const defQtyField = h("div", { class: "field" }, h("label", null, t("Default qty")), defQty, h("div", { class: "field-hint" }, t("Fallback when the alert payload omits qty/contracts.")));
   const tpQtyField = h("div", { class: "field" }, h("label", null, t("Contracts per take-profit")), tpQty, h("div", { class: "field-hint" }, t("Bracket only: size of each TP limit order.")));
+  const sizedFor = h("input", { type: "number", min: 0, max: 10000, step: 5, value: w.sized_for_k || "", placeholder: t("e.g. 50") });
+  const sizedForField = h("div", { class: "field" }, h("label", null, t("Signal sized for (K)")), sizedFor,
+    h("div", { class: "field-hint" }, t("The account size the signal's quantities are meant for, in thousands. Routed accounts and subscribers get a sizing suggestion from it (a 100K account: ×2 for a signal sized for 50K). Empty = not stated.")));
   // --- Trading window (entries only)
   const tw = tradeWindowEditor(w.trade_window);
   const windowBlock = tw.el;
@@ -71,8 +74,9 @@ function webhookDrawer(wh, { navigate }) {
 
   // --- Accounts
   const selected = new Map((w.accounts || []).map((a) => [accountKey(a.token_idx, a.spec), a]));
-  const accTable = routedAccountsTable({ known, selected });
+  const accTable = routedAccountsTable({ known, selected, referenceSize: () => (Number(sizedFor.value) > 0 ? Number(sizedFor.value) * 1000 : null) });
   const collectAccounts = accTable.collect;
+  sizedFor.addEventListener("input", () => accTable.refresh());           // the suggestions follow the reference as it is typed
 
   // --- Alert template
   const urlCode = h("code", null, webhookUrl(w.token));
@@ -175,7 +179,7 @@ function webhookDrawer(wh, { navigate }) {
       h("div", { class: "grid grid-2", style: "margin-top:14px" },
         h("div", { class: "field" }, h("label", null, t("Name")), nameInp),
         h("div", { class: "field" }, h("label", null, t("Strategy")), stratSel),
-        defQtyField, tpQtyField),
+        defQtyField, tpQtyField, sizedForField),
       blurb, windowBlock),
     accounts: h("div", null,
       h("p", { class: "hint" }, t("Every routed account receives each signal in parallel. Sizing per account — Same: the contracts the signal carries, 1:1. Multiplier: signal × factor (rounded half up, never below 1). Fixed: always this many contracts for the entry; bracket take-profit slices scale proportionally. Max caps the result (0 = no cap).")),
@@ -232,7 +236,7 @@ function webhookDrawer(wh, { navigate }) {
     try {
       const updated = await saveWebhook(w.id, {
         name: nameInp.value.trim() || t("Untitled"), enabled: enabledSw.checked, strategy: stratSel.value,
-        default_qty: Number(defQty.value) || 1, tp_qty: Number(tpQty.value) || 1, accounts: collectAccounts(),
+        default_qty: Number(defQty.value) || 1, tp_qty: Number(tpQty.value) || 1, sized_for_k: Number(sizedFor.value) || 0, accounts: collectAccounts(),
         trade_window: collectWindow(),
       });
       w = { ...w, ...updated };

@@ -68,6 +68,7 @@ dialog.dlg::backdrop { background: rgba(0, 0, 0, .55); backdrop-filter: blur(2px
 .chip { background: var(--bg-inset); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 10px; border-radius: 999px; font-size: 12px; cursor: pointer; }
 .chip:hover { color: var(--text); border-color: var(--accent); }
 .chip.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.chip-suggest[hidden] { display: none; }
 .chip-suggest { display: inline-block; margin-top: 4px; padding: 1px 8px; font-size: 11px; font-family: var(--mono, ui-monospace, monospace); }
 .tag.tier { font-family: var(--mono, ui-monospace, monospace); font-weight: 600; padding: 1px 6px; vertical-align: middle; }
 .tag.tier.approx { font-weight: 500; color: var(--text-faint); }

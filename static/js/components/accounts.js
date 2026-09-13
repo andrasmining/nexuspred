@@ -2,6 +2,7 @@
    and the marketplace subscription drawer, and the account key both use. */
 import { h, tag } from "../ui.js";
 import { maskAccount } from "../privacy.js";
+import { sizePill, suggestionChip } from "./accountSize.js";
 import { dataTable } from "./table.js";
 import { sizingOf } from "../sizing.js";
 import { t } from "../i18n.js";
@@ -14,14 +15,17 @@ export const accountKey = (idx, spec) => `${idx}::${spec}`;
  * sizing). Returns { el, update(known), collect() } where collect() yields the
  * routed entries the API expects ({ token_idx, lid, spec, enabled, qty_multiplier, sizing }).
  */
-export function routedAccountsTable({ known, selected, compact = false }) {
+export function routedAccountsTable({ known, selected, compact = false, referenceSize = null }) {
+  const ref = () => (typeof referenceSize === "function" ? referenceSize() : referenceSize);
   const table = dataTable({
     compact,
     empty: t("No trade accounts discovered yet — add a login under Settings → Broker Accounts and Connect & Verify."),
     columns: [
       { label: t("Route"), render: (a) => h("input", { type: "checkbox", class: "switch acc-on", "aria-label": t("Route {account}", { account: maskAccount(a.spec) }), checked: !!(selected.get(accountKey(a.token_idx, a.spec)) || {}).enabled, dataset: { key: accountKey(a.token_idx, a.spec) } }) },
       { label: t("Login"), render: (a) => a.token_name || "—" },
-      { label: t("Account"), render: (a) => h("code", null, maskAccount(a.spec) || "—") },
+      { label: t("Account"), render: (a) => { const key = accountKey(a.token_idx, a.spec); const q = (cls) => table.tbody.querySelector(`.${cls}[data-key="${CSS.escape(key)}"]`);
+        return h("span", null, h("code", null, maskAccount(a.spec) || "—"), " ", sizePill(a),
+          suggestionChip(a, ref, () => ({ mode: q("acc-mode"), mult: q("acc-mult"), fixed: q("acc-fixed") }))); } },   // ref as a function: the chip re-paints when the reference changes
       { label: t("Env"), render: (a) => tag((a.environment || "—").toUpperCase(), a.environment === "live" ? "live" : "demo") },
       { label: t("Status"), render: (a) => h("span", { class: a.connected ? "pos" : "muted" }, a.connected ? t("connected") : t("offline")) },
       { label: t("Sizing"), render: (a) => { const sz = sizingOf(selected.get(accountKey(a.token_idx, a.spec))); return h("select", { class: "acc-mode input-sm sel-sizing", dataset: { key: accountKey(a.token_idx, a.spec) } },
@@ -41,5 +45,6 @@ export function routedAccountsTable({ known, selected, compact = false }) {
       fixed: Number(q("acc-fixed") && q("acc-fixed").value) || 1, max_contracts: Number(q("acc-max") && q("acc-max").value) || 0 };
     return { token_idx: a.token_idx, lid: a.lid || "", spec: a.spec, enabled: !!(on && on.checked), qty_multiplier: sizing.mode === "multiplier" ? sizing.multiplier : 1, sizing };
   }).filter((a) => a.enabled);
-  return { el: table.el, tbody: table.tbody, update: (k) => { rows = k; table.update(k); }, collect };
+  const refresh = () => table.tbody.querySelectorAll(".chip-suggest").forEach((c) => c.repaint && c.repaint());   // a new reference: chips only, edits stay
+  return { el: table.el, tbody: table.tbody, update: (k) => { rows = k; table.update(k); }, collect, refresh };
 }

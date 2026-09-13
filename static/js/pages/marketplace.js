@@ -1,7 +1,7 @@
 /* Marketplace: signals other users published; subscribe with your own accounts. */
 import { h, card, tag, toast, confirmDialog, pageHead, clear } from "../ui.js";
 import { maskAccount } from "../privacy.js";
-import { sizePill, suggestionChip, leaderSizeLine } from "../components/accountSize.js";
+import { sizePill, suggestionChip, leaderSizeLine, sizedForTier, shareOf } from "../components/accountSize.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { store } from "../store.js";
@@ -45,7 +45,7 @@ export function openSubscriptionDrawer(item, onDone) {
   const known = store.get("tradeAccounts") || [];
   const selected = new Map(((sub && sub.accounts) || []).map((a) => [accountKey(a.token_idx, a.spec), a]));
   const enabledSw = h("input", { type: "checkbox", class: "switch", checked: sub ? !!sub.enabled : true });
-  const accTable = routedAccountsTable({ known, selected });
+  const accTable = routedAccountsTable({ known, selected, referenceSize: item.sized_for_k > 0 ? item.sized_for_k * 1000 : null });
   const collect = accTable.collect;
   // --- subscriber controls (alpha.78)
   const c = { symbols: [], trade_window: null, max_qty: 0, max_signals_per_day: 0, pause_after_errors: 0, ...((sub && sub.controls) || {}) };
@@ -95,6 +95,7 @@ export function openSubscriptionDrawer(item, onDone) {
         item.description ? h("div", { style: "margin-top:6px;white-space:pre-line" }, item.description) : null),
       h("label", { class: "switch-row" }, h("span", null, t("Subscription active"), h("small", null, t("Off = signals from this publisher are ignored for your accounts. Your own Trading switch applies as well."))), enabledSw),
       h("h3", null, t("Trade on my accounts")),
+      leaderSizeLine(sizedForTier(item.sized_for_k), t("Signals sized for: ")),
       h("p", { class: "hint" }, t("Signals execute on every routed account below, in parallel, sized per account (Same 1:1, Multiplier, or Fixed contracts with an optional Max). The publisher never sees your accounts.")),
       accTable.el,
       controlsBlock,
@@ -215,8 +216,11 @@ export async function openRecordDrawer(item, isAlive = null) {
         " ", isCopy ? t("Basis: the leader account's journal.") : t("Basis: the publisher's journal on the {n} account(s) this signal routes to — it includes anything else those accounts traded.", { n: rec.accounts_n })),
       h("div", { class: "tr-grid" },
         kv(t("Trades"), String(rec.trades)), kv(t("Win rate"), pct(rec.win_rate)), kv(t("Profit factor"), rec.profit_factor == null ? "∞" : String(rec.profit_factor)),
-        kv(t("Net P&L"), money(rec.net_pnl)), kv(t("Last 30 days"), money(rec.net_30d)), kv(t("Last 90 days"), money(rec.net_90d)),
-        kv(t("Max drawdown"), money(rec.max_drawdown)), kv(t("Expectancy / trade"), money(rec.expectancy)), kv(t("Trading days"), String(rec.trading_days)),
+        kv(t("Net P&L"), rec.size ? h("span", null, money(rec.net_pnl), " ", h("small", { class: "muted", title: t("as a share of the {size} account size", { size: `${rec.size / 1000}K` }) }, shareOf(rec.net_pnl, rec.size))) : money(rec.net_pnl)),
+        kv(t("Last 30 days"), rec.size ? h("span", null, money(rec.net_30d), " ", h("small", { class: "muted" }, shareOf(rec.net_30d, rec.size))) : money(rec.net_30d)),
+        kv(t("Last 90 days"), rec.size ? h("span", null, money(rec.net_90d), " ", h("small", { class: "muted" }, shareOf(rec.net_90d, rec.size))) : money(rec.net_90d)),
+        kv(t("Max drawdown"), rec.size ? h("span", null, money(rec.max_drawdown), " ", h("small", { class: "muted" }, shareOf(rec.max_drawdown, rec.size))) : money(rec.max_drawdown)),
+        kv(t("Expectancy / trade"), money(rec.expectancy)), kv(t("Trading days"), String(rec.trading_days)),
         kv(t("Avg win / loss"), `${fmtSigned(rec.avg_win, 0)} / ${fmtSigned(rec.avg_loss, 0)}`), kv(t("Largest win / loss"), `${fmtSigned(rec.largest_win, 0)} / ${fmtSigned(rec.largest_loss, 0)}`),
         kv(t("Streaks (W / L)"), `${rec.longest_win_streak} / ${rec.longest_loss_streak}`),
         sig ? kv(t("Signals (all / 30 d)"), `${sig.executed} / ${(rec.signals_30d || {}).executed || 0}`) : null,
@@ -294,7 +298,9 @@ export default {
           grid.append(h("div", { class: "card mk-card" },
             h("div", { class: "mk-title" }, h("strong", null, it.title), isCopy ? tag(t("copy trading"), "accent") : tag(STRATEGY_LABEL[it.strategy] || it.strategy, it.strategy),
               isCopy ? tag((it.environment || "demo").toUpperCase(), it.environment === "live" ? "live" : "demo") : null,
-              it.paid ? tag(priceLabel(it), "accent") : null),
+              it.paid ? tag(priceLabel(it), "accent") : null,
+              isCopy && it.leader_tier ? h("span", { class: "tag tier", title: t("Leader account size") }, it.leader_tier) : null,
+              !isCopy && it.sized_for_k > 0 ? h("span", { class: "tag tier", title: t("The account size the signal's quantities are meant for") }, t("for {k}K", { k: it.sized_for_k })) : null),
             h("div", { class: "mk-desc" }, it.description || (isCopy ? t("Mirrors the leader's positions live{symbols}.", { symbols: (it.symbols || []).length ? ` (${it.symbols.join(", ")})` : "" }) : t("No description."))),
             h("div", { class: "mk-meta" }, icon("user"), it.publisher_email || "—", "·", icon("users"), isCopy ? t("{n} follower(s)", { n: `${it.subscriber_count}${it.max_subscribers ? `/${it.max_subscribers}` : ""}` }) : t("{n} subscriber(s)", { n: `${it.subscriber_count}${it.max_subscribers ? `/${it.max_subscribers}` : ""}` }),
               live ? ["·", live] : null,

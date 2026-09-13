@@ -4,6 +4,17 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.92
+- **Account size everywhere it helps.** The size pill (alpha.91) now also sits next to every account
+  in the Trade Accounts table, in the Overview's P&L rows and in the order ticket's account list.
+  The risk guard drawer offers one-tap chips for the daily loss limit (1 / 2 / 3 % of the account
+  size) and the profit target (1 / 2 / 4 %). A webhook can state the account size its quantities are
+  meant for ("Signal sized for 50K"): every routed account and every marketplace subscriber then gets
+  the same-risk-share suggestion (a 100K account: `≈ ×2`; "Same 1:1" switches to multiplier when
+  applied), the listing card shows `for 50K`, and the track record shows net P&L, 30 / 90-day P&L
+  and max drawdown as a share of that size. Copy listings show the leader's size the same way; a
+  live account's drifting balance is never used as a basis for a percentage.
+
 ## 5.0.0-alpha.91
 - **Account size, shown coarse.** Every trade account carries its broker balance rounded to the usual
   prop-firm sizes (`50K`, `100K`, `150K` …; a live account shows `≈12K`) as a small pill next to its

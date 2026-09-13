@@ -331,3 +331,33 @@ async def test_trade_accounts_carry_a_size_tier_and_the_listing_the_leaders(clie
     view = cp.public_view(g, 1, email="pub@example.com")
     assert view["leader_tier"] == "150K" and view["leader_size"] == 150000     # coarse, never the balance itself
     assert "balance" not in view and "150400" not in str(view)
+
+
+# ================================================================ sized-for reference (alpha.92)
+async def test_webhook_sized_for_reaches_the_listing_and_the_record(client, monkeypatch):
+    r = await client.post("/api/webhooks", json={"name": "S", "strategy": "simple", "default_qty": 2, "sized_for_k": 50})
+    wid = r.json()["id"]
+    assert r.status_code == 200 and r.json()["sized_for_k"] == 50
+    r = await client.put(f"/api/webhooks/{wid}", json={"sized_for_k": "abc"})
+    assert r.status_code == 400
+    r = await client.put(f"/api/webhooks/{wid}", json={"sized_for_k": 100})
+    assert r.json()["sized_for_k"] == 100
+    with context.use_area(1):
+        wh = next(w for w in config.load_settings()["webhooks"] if w["id"] == wid)
+        assert marketplace.public_view(wh, 1, publisher_email="p@x")["sized_for_k"] == 100
+        from app import track_record
+        rec = track_record.webhook_record(1, wh, detail=False)
+    assert rec["size"] == 100000                                       # the figures can be shown as a share of it
+
+
+async def test_copy_record_carries_the_leaders_coarse_size(admin):
+    from app import track_record
+    with context.use_area(1):
+        state.set_pnl({"accounts": [{"account_id": 11, "spec": "L", "realized": 0, "open": 0, "week": 0, "cash": 49900.0}],
+                       "realized": 0, "open": 0, "week": 0, "cash": 49900.0, "error": ""}, area_id=1)
+        g = {**cp.new_group("g"), "id": "grec", "leader": {"token_idx": 0, "spec": "L", "account_id": 11}, "followers": []}
+        assert track_record.copy_record(1, g, detail=False)["size"] == 50000
+        state.set_pnl({"accounts": [{"account_id": 11, "spec": "L", "realized": 0, "open": 0, "week": 0, "cash": 12340.0}],
+                       "realized": 0, "open": 0, "week": 0, "cash": 12340.0, "error": ""}, area_id=1)
+        g["id"] = "grec2"
+        assert track_record.copy_record(1, g, detail=False)["size"] is None      # a drifting live balance is no basis for a percentage

@@ -92,7 +92,7 @@ function groupDrawer(group, { reload, onClose = null }) {
       { label: t("Follow"), render: (a) => h("input", { type: "checkbox", class: "switch cp-on", "aria-label": t("Follow with {account}", { account: maskAccount(a.spec) }), checked: !!(selected.get(accountKey(a.token_idx, a.spec)) || {}).enabled && selected.has(accountKey(a.token_idx, a.spec)), dataset: { key: accountKey(a.token_idx, a.spec) } }) },
       { label: t("Account"), render: (a) => { const key = accountKey(a.token_idx, a.spec); return h("span", null, h("code", null, maskAccount(a.spec)), " ", sizePill(a),
         h("small", { class: "muted", style: "display:block" }, `${a.token_name} · ${(a.environment || "").toUpperCase()}`),
-        suggestionChip(a, leaderSize(), () => ({ mode: pick("cp-mode", key), mult: pick("cp-mult", key), fixed: pick("cp-fixed", key) }))); } },
+        suggestionChip(a, leaderSize, () => ({ mode: pick("cp-mode", key), mult: pick("cp-mult", key), fixed: pick("cp-fixed", key) }))); } },
       { label: t("Mode"), render: (a) => { const f = selected.get(accountKey(a.token_idx, a.spec)) || {}; return h("select", { class: "cp-mode input-sm sel-sizing", dataset: { key: accountKey(a.token_idx, a.spec) } },
         h("option", { value: "multiplier", selected: (f.mode || "multiplier") === "multiplier" }, t("Multiplier")), h("option", { value: "fixed", selected: f.mode === "fixed" }, t("Fixed"))); } },
       { label: "×", render: (a) => h("input", { type: "number", class: "cp-mult input-sm", min: 0.01, step: 0.01, style: "width:70px", value: (selected.get(accountKey(a.token_idx, a.spec)) || {}).multiplier ?? 1, dataset: { key: accountKey(a.token_idx, a.spec) } }) },

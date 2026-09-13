@@ -391,6 +391,14 @@ stays tracked so `close_all` / `full_close` reach it.
 
 ## How orders are sized
 
+Every trade account carries its **size** (the broker balance rounded to the usual prop-firm
+sizes, `50K` / `150K`) next to its name — in the routing tables, the risk guard, the
+Overview and the order ticket. A webhook can state the size its quantities are meant for
+(*Signal sized for 50K*); routed accounts and marketplace subscribers then get a one-tap
+suggestion for the same risk share (`≈ ×2` on a 100K account), and the listing's track record
+shows its figures as a share of that size. The risk guard offers the daily limits as 1 / 2 / 3 %
+chips of the account size.
+
 | Strategy | Signal `action` | Order(s) placed | Type | Qty |
 |---|---|---|---|---|
 | `simple` | `buy` / `sell` | single entry | Market (or Limit if `entry`/`price` given) | payload `qty` (or webhook default) × account multiplier |

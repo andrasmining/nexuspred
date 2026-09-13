@@ -1,6 +1,7 @@
 /* Overview: KPIs, connection health, positions, active trades, recent orders — all live. */
 import { h, tag, card, fmtTime, fmtDateTime, pageHead, debounce, clear, toast, confirmDialog, promptDialog, errText } from "../ui.js";
 import { maskAccount } from "../privacy.js";
+import { sizePill, tierOf } from "../components/accountSize.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { fmtMoney, fmtSigned } from "../charts.js";
@@ -89,7 +90,7 @@ export default {
     function paintTicketAccounts(s) {
       const list = (s && s.trade_accounts || []).filter((a) => a.token_enabled);
       const options = list.map((a) => ({ value: `${a.lid || ""}|${a.token_idx}|${a.spec}`, disabled: !a.connected || !!a.locked,
-        label: `${maskAccount(a.spec)} · ${a.environment}${a.connected ? "" : t(" · offline")}${a.locked ? t(" · locked") : ""}` }));
+        label: `${maskAccount(a.spec)}${a.tier ? ` · ${a.tier.tier}` : ""} · ${a.environment}${a.connected ? "" : t(" · offline")}${a.locked ? t(" · locked") : ""}` }));
       if (!options.length) options.push({ value: "", disabled: false, label: t("No trade account") });
       // every status frame lands here: rebuild the <select> only when values / labels changed, and keep the selection
       const key = JSON.stringify(options);
@@ -327,7 +328,7 @@ export default {
         const ch = (k) => !!was && Number(was[k]) !== Number(a[k]);
         if (hideIdle && isIdle(a)) continue;
         pnlRows.append(h("div", { class: `pnl-row${isIdle(a) ? " idle" : ""}` },
-          h("span", { class: "pnl-acct", title: a.risk && a.risk.locked ? t("Risk guard: {reason}", { reason: a.risk.reason }) : null }, maskAccount(a.spec || String(id)), a.environment === "live" ? [" ", tag(t("live"), "accent")] : null, riskTag(a) ? [" ", riskTag(a)] : null),
+          h("span", { class: "pnl-acct", title: a.risk && a.risk.locked ? t("Risk guard: {reason}", { reason: a.risk.reason }) : null }, maskAccount(a.spec || String(id)), " ", sizePill({ tier: tierOf(a.cash), balance: a.cash }), a.environment === "live" ? [" ", tag(t("live"), "accent")] : null, riskTag(a) ? [" ", riskTag(a)] : null),
           cell(t("realised"), money(a.realized), ch("realized")),
           cell(t("open"), money(a.open), ch("open")),
           cell(t("week"), money(a.week), ch("week")),

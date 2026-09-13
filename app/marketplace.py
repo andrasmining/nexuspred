@@ -246,6 +246,7 @@ def public_view(webhook: dict[str, Any], publisher_area_id: int,
         "strategy": webhook.get("strategy", "simple"),
         "default_qty": webhook.get("default_qty", 1),
         "tp_qty": webhook.get("tp_qty", 1),
+        "sized_for_k": int(webhook.get("sized_for_k") or 0),          # the account size the quantities are meant for (0 = not stated)
         "visibility": sh["visibility"],
         "publisher_email": publisher_email if publisher_email is not None else db.area_owner_email(publisher_area_id),
         "webhook_enabled": bool(webhook.get("enabled")) and not sh["paused"],

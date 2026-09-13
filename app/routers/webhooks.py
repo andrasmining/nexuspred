@@ -127,6 +127,15 @@ async def api_list_webhooks() -> list[dict[str, Any]]:
             for wh in config.load_settings().get("webhooks", [])]
 
 
+def _sized_for(raw: Any) -> int:
+    """The account size (in K) the signal's quantities are meant for: 0 = not
+    stated. Routed accounts and subscribers get a sizing suggestion from it."""
+    try:
+        return max(0, min(10000, int(raw or 0)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="sized_for_k must be a whole number of thousands") from exc
+
+
 @router.post("/api/webhooks")
 async def api_create_webhook(request: Request) -> dict[str, Any]:
     body = await request.json()
@@ -139,6 +148,7 @@ async def api_create_webhook(request: Request) -> dict[str, Any]:
         )
     except (TypeError, ValueError, AttributeError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}") from exc
+    wh["sized_for_k"] = _sized_for(body.get("sized_for_k"))
     config.update(lambda s: s.__setitem__("webhooks", [*(s.get("webhooks") or []), wh]))
     state.log_event("info", f"Webhook '{wh['name']}' created ({wh['strategy']})")
     return wh
@@ -165,6 +175,8 @@ def _apply_webhook_edit(webhooks: list[dict[str, Any]], i: int, body: dict[str, 
             wh["default_qty"] = max(1, int(body["default_qty"] or 1))
         if "tp_qty" in body:
             wh["tp_qty"] = max(1, int(body["tp_qty"] or 1))
+        if "sized_for_k" in body:
+            wh["sized_for_k"] = _sized_for(body["sized_for_k"])
         if "accounts" in body:
             wh["accounts"] = [_routed_account(a) for a in body["accounts"] if a.get("spec") and a.get("token_idx") is not None]
         if "trade_window" in body:
