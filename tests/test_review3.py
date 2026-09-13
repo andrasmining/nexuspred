@@ -103,14 +103,13 @@ async def test_switching_broker_resets_the_old_brokers_state(client, admin):
 
 
 # ------------------------------------------------------------------- copy
-def test_copy_groups_stay_within_one_broker(admin):
+def test_copy_groups_may_span_brokers(admin):
     accounts = [{"token_idx": 0, "lid": "a", "spec": "T1", "broker": "tradovate"},
                 {"token_idx": 1, "lid": "b", "spec": "R1", "broker": "rithmic"},
                 {"token_idx": 2, "lid": "c", "spec": "T2", "broker": "tradovate"}]
     g = cp.new_group("x")
     g.update({"leader": {"token_idx": 0, "lid": "a", "spec": "T1"}, "followers": [cp.normalize_follower({"token_idx": 1, "lid": "b", "spec": "R1"})]})
-    with pytest.raises(ValueError, match="stays within one broker"):
-        cp.validate_group(g, [], accounts)
+    cp.validate_group(g, [], accounts)                                   # alpha.88: a Rithmic follower on a Tradovate leader
     g["followers"] = [cp.normalize_follower({"token_idx": 2, "lid": "c", "spec": "T2"})]
     cp.validate_group(g, [], accounts)
 

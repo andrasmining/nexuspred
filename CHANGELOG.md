@@ -4,6 +4,15 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.88
+- **Copy trading across brokers**: a leader on Tradovate, ProjectX or Rithmic may have followers
+  on any of the three, in one group and on the marketplace. The mirror keys every contract by
+  the leader's id and translates it by name per follower login (`MNQZ6` is `MNQZ6` at every
+  broker; ProjectX's root aliases stay the adapter's business), cached for an hour; a contract
+  the follower's broker cannot resolve counts as unreadable, never as flat. Orders were already
+  placed by name. The "one broker per group" rule and the subscriber-side broker check are gone;
+  webhooks were broker-independent all along (one executor per routed account).
+
 ## 5.0.0-alpha.87
 - **Rithmic greyed out** in the broker selection ("Rithmic (coming soon…)") until the conformance
   review with Rithmic is complete. An existing Rithmic login stays editable and removable; the

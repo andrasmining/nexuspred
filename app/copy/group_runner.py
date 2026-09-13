@@ -97,7 +97,11 @@ class GroupRunner:
         self.unit: dict[int, int] = {}                # contract_id → leader size at open
         self.baseline: set[int] = set()               # contracts ignored until the leader is flat
         self.contract_names: dict[int, str] = {}
-        self.follower_pos: dict[tuple[str, int], int] = {}   # (spec, contract_id) → net
+        self.follower_pos: dict[tuple[str, int], int] = {}   # (spec, contract_id) → net — contract ids are the LEADER's throughout
+        # a follower on another broker has its own contract ids: translated by name
+        # once per login and contract (see _follower_cid), never guessed
+        self._fcid: dict[tuple[str, int], tuple[int, float]] = {}    # (follower login key, leader cid) → (follower cid, when)
+        self._lcid: dict[tuple[str, int], int] = {}                  # (follower login key, follower cid) → leader cid
         self.follower_err: dict[str, str] = {}
         self.locks: dict[str, asyncio.Lock] = {}
         self._leader_seeded = False
@@ -169,6 +173,55 @@ class GroupRunner:
         if f.get("lid") and hasattr(mgr, "session_for"):
             return mgr.executor_for(int(f["token_idx"]), str(f["spec"]), 1, lid=f["lid"])
         return mgr.executor_for(int(f["token_idx"]), str(f["spec"]), 1)
+
+    # ---- contract ids across brokers
+    def _leader_kind(self) -> str:
+        s = self._leader_session()
+        return str(getattr(s, "kind", "tradovate") or "tradovate") if s is not None else "tradovate"
+
+    @staticmethod
+    def _login_key(session: Any) -> str:
+        return f"{getattr(session, 'kind', 'tradovate') or 'tradovate'}:{getattr(session, 'lid', '') or getattr(session, 'name', '') or id(session)}"
+
+    async def _follower_cid(self, session: Any, cid: int) -> Optional[int]:
+        """The follower login's own id for the leader's contract ``cid``. Same
+        broker as the leader: the same id. Another broker: resolved by the
+        contract's name through the follower's adapter (``MNQZ6`` is ``MNQZ6``
+        at every broker; ProjectX's aliases are the adapter's business), cached
+        per login for an hour. ``None`` when it cannot be resolved — the caller
+        treats the position as unreadable, never as flat."""
+        kind = str(getattr(session, "kind", "tradovate") or "tradovate")
+        if kind == self._leader_kind():
+            return cid
+        key = (self._login_key(session), cid)
+        hit = self._fcid.get(key)
+        if hit and time.monotonic() - hit[1] < 3600:
+            return hit[0]
+        name = self.contract_names.get(cid)
+        if not name or name == str(cid):
+            return None
+        try:
+            fid = int(await session.contract_id(name))
+        except Exception as exc:  # noqa: BLE001
+            self.error = f"{name} on {getattr(session, 'name', '?')}: {exc}"[:200]
+            return None
+        if not fid:
+            return None
+        self._fcid[key] = (fid, time.monotonic())
+        self._lcid[(self._login_key(session), fid)] = cid
+        return fid
+
+    async def _to_leader_cids(self, session: Any) -> Any:
+        """A mapper follower-contract-id → leader-contract-id for one follower
+        login (identity on the leader's broker). Rows of contracts the leader
+        never held map to ``None`` and are ignored — an id from another
+        broker's id space must never be mistaken for one of ours."""
+        if str(getattr(session, "kind", "tradovate") or "tradovate") == self._leader_kind():
+            return lambda fid: fid
+        for cid in list(self.contract_names):
+            await self._follower_cid(session, cid)
+        lk = self._login_key(session)
+        return lambda fid: self._lcid.get((lk, fid))
 
     def _wanted(self, contract_id: int) -> bool:
         roots = [str(r).upper() for r in (self.group.get("symbols") or [])]
@@ -295,12 +348,14 @@ class GroupRunner:
                 continue
             if not isinstance(raw, list):
                 continue
+            to_leader = await self._to_leader_cids(s)
             for key in [k for k in self.follower_pos if k[0] in ids.values()]:
                 self.follower_pos.pop(key, None)              # rebuild this login's picture from the broker
             for p in raw:
                 spec = ids.get(int(p.get("accountId") or 0))
-                if spec and int(p.get("netPos") or 0):
-                    self.follower_pos[(spec, int(p.get("contractId") or 0))] = int(p.get("netPos") or 0)
+                cid = to_leader(int(p.get("contractId") or 0))
+                if spec and cid is not None and int(p.get("netPos") or 0):
+                    self.follower_pos[(spec, cid)] = int(p.get("netPos") or 0)
         self._followers_seeded_at = time.monotonic()
         try:
             await self.orders.load()
@@ -786,8 +841,11 @@ class GroupRunner:
             return None
         if not isinstance(raw, list):
             return None
+        fid = await self._follower_cid(ex.session, cid)
+        if fid is None:
+            return None                                  # the contract is unknown at this broker: not "flat"
         for p in raw:
-            if int(p.get("accountId") or 0) == int(ex.id or 0) and int(p.get("contractId") or 0) == cid:
+            if int(p.get("accountId") or 0) == int(ex.id or 0) and int(p.get("contractId") or 0) == fid:
                 return int(p.get("netPos") or 0)
         return 0
 
@@ -833,11 +891,13 @@ class GroupRunner:
                 continue
             if not isinstance(raw, list):
                 continue
+            to_leader = await self._to_leader_cids(s)
             actual: dict[tuple[str, int], int] = {}
             for p in raw:
                 f = ids.get(int(p.get("accountId") or 0))
-                if f:
-                    actual[(f["spec"], int(p.get("contractId") or 0))] = int(p.get("netPos") or 0)
+                cid = to_leader(int(p.get("contractId") or 0))
+                if f and cid is not None:
+                    actual[(f["spec"], cid)] = int(p.get("netPos") or 0)
             read_at = time.monotonic()
             for f in fs:
                 spec = f["spec"]

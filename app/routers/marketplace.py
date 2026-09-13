@@ -142,7 +142,7 @@ async def api_subscribe_copy(request: Request, publisher_area_id: int, group_id:
         raise HTTPException(status_code=403, detail="That copy group isn't available to your account")
     body = await request.json()
     try:
-        accounts = copy.clean_subscriber_accounts(body.get("accounts"), area, broker_kind=copy.leader_broker(publisher_area_id, group_id))
+        accounts = copy.clean_subscriber_accounts(body.get("accounts"), area)
     except (TypeError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     enabled = bool(body.get("enabled", True))
@@ -199,9 +199,7 @@ async def api_update_subscription(request: Request, sub_id: int) -> dict[str, An
     if "accounts" in body:
         if _is_copy(current):
             try:
-                kwargs["accounts"] = copy.clean_subscriber_accounts(
-                    body["accounts"], context.get_area(), exclude_sub_id=sub_id,
-                    broker_kind=copy.leader_broker(current["publisher_area_id"], current["webhook_id"][5:]))
+                kwargs["accounts"] = copy.clean_subscriber_accounts(body["accounts"], context.get_area(), exclude_sub_id=sub_id)
             except (TypeError, ValueError, KeyError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:

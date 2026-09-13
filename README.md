@@ -864,7 +864,9 @@ Bridge-placed orders that the guard refuses show up as rejected in the order log
 **Routing → Copy Trading** mirrors the *positions* of one **leader** trade account onto
 any number of **follower** accounts — your own or third-party accounts whose login you
 hold. It works on the broker's position, not on signals, so it also copies trades the
-leader places by hand in the Tradovate UI, stop / target fills and manual closes.
+leader places by hand in the Tradovate UI, stop / target fills and manual closes. Leader and
+followers may be on different brokers (Tradovate, ProjectX, Rithmic in any combination):
+contracts are matched by name, each follower's adapter resolves it at its own broker.
 
 - **Group** = leader account + optional symbol filter (roots picked from Settings → Symbol
   Mapping, e.g. `MNQ, ES`, or typed by hand) +

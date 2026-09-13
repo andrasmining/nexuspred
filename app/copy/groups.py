@@ -69,7 +69,6 @@ def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts
         idx = int(entry["token_idx"])
         return (str(entry.get("lid") or idx_to_lid.get(idx) or idx), str(entry["spec"]))
     known = {key(a) for a in accounts}
-    brokers = {key(a): str(a.get("broker") or "tradovate") for a in accounts}
     lead = key(g["leader"])
     if lead not in known:
         raise ValueError("Leader account is not a discovered trade account")
@@ -80,9 +79,8 @@ def validate_group(g: dict[str, Any], all_groups: list[dict[str, Any]], accounts
         k = key(f)
         if k not in known:
             raise ValueError(f"Follower {f['spec']} is not a discovered trade account")
-        if brokers.get(k) != brokers.get(lead):
-            # positions are matched by the broker's contract ids, which differ between brokers
-            raise ValueError(f"Follower {f['spec']} is on {brokers.get(k)} but the leader is on {brokers.get(lead)} — a copy group stays within one broker")
+        # a follower may be on another broker than the leader: the mirror keys contracts by
+        # the leader's ids and translates them by name per follower login (GroupRunner._follower_cid)
         if k == lead:
             raise ValueError("The leader cannot be its own follower")
         if k in seen:
@@ -228,9 +226,10 @@ def leader_broker(publisher_area_id: int, group_id: str) -> str:
 def clean_subscriber_accounts(raw: Any, area_id: int, *, exclude_sub_id: Optional[int] = None,
                               broker_kind: Optional[str] = None) -> list[dict[str, Any]]:
     """A subscriber's follower accounts (their own logins, resolved by login id),
-    validated: discovered accounts only, on the leader's broker (``broker_kind``)
-    when given, no account that already follows a leader through an own group or
-    another subscription. Raises ValueError."""
+    validated: discovered accounts only, no account that already follows a
+    leader through an own group or another subscription. Any broker may follow
+    any leader (``broker_kind`` is accepted for compatibility and ignored).
+    Raises ValueError."""
     from ..routers.accounts import trade_accounts_overview
     with context.use_area(area_id):
         known = trade_accounts_overview()
@@ -245,8 +244,6 @@ def clean_subscriber_accounts(raw: Any, area_id: int, *, exclude_sub_id: Optiona
         acct = by_key.get((lid, str(a["spec"]))) if lid else by_spec.get(str(a["spec"]))
         if acct is None:
             raise ValueError(f"{a['spec']} is not one of your discovered trade accounts")
-        if broker_kind and str(acct.get("broker") or "tradovate") != broker_kind:
-            raise ValueError(f"{a['spec']} is on {acct.get('broker') or 'tradovate'}; this leader trades on {broker_kind} — copy trading stays within one broker")
         f = normalize_follower({**a, "token_idx": acct["token_idx"], "lid": acct.get("lid") or "", "account_id": acct.get("id") or 0})
         if f["spec"] in seen:
             raise ValueError(f"{f['spec']} is listed twice")
