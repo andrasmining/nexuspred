@@ -10,6 +10,10 @@ from typing import Any
 LANGS = ("en", "de")
 
 DE = {
+    'Unsubscribed': 'Abgemeldet',
+    'Link not valid': 'Link ungültig',
+    'You will no longer receive these messages. Change it any time under Settings → Account.': 'Du erhältst diese Nachrichten nicht mehr. Ändere das jederzeit unter Einstellungen → Konto.',
+    'This unsubscribe link is not valid any more. Sign in and change your mail preferences under Settings → Account.': 'Dieser Abmelde-Link ist nicht mehr gültig. Melde dich an und ändere deine Mail-Einstellungen unter Einstellungen → Konto.',
     'Status': 'Status',
     'System status': 'Systemstatus',
     'Whether the bridge is up, which brokers it can reach and how fast signals are executed. No account data is shown here.': 'Ob die Bridge läuft, welche Broker sie erreicht und wie schnell Signale ausgeführt werden. Kontodaten werden hier nicht angezeigt.',

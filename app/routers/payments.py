@@ -132,12 +132,36 @@ async def api_portal(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+_last_problem_at = 0.0
+
+
+async def _webhook_problem(message: str) -> None:
+    """alpha.97: the admins hear about a rejected or failing Stripe webhook (at most once an hour)."""
+    global _last_problem_at
+    import time
+    from .. import alerts
+    if time.time() - _last_problem_at < 3600:
+        return
+    _last_problem_at = time.time()
+    try:
+        await alerts.notify_admins("notice", {"title": "Stripe webhook problem", "message": message, "button": "Open Payments", "url": _base_url_static() + "/#/settings/payments"},
+                                   inbox=("payments.webhook", "warn", "Stripe webhook problem", "/#/settings/payments"))
+    except Exception as exc:  # noqa: BLE001
+        payments.log.warning("stripe problem notice failed: %s", exc)
+
+
+def _base_url_static() -> str:
+    from .. import config
+    return config.PUBLIC_URL or ""
+
+
 @router.post("/webhook")
 async def api_webhook(request: Request) -> PlainTextResponse:
     """Stripe → bridge. Unauthenticated path; the signature is the credential."""
     cfg = payments.get_config()
     raw = await request.body()
     if not payments.verify_signature(raw, request.headers.get("stripe-signature", ""), cfg["stripe_webhook_secret"]):
+        await _webhook_problem("Stripe webhook rejected: bad signature — check the signing secret under Settings → Payments")
         return PlainTextResponse("bad signature\n", status_code=400)
     try:
         event = json.loads(raw)
@@ -147,8 +171,9 @@ async def api_webhook(request: Request) -> PlainTextResponse:
         return PlainTextResponse("bad event\n", status_code=400)
     try:
         done = await payments.handle_event(event)
-    except Exception:  # noqa: BLE001 - Stripe retries on 5xx; the cause stays in the log
+    except Exception as exc:  # noqa: BLE001 - Stripe retries on 5xx; the cause stays in the log
         payments.log.exception("stripe event %s failed", event.get("type"))
+        await _webhook_problem(f"Stripe event {event.get('type')} failed: {exc}"[:200])
         return PlainTextResponse("error\n", status_code=500)
     payments.log.info("stripe %s: %s", event.get("type"), done)
     return PlainTextResponse("ok\n")

@@ -4,6 +4,32 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.97
+Package 3 of the operations roadmap: everyone sees what concerns them.
+- **Notification inbox.** Every alert is a row per workspace — read or unread, with its severity and a
+  deep link — behind the bell in the top bar, whatever the channels say. Admins also see platform
+  events there: Broadcaster requests, backup alarms, health changes, an available update, Stripe
+  webhook problems. `GET /api/notifications[/count]`, `POST /api/notifications/read`.
+- **Severities, quiet hours, digest.** Every alert carries a severity (info / warning / critical).
+  Settings → Alerts sets per channel the least severe alert that may reach it, quiet hours in the
+  workspace's timezone (critical always gets through) and a trade digest: signal executed / position
+  opened / added / closed bundled into one message every N minutes.
+- **Role-specific alerts.** Broadcasters: a subscriber joined or left, a payment failed, a subscriber
+  was paused after consecutive errors (new switch *Marketplace subscribers*). Users: a sign-in from a
+  new address, a two-factor reset by an admin. Admins: health degraded / recovered (once per change),
+  update available (once per version), Stripe webhook rejected (hourly at most).
+- **Ready to trade.** The Overview opens with "Ready to trade: 5 of 7" — broker login, trade accounts,
+  trading switch, risk guard, symbol mapping, alert channel, external watchdog, two-factor; Broadcasters
+  add listing, subscribers and sizing hint; Admins add backup, platform mailer and disk — each with a
+  Fix link. `GET /api/workspace/readiness`.
+- **Getting started.** A checklist per role on the Overview until every step is done or it is hidden.
+- **What's new.** After an update the release notes open once per user, filtered for the role.
+  `GET /api/whatsnew`, `POST /api/whatsnew/seen`.
+- **Release mail and mail preferences.** After a deploy the same notes go out once to everyone who
+  keeps *product updates* on (platform mailer). Settings → Account: product updates, weekly report,
+  marketplace news, broadcaster announcements — with a signed one-click unsubscribe link in every
+  non-transactional mail (`/unsubscribe`). `GET/PUT /api/me/mail-prefs`.
+
 ## 5.0.0-alpha.96
 Package 2 of the operations roadmap: trust.
 - **Automatic verified backups.** Once a day at the quiet hour (default 21:15 UTC) a consistent

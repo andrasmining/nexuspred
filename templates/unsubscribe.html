@@ -1,0 +1,5 @@
+{% extends "auth_base.html" %}
+{% block title %}{{ t("Unsubscribed") }} · Fluxbridge{% endblock %}
+{% block heading %}{% if ok %}{{ t("Unsubscribed") }}{% else %}{{ t("Link not valid") }}{% endif %}{% endblock %}
+{% block subheading %}{% if ok %}{{ t("You will no longer receive these messages. Change it any time under Settings → Account.") }}{% else %}{{ t("This unsubscribe link is not valid any more. Sign in and change your mail preferences under Settings → Account.") }}{% endif %}{% endblock %}
+{% block content %}<p class="auth-note"><a href="/">Fluxbridge</a></p>{% endblock %}

@@ -84,6 +84,7 @@ export function connectStream() {
       }
       case "discord": prepend("discordFeed", d); break;
       case "pnl": store.set("pnl", d); break;
+      case "notification": store.set("notifPing", { ...d, at: Date.now() }); break;
       default: break;
     }
   };

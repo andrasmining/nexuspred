@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import context, copy, db, marketplace, payments, state, track_record
+from .. import alerts, context, copy, db, marketplace, payments, state, track_record
 
 router = APIRouter(prefix="/api", tags=["marketplace"])
 
@@ -152,6 +152,7 @@ async def api_subscribe_copy(request: Request, publisher_area_id: int, group_id:
     db.log_action(user["id"], user["email"], "subscribe", title, f"copy · {len([a for a in accounts if a.get('enabled')])} account(s), {'on' if enabled else 'off'}")
     state.log_event("info", f"Following copy group '{title}' on {len(accounts)} account(s)")
     await copy.sync_area(publisher_area_id)
+    await alerts.publisher_event(publisher_area_id, "subscriber.joined", f"New follower: {title}", f"{user['email']} follows '{title}' on {len(accounts)} account(s)", url="/#/copy")
     return _enrich(sub)
 
 
@@ -179,6 +180,7 @@ async def api_subscribe(request: Request, publisher_area_id: int, webhook_id: st
     db.log_action(user["id"], user["email"], "subscribe", title,
                   f"{len([a for a in accounts if a.get('enabled')])} account(s), {'on' if enabled else 'off'}")
     state.log_event("info", f"Subscribed to '{title}' on {len(accounts)} account(s)")
+    await alerts.publisher_event(publisher_area_id, "subscriber.joined", f"New subscriber: {title}", f"{user['email']} subscribed to '{title}' on {len(accounts)} account(s)", url="/#/webhooks")
     return _enrich(sub)
 
 
@@ -244,9 +246,11 @@ async def api_unsubscribe(request: Request, sub_id: int) -> dict[str, Any]:
         state.log_event("info", f"Stopped following copy group '{title}' — your positions are not touched"
                         + (f" ({cancelled} mirrored working order(s) cancelled)" if cancelled else ""))
         await copy.sync_area(sub["publisher_area_id"])
+        await alerts.publisher_event(sub["publisher_area_id"], "subscriber.left", f"Follower left: {title}", f"{user['email']} stopped following '{title}'", url="/#/copy")
         return {"status": "deleted", "id": sub_id}
     wh, sh = marketplace.find_published(sub["publisher_area_id"], sub["webhook_id"])
     title = (sh.get("title") or (wh or {}).get("name") or sub["webhook_id"]) if wh else sub["webhook_id"]
     db.log_action(user["id"], user["email"], "unsubscribe", title)
     state.log_event("info", f"Unsubscribed from '{title}'")
+    await alerts.publisher_event(sub["publisher_area_id"], "subscriber.left", f"Subscriber left: {title}", f"{user['email']} unsubscribed from '{title}'", url="/#/webhooks")
     return {"status": "deleted", "id": sub_id}

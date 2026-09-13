@@ -115,3 +115,5 @@ dialog.dlg::backdrop { background: rgba(0, 0, 0, .55); backdrop-filter: blur(2px
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 13px; }
 .kv dt { color: var(--text-dim); }
 .kv dd { margin: 0; word-break: break-word; }
+
+.whatsnew { padding-left: 18px; font-size: 14px; line-height: 1.5; } .whatsnew li { margin-bottom: 10px; }

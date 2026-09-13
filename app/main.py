@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, automations, backups, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, readiness, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
+from . import alerts, auth, automations, backups, config, context, copy, crypto, db, drawdown, health, history, http, journal, mailer, metrics, news, pnl, push, readiness, releases, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
 from .discord_signals.routes import router as discord_router
 from .routers import ROUTERS
 from . import web
@@ -91,7 +91,14 @@ async def _startup() -> None:
                       asyncio.create_task(backups.backup_loop(), name="backup-loop"),
                       asyncio.create_task(readiness.lag_loop(), name="loop-lag-sampler"),
                       asyncio.create_task(readiness.readiness_loop(), name="readiness-loop"),
-                      asyncio.create_task(readiness.heartbeat_loop(), name="platform-heartbeat-loop")]
+                      asyncio.create_task(readiness.heartbeat_loop(), name="platform-heartbeat-loop"),
+                      asyncio.create_task(alerts.digest_loop(), name="alert-digest-loop")]
+    try:
+        n = releases.mail_release()                 # alpha.97: release notes once per version
+        if n:
+            state.log_event("info", f"Release notes for {config.get_version()} queued for {n} user(s)")
+    except Exception as exc:  # noqa: BLE001
+        state.log_event("warn", f"release mail failed: {exc}")
     health.start_discord_listeners()     # the health loop keeps them alive from here on
 
 
@@ -103,6 +110,7 @@ async def _history_prune_loop() -> None:
             await asyncio.to_thread(db.prune_copy_events)
             await asyncio.to_thread(db.outbox_prune)
             await asyncio.to_thread(db.prune_deliveries)
+            await asyncio.to_thread(db.prune_notifications)
         except Exception as exc:  # noqa: BLE001
             state.log_event("warn", f"history prune failed: {exc}")
 

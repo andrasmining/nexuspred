@@ -615,6 +615,20 @@ the last hour and admin-posted incidents (Settings → Platform). `GET /api/publ
 **Platform heartbeat** (Settings → Platform): an outbound ping to healthchecks.io / Uptime Kuma
 every N seconds carrying the deep-health result — the monitor reports when the bridge itself is gone.
 
+## Notifications, severities and readiness
+
+- **Inbox (bell):** every alert lands as a row per workspace with severity and deep link, read or
+  unread, independent of the channels. Admins also see platform events there.
+- **Severity per channel, quiet hours, digest** (Settings → Alerts): info / warning / critical;
+  critical always gets through; quiet hours follow the journal timezone; trade alerts can be bundled.
+- **Role-specific alerts:** Broadcasters hear about subscribers, failed payments and paused fan-out;
+  users about new sign-in addresses and two-factor resets; admins about health changes, updates and
+  Stripe webhook problems.
+- **Ready to trade** and **Getting started** on the Overview: what is missing before the workspace can
+  run safely, with a Fix link per item; a first-days checklist per role.
+- **What's new** after each update, **release mail** to everyone who wants it, and per-user **mail
+  preferences** with one-click unsubscribe (Settings → Account).
+
 ## Alerts
 
 **Settings → Alerts** — three channels, each with its own on/off switch:

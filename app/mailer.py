@@ -245,6 +245,12 @@ TEMPLATES: dict[str, dict[str, dict[str, Any]]] = {
                         "Sicher aufbewahren. Entschlüsseln auf einem Host mit demselben NEXUSPRED_ENCRYPTION_KEY / SESSION_SECRET: python -m app.backups decrypt FILE.db.enc FILE.db"],
                "button": "Backups öffnen", "foot": "Du erhältst diese Nachricht, weil du Administrator bist und externe Sicherungen per E-Mail eingestellt sind."},
     },
+    "release": {
+        "en": {"subject": "Fluxbridge {version}: what's new", "title": "What's new in {version}",
+               "body": ["{notes}"], "button": "Open Fluxbridge", "foot": "You receive this because product updates are on in your mail preferences."},
+        "de": {"subject": "Fluxbridge {version}: was ist neu", "title": "Neu in {version}",
+               "body": ["{notes}"], "button": "Fluxbridge öffnen", "foot": "Du erhältst diese Nachricht, weil Produkt-Updates in deinen Mail-Einstellungen eingeschaltet sind."},
+    },
     "notice": {
         "en": {"subject": "Fluxbridge: {title}", "title": "{title}", "body": ["{message}"], "button": "{button}", "foot": ""},
         "de": {"subject": "Fluxbridge: {title}", "title": "{title}", "body": ["{message}"], "button": "{button}", "foot": ""},

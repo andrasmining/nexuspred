@@ -43,6 +43,19 @@ function paintSidebar() {
 /* ------------------------------------------------------------- support view */
 let supportBanner = null;
 let mailBanner = null;
+/* alpha.97: the release notes once per version, after the shell is up */
+async function showWhatsNew() {
+  try {
+    const r = await api.get("/api/whatsnew");
+    if (r.seen) return;
+    if (r.first_login || !r.bullets.length) { await api.post("/api/whatsnew/seen", {}); return; }
+    const { openDrawer, closeDrawer } = await import("./components/drawer.js");
+    openDrawer({ title: t("What's new in {version}", { version: r.version }),
+      body: h("div", null, h("ul", { class: "whatsnew" }, r.bullets.map((b) => h("li", null, b.replace(/\*\*|`/g, "")))), h("p", { class: "hint" }, t("The full changelog is on GitHub."))),
+      foot: h("button", { type: "button", class: "btn btn-primary", onClick: async () => { closeDrawer(); try { await api.post("/api/whatsnew/seen", {}); } catch (e) { /* shown again next time */ } } }, t("Got it")),
+      width: "560px" });
+  } catch (e) { /* not essential */ }
+}
 function paintMailBanner() {
   const me = store.get("me");
   if (mailBanner) { mailBanner.remove(); mailBanner = null; }
@@ -122,6 +135,7 @@ async function boot() {
   await Promise.all([actions.loadSettings().catch(() => null), actions.refreshStatus(), actions.loadWebhooks(), actions.loadTradeAccounts()]);
   window.addEventListener("hashchange", render);
   render();
+  showWhatsNew();                       // after the first page paint: a route render closes open drawers
 
   connectStream();
   registerWorker();  // push notifications (no-op where unsupported); never caches pages

@@ -405,9 +405,19 @@ export const alerts = {
           { name: "alert_on_discord_lost", type: "switch", label: t("Discord listener went offline"), hint: t("Discord + email") },
           { name: "alert_on_discord_restored", type: "switch", label: t("Discord listener came back online"), hint: t("Discord + email") },
           { name: "alert_on_rollover", type: "switch", label: t("Contract rollover due"), hint: t("A dated contract in the symbol map is near or past its roll date — Discord + email + push, once per contract") },
+          { name: "alert_on_subscribers", type: "switch", label: t("Marketplace subscribers"), hint: t("Broadcasters: a subscriber joined or left, a payment failed, a subscriber was paused after errors — Discord + push (email for problems)") },
           { name: "rollover_warn_days", type: "number", label: t("Rollover warning lead time (days)"), min: 0, max: 60, placeholder: "10", width: "200px", hint: t("Warn this many days before the estimated expiry / first-notice date.") },
           { name: "discord_health_grace", type: "number", label: t("Discord health grace period (seconds)"), min: 15, step: 5, placeholder: "90", width: "200px", hint: t("How long the listener may be down before an outage alert fires (avoids alerting on transient reconnects).") },
         ], after: h("div", { class: "form-actions", style: "margin-top:12px" }, testBtn, testHint) },
+        { title: t("Severity, quiet hours, digest"), hint: t("Every alert has a severity: info (trades, restores, summaries), warning (lost connections, failed signals, paused subscriptions), critical (risk guard, unprotected position, feed loss). Pick per channel the least severe alert that may reach it; critical always gets through, quiet hours included. Everything still lands in the notification inbox (bell)."), fields: [
+          { name: "alert_min_severity_push", type: "select", label: t("Push: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_min_severity_email", type: "select", label: t("Email: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_min_severity_discord", type: "select", label: t("Discord: at least"), options: [{ value: "info", label: t("info") }, { value: "warn", label: t("warning") }, { value: "critical", label: t("critical") }] },
+          { name: "alert_quiet_from", type: "time", label: t("Quiet hours from"), hint: t("Local time (journal timezone). Empty = no quiet hours. The window may cross midnight."), width: "160px" },
+          { name: "alert_quiet_to", type: "time", label: t("Quiet hours until"), width: "160px" },
+          { name: "alert_digest_trades", type: "switch", label: t("Bundle trade alerts"), hint: t("Signal executed / position opened / added / closed are collected and sent as one message every N minutes instead of one each.") },
+          { name: "alert_digest_minutes", type: "number", label: t("Digest every (minutes)"), min: 1, max: 240, step: 1, placeholder: "15", width: "160px" },
+        ] },
         { title: t("External watchdog"), hint: t("The bridge pings a URL you monitor elsewhere (healthchecks.io, Uptime Kuma push monitor, cronitor …). That service alerts you when the pings stop — the one failure the bridge cannot report itself: process gone, host asleep, network down."), fields: [
           { name: "heartbeat_url", type: "text", label: t("Heartbeat URL"), placeholder: "https://hc-ping.com/…", hint: t("Empty = off. Called with a plain GET; anything below HTTP 400 counts as delivered.") },
           { name: "heartbeat_interval", type: "number", label: t("Ping interval (seconds)"), min: 30, max: 3600, step: 10, placeholder: "60", width: "200px", hint: t("30–3600 s. Set the monitor's grace period to about twice this.") },
@@ -596,10 +606,24 @@ export const account = {
       mfaBody.append(actions);
     }
     paintMfa();
+    const prefsBody = h("div", null, h("span", { class: "muted" }, t("Loading…")));
+    api.get("/api/me/mail-prefs").then((p) => {
+      clear(prefsBody);
+      const row = (key, label, small) => { const sw = h("input", { type: "checkbox", class: "switch", checked: !!p[key], onChange: async (e) => {
+        try { await api.put("/api/me/mail-prefs", { [key]: e.target.checked }); toast(t("Mail preferences saved"), "success"); } catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
+      } }); return h("label", { class: "switch-row" }, h("span", null, label, h("small", null, small)), sw); };
+      prefsBody.append(
+        row("updates", t("Product updates"), t("What changed after each release.")),
+        row("weekly", t("Weekly report"), t("Your P&L, hit rate and risks every Monday.")),
+        row("marketplace", t("Marketplace news"), t("New listings you can subscribe to.")),
+        row("announcements", t("Broadcaster announcements"), t("Messages from the publishers you subscribe to.")),
+        h("p", { class: "hint" }, t("Invites, password resets and security notices are always sent.")));
+    }).catch((e) => { clear(prefsBody); prefsBody.append(h("span", { class: "muted" }, e.message)); });
     root.append(
       pageHead(t("Account"), t("You're signed in to your own isolated area — token accounts, webhooks, Discord listener, symbol map and logs are private to you.")),
       h("div", { class: "grid grid-2" },
         card({ title: t("Two-factor authentication") }, mfaBody),
+        card({ title: t("E-mail preferences") }, prefsBody),
         card({ title: t("Your account") },
           h("dl", { class: "kv" }, h("dt", null, t("Email")), h("dd", null, me.email || "—"), h("dt", null, t("Role")), h("dd", null, me.is_admin ? t("Administrator") : t("User")),
             h("dt", null, t("Discord Signals")), h("dd", null, (me.features || {}).discord_signals === false ? t("not enabled") : t("enabled"))),

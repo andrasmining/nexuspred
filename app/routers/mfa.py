@@ -115,4 +115,8 @@ async def api_admin_mfa_reset(request: Request, user_id: int) -> dict[str, Any]:
     db.revoke_sessions(user_id)
     db.log_action(admin["id"], admin["email"], "mfa_reset", target["email"], client_ip(request))
     state.log_event("warn", f"Two-factor setup of {target['email']} reset by {admin['email']} — they enrol again at next sign-in")
+    area = db.user_primary_area(user_id)
+    if area:                                           # alpha.97: the user is told
+        from .. import alerts
+        await alerts.security_event(area, "mfa.reset", "Two-factor setup reset", f"{admin['email']} reset your two-factor setup; you enrol again at the next sign-in.")
     return {"status": "ok", "user_id": user_id}

@@ -302,6 +302,14 @@ async def _after_subscription_outcome(webhook: dict[str, Any], exc: Exception | 
         state.log_event("warn", f"subscription bookkeeping failed: {err}")
 
 
+def _schedule(coro: Any) -> None:
+    """Run a side-effect coroutine on the loop without awaiting it (never on the order path)."""
+    try:
+        asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        coro.close()
+
+
 def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, result: dict[str, Any] | None = None) -> Any:
     """Subscriber control "pause after N consecutive errors": count the streak
     per subscription and switch the subscription off when it is reached. An
@@ -343,6 +351,11 @@ def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, r
     title = str(webhook.get("name") or sub.get("webhook_id") or "subscription")
     reason = f"{n} consecutive signal errors (last: {why})"
     state.log_event("warn", f"Subscription '{title}' switched off: {reason}")
+    pub_area = int(sub.get("publisher_area_id") or 0)
+    if pub_area:                                       # alpha.97: the publisher sees the fan-out failing too
+        from . import alerts
+        who = db.area_owner_email(key[0]) or f"workspace {key[0]}"
+        _schedule(alerts.publisher_event(pub_area, "fanout.paused", f"Subscriber paused: {title}", f"{who} was paused after {reason}", severity="warn"))
     return events.emit_async("subscription.paused", title=title, reason=reason, subscription_id=int(sub["id"]))
 
 
