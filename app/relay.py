@@ -119,6 +119,34 @@ def reset() -> None:
 
 
 # ------------------------------------------------------------- bridge side
+_pairing: dict[tuple[int, int], tuple[float, bool]] = {}
+PAIRING_TTL_S = 30.0
+
+
+def _paired(area_id: int, agent_id: int) -> bool:
+    """Is the agent paired with the workspace? A sync SELECT per relayed poll
+    would stall the loop; the answer is cached half a minute (unpairing takes
+    effect within that, and the agent's own poll stops at once anyway)."""
+    hit = _pairing.get((area_id, agent_id))
+    now = time.monotonic()
+    if hit and now - hit[0] < PAIRING_TTL_S:
+        return hit[1]
+    ok = bool(db.get_agent(area_id, agent_id))
+    if len(_pairing) > 500:
+        _pairing.clear()
+    _pairing[(area_id, agent_id)] = (now, ok)
+    return ok
+
+
+def forget_pairing(area_id: int | None = None) -> None:
+    """Drop the cache (an agent was unpaired or re-paired)."""
+    if area_id is None:
+        _pairing.clear()
+    else:
+        for k in [k for k in _pairing if k[0] == area_id]:
+            _pairing.pop(k, None)
+
+
 async def request(agent_id: int, *, method: str, url: str, headers: dict[str, str],
                   json_body: Any = None, params: Optional[dict[str, Any]] = None,
                   timeout: float = 20.0, area_id: Optional[int] = None) -> tuple[int, str]:
@@ -126,7 +154,7 @@ async def request(agent_id: int, *, method: str, url: str, headers: dict[str, st
     With ``area_id`` the agent must be paired with that workspace."""
     if not allowed_url(url):
         raise ValueError(f"refusing to relay a request to {url!r}: not a Tradovate HTTPS endpoint")
-    if area_id is not None and not db.get_agent(area_id, agent_id):
+    if area_id is not None and not _paired(area_id, agent_id):
         raise AgentOffline(f"execution agent #{agent_id} is not paired with this workspace")
     if not is_online(agent_id):
         raise AgentOffline(f"execution agent #{agent_id} is offline (no poll in the last {int(ONLINE_WINDOW_S)} s)")

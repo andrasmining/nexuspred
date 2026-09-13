@@ -146,6 +146,10 @@ def _fire(coro: Any) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
+class _LeaderGone(Exception):
+    """A shared read/lookup ended because *its* caller was cancelled (see ``_join``)."""
+
+
 class TradovateSession:
     """One Tradovate account, authenticated by its own (renewable) access token."""
 
@@ -165,7 +169,7 @@ class TradovateSession:
         self.accounts = self._normalize_accounts(entry)
         self._token = entry.get("access_token") or None
         self._md_token = entry.get("md_token") or None
-        self._token_expires = _parse_iso(entry.get("token_expires")) or _decode_jwt_exp(self._token)
+        self._token_expires = _decode_jwt_exp(self._token) or _parse_iso(entry.get("token_expires"))
         self._lock = asyncio.Lock()
         self._contract_cache: dict[str, tuple[str, datetime]] = {}
         self._pace_lock = asyncio.Lock()          # one request at a time per login
@@ -193,7 +197,7 @@ class TradovateSession:
             return
         self._token = token
         self._md_token = md
-        self._token_expires = _parse_iso(entry.get("token_expires")) or _decode_jwt_exp(token)
+        self._token_expires = _decode_jwt_exp(token) or _parse_iso(entry.get("token_expires"))
         if self._token_expires:
             state.set_session_status(self.name, token_expires=self._token_expires.isoformat())
 
@@ -239,6 +243,20 @@ class TradovateSession:
             return await self._coalesced(path, lambda on_send: self._request_paced(method, path, auth=auth, on_send=on_send, **kwargs))
         return await self._request_paced(method, path, auth=auth, **kwargs)
 
+    async def _join(self, fut: "asyncio.Future") -> Any:
+        """Wait on another caller's read. When *that* caller was cancelled (a
+        ``wait_for`` around its poll), the future is cancelled too — which is
+        not this caller's cancellation: it raises ``_LeaderGone`` so the caller
+        runs or joins a fresh read instead of dying with a spurious
+        ``CancelledError``."""
+        try:
+            return await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is None or task.cancelling():
+                raise
+            raise _LeaderGone() from None
+
     async def _coalesced(self, path: str, fetch: Any) -> Any:
         """``/position/list`` and ``/order/list`` are login-wide: five accounts of
         one login flattening together need one read, not five. Callers that
@@ -249,34 +267,46 @@ class TradovateSession:
         N concurrent callers cost at most two reads and nobody gets stale data.
         The order lane and the poll lane coalesce separately."""
         key = (path, broker.is_urgent())
-        cur = self._inflight.get(key)
-        if cur is None or cur.get("sent"):
-            if cur is not None:
-                try:
-                    await asyncio.shield(cur["fut"])     # the read in flight ends (its outcome is its callers')
-                except BaseException:  # noqa: BLE001
-                    pass
-                nxt = self._inflight.get(key)
-                if nxt is not None:
-                    return await asyncio.shield(nxt["fut"])   # a sibling started the fresh read: join it
-            entry = self._inflight[key] = {"fut": asyncio.get_running_loop().create_future(), "sent": False}
+        while True:
+            cur = self._inflight.get(key)
+            if cur is None or cur.get("sent"):
+                if cur is not None:
+                    try:
+                        await self._join(cur["fut"])     # the read in flight ends (its outcome is its callers')
+                    except _LeaderGone:
+                        pass
+                    except Exception:  # noqa: BLE001
+                        pass
+                    nxt = self._inflight.get(key)
+                    if nxt is not None and nxt is not cur:
+                        try:
+                            return await self._join(nxt["fut"])   # a sibling started the fresh read: join it
+                        except _LeaderGone:
+                            continue
+                entry = self._inflight[key] = {"fut": asyncio.get_running_loop().create_future(), "sent": False}
 
-            def on_send() -> None:
-                entry["sent"] = True
+                def on_send() -> None:
+                    entry["sent"] = True
+                try:
+                    await asyncio.sleep(0)               # one loop step: callers started in the same tick join before the request leaves
+                    result = await fetch(on_send)
+                except BaseException as exc:
+                    if self._inflight.get(key) is entry:
+                        self._inflight.pop(key, None)
+                    if isinstance(exc, asyncio.CancelledError):
+                        entry["fut"].cancel()
+                    else:
+                        entry["fut"].set_exception(exc)
+                        entry["fut"].exception()             # retrieved: no "exception was never retrieved" noise when nobody joined
+                    raise
+                if self._inflight.get(key) is entry:
+                    self._inflight.pop(key, None)
+                entry["fut"].set_result(result)
+                return result
             try:
-                await asyncio.sleep(0)                   # one loop step: callers started in the same tick join before the request leaves
-                result = await fetch(on_send)
-            except BaseException as exc:
-                self._inflight.pop(key, None)
-                if isinstance(exc, asyncio.CancelledError):
-                    entry["fut"].cancel()
-                else:
-                    entry["fut"].set_exception(exc)
-                raise
-            self._inflight.pop(key, None)
-            entry["fut"].set_result(result)
-            return result
-        return await asyncio.shield(cur["fut"])          # not sent yet: this caller's data will be fresh
+                return await self._join(cur["fut"])      # not sent yet: this caller's data will be fresh
+            except _LeaderGone:
+                continue                                 # the leader's caller gave up: run or join the next read
 
     async def _request_paced(self, method: str, path: str, *, auth: bool = True, on_send: Any = None, **kwargs: Any) -> Any:
         import time as _time
@@ -340,9 +370,11 @@ class TradovateSession:
                 raise TradovateError(f"[{self.name}] {exc}") from exc
             if status == 429:
                 raise RateLimited(path, text, _penalty_seconds(text))
+            if status in (502, 504) and path.startswith(PRIORITY_PATHS):
+                raise self._unknown_outcome(path, f"HTTP {status} from the gateway", via=" via the execution agent")   # the broker may have executed it
             if status >= 400:
-                raise TradovateError(f"{status} {path}: {text}")
-            return json.loads(text) if text else None
+                raise TradovateError(f"{status} {path}: {text[:300]}")
+            return self._decode(path, text)
         # Pooled, keep-alive client: no TLS handshake per order (see app.http).
         try:
             resp = await http.client("tradovate").request(method, url, headers=headers, **kwargs)
@@ -356,9 +388,23 @@ class TradovateSession:
             raise TradovateError(f"[{self.name}] {path}: {exc!r}") from exc
         if resp.status_code == 429:
             raise RateLimited(path, resp.text, _penalty_seconds(resp.text))
+        if resp.status_code in (502, 504) and path.startswith(PRIORITY_PATHS):
+            raise self._unknown_outcome(path, f"HTTP {resp.status_code} from the gateway")   # the broker may have executed it
         if resp.status_code >= 400:
-            raise TradovateError(f"{resp.status_code} {path}: {resp.text}")
-        return resp.json() if resp.text else None
+            raise TradovateError(f"{resp.status_code} {path}: {resp.text[:300]}")
+        return self._decode(path, resp.text)
+
+    def _decode(self, path: str, text: str) -> Any:
+        """A 2xx whose body is not JSON (an HTML page from a proxy): on an order
+        path the request may well have executed — never a rejection."""
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except ValueError as exc:
+            if path.startswith(PRIORITY_PATHS):
+                raise self._unknown_outcome(path, f"unparseable answer: {text[:80]!r}") from exc
+            raise TradovateError(f"[{self.name}] {path}: unparseable answer ({text[:80]!r})") from exc
 
     def _unknown_outcome(self, path: str, detail: str, *, via: str = "") -> "OrderOutcomeUnknown":
         """Log + alert an order request whose answer was lost, and build the
@@ -385,6 +431,8 @@ class TradovateSession:
         return bool(self._token)
 
     async def _get_token(self) -> str:
+        if self._token_valid():
+            return self._token  # type: ignore[return-value]     # no lock: a renewal in flight must not queue the orders behind it
         async with self._lock:
             if self._token_valid():
                 return self._token  # type: ignore[return-value]
@@ -601,9 +649,14 @@ class TradovateSession:
         cached = self._contract_cache.get(root_or_symbol)
         if cached and datetime.now(timezone.utc) - cached[1] < timedelta(hours=1):
             return cached[0]
-        resolved = await self._resolve_contract_uncached(root_or_symbol)
-        self._contract_cache[root_or_symbol] = (resolved, datetime.now(timezone.utc))
-        return resolved
+        async def run() -> str:
+            hit = self._contract_cache.get(root_or_symbol)
+            if hit and datetime.now(timezone.utc) - hit[1] < timedelta(hours=1):
+                return hit[0]
+            resolved = await self._resolve_contract_uncached(root_or_symbol)
+            self._contract_cache[root_or_symbol] = (resolved, datetime.now(timezone.utc))
+            return resolved
+        return await self._single_flight(("resolve", root_or_symbol), run)    # N accounts of one login: one lookup
 
     async def _resolve_contract_uncached(self, root_or_symbol: str) -> str:
         from . import rollover
@@ -806,22 +859,29 @@ class TradovateSession:
     async def _single_flight(self, key: tuple[str, Any], run: Any) -> Any:
         """One lookup at a time per key: five accounts flattening the same contract
         together resolve its id / name once, not five times (each a lane slot)."""
-        fut = self._lookups.get(key)
-        if fut is not None:
-            return await asyncio.shield(fut)
-        fut = self._lookups[key] = asyncio.get_running_loop().create_future()
-        try:
-            result = await run()
-        except BaseException as exc:
-            self._lookups.pop(key, None)
-            if isinstance(exc, asyncio.CancelledError):
-                fut.cancel()
-            else:
-                fut.set_exception(exc)
-            raise
-        self._lookups.pop(key, None)
-        fut.set_result(result)
-        return result
+        while True:
+            fut = self._lookups.get(key)
+            if fut is not None:
+                try:
+                    return await self._join(fut)
+                except _LeaderGone:
+                    continue
+            fut = self._lookups[key] = asyncio.get_running_loop().create_future()
+            try:
+                result = await run()
+            except BaseException as exc:
+                if self._lookups.get(key) is fut:
+                    self._lookups.pop(key, None)
+                if isinstance(exc, asyncio.CancelledError):
+                    fut.cancel()
+                else:
+                    fut.set_exception(exc)
+                    fut.exception()
+                raise
+            if self._lookups.get(key) is fut:
+                self._lookups.pop(key, None)
+            fut.set_result(result)
+            return result
 
     async def liquidate_position(self, symbol: str, *, account_id: int | None = None,
                                  account_name: str | None = None, account_spec: str | None = None) -> dict[str, Any]:
@@ -861,8 +921,10 @@ class TradovateSession:
                 for p in raw if p.get("accountId") == account_id and (p.get("netPos") or 0)]
 
     async def positions_named(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ids = list(dict.fromkeys(r["symbol"] for r in rows))
+        names = dict(zip(ids, await asyncio.gather(*(self.contract_name(c) for c in ids))))   # unknown contracts resolve together
         for r in rows:
-            r["symbol"] = await self.contract_name(r["symbol"])
+            r["symbol"] = names[r["symbol"]]
         return rows
 
     async def positions(self, *, account_id: int | None = None,

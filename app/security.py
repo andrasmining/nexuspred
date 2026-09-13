@@ -394,7 +394,16 @@ def _is_public_ip(ip: str) -> bool:
         return False
     # is_global covers private, loopback, link-local, reserved, unspecified,
     # carrier-grade NAT and the documentation ranges; multicast is never a POST target
-    return addr.is_global and not addr.is_multicast
+    if not addr.is_global or addr.is_multicast:
+        return False
+    if addr.version == 6 and addr in _NAT64:
+        # 64:ff9b::/96 embeds an IPv4 address (64:ff9b::7f00:1 is 127.0.0.1 behind a
+        # NAT64 translator): judged by the address it carries
+        return _is_public_ip(str(ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)))
+    return True
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 
 def check_outbound_url(url: str) -> str | None:

@@ -202,7 +202,7 @@ async def _exact_dates(area_id: int, contracts: list[str]) -> dict[str, date]:
     from . import tradovate
     out: dict[str, date] = {}
     sessions = [s for s in tradovate.manager_for(area_id).all()
-                if state.session_status(s.name).get("connected")]
+                if state.session_status(s.name).get("connected") and getattr(s, "kind", "tradovate") == "tradovate"]
     if not sessions or not contracts:
         return out
     sess = sessions[0]
@@ -230,7 +230,7 @@ async def _broker_next(area_id: int, warnings: list[dict[str, Any]]) -> None:
     for w in warnings:
         w.setdefault("next_source", "estimate")
     sessions = [s for s in tradovate.manager_for(area_id).all()
-                if state.session_status(s.name).get("connected")]
+                if state.session_status(s.name).get("connected") and getattr(s, "kind", "tradovate") == "tradovate"]
     if not sessions or not warnings:
         return
     sess = sessions[0]

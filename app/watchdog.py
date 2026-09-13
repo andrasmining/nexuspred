@@ -42,10 +42,30 @@ def normalize_interval(v: Any) -> int:
     return max(MIN_INTERVAL_S, min(MAX_INTERVAL_S, n))
 
 
+_url_checked: dict[str, tuple[float, Optional[str]]] = {}    # url → (checked at, problem)
+URL_CHECK_TTL_S = 300.0
+
+
+async def _target_problem(url: str) -> Optional[str]:
+    """The send-time SSRF check (DNS may have changed since the save), cached a few minutes."""
+    from . import security
+    hit = _url_checked.get(url)
+    if hit and time.monotonic() - hit[0] < URL_CHECK_TTL_S:
+        return hit[1]
+    problem = await asyncio.to_thread(security.check_outbound_url, url)
+    if len(_url_checked) > 200:
+        _url_checked.clear()
+    _url_checked[url] = (time.monotonic(), problem)
+    return problem
+
+
 async def ping(area_id: int, url: str) -> bool:
     """One heartbeat; records the outcome. Never raises."""
     ok, error = False, ""
     try:
+        problem = await _target_problem(url)
+        if problem:
+            raise ValueError(problem)
         r = await http.client("outbound").get(url, headers={"User-Agent": "Fluxbridge/heartbeat"}, timeout=10.0)
         ok = r.status_code < 400
         if not ok:

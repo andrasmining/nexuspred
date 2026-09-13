@@ -100,12 +100,23 @@ def publish(kind: str, data: dict[str, Any], area_id: int | None = None) -> None
 
 
 # --------------------------------------------------------------- live stream
+MAX_STREAMS_PER_AREA = 40      # dashboards open at once per workspace; beyond it the stream is refused (429)
+
+
+class TooManyStreams(Exception):
+    pass
+
+
 def subscribe(area_id: int | None = None) -> _Sub:
-    """Register a live subscriber for an area. Call from within a running loop."""
+    """Register a live subscriber for an area. Call from within a running loop.
+    Raises ``TooManyStreams`` at the per-area cap: one tenant's runaway tabs
+    must not turn every broadcast on this worker into an O(N) walk."""
     aid = area_id if area_id is not None else context.get_area()
     sub = _Sub(asyncio.get_running_loop())
     st = _st_for(aid)
     with _lock:
+        if len(st.subscribers) >= MAX_STREAMS_PER_AREA:
+            raise TooManyStreams(f"{MAX_STREAMS_PER_AREA} live streams are already open for this workspace")
         st.subscribers.add(sub)
     return sub
 

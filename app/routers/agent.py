@@ -143,6 +143,7 @@ async def api_agent_revoke(agent_id: int, request: Request) -> dict[str, Any]:
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     db.delete_agent(context.get_area(), agent_id)
+    relay.forget_pairing(context.get_area())
     db.log_action(user["id"], user["email"], "agent_revoke", agent["name"])
     from .. import state, tradovate
     state.log_event("warn", f"Execution agent '{agent['name']}' revoked — logins assigned to it now fail until re-assigned")

@@ -131,7 +131,7 @@ async def api_save_token_accounts(request: Request) -> list[dict[str, Any]]:
             "qty_multiplier": float(a.get("qty_multiplier", 1) or 1),
             "account_spec": a.get("account_spec") or prev.get("account_spec", ""),
             "account_id": a.get("account_id") or prev.get("account_id", 0),
-            "token_expires": prev.get("token_expires", ""),
+            "token_expires": prev.get("token_expires", "") if access == "********" else "",   # a new token brings its own exp claim
             "agent_id": 0 if brk != "tradovate" else _own_agent(a.get("agent_id")),    # agents relay HTTP: Tradovate only
             "accounts": prev.get("accounts") or [],
             "lid": prev.get("lid") or config._new_lid(),
@@ -172,6 +172,8 @@ async def api_trade_accounts() -> list[dict[str, Any]]:
 async def api_save_trade_accounts(request: Request) -> list[dict[str, Any]]:
     """Save per-account execution toggles & qty multipliers (keyed by login + spec)."""
     incoming = await request.json()
+    if not isinstance(incoming, list) or len(incoming) > 500 or not all(isinstance(a, dict) for a in incoming):
+        raise HTTPException(status_code=400, detail="a list of trade-account objects is expected")
     tokens = list(config.load_settings().get("token_accounts") or [])
     by_token: dict[int, dict[str, Any]] = {}
     current = config.load_settings()

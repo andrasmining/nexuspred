@@ -495,7 +495,7 @@ class RithmicSession(broker.BrokerSessionBase):
     def _cid(self, symbol: str, exchange: Optional[str] = None) -> int:
         sym = str(symbol).upper()
         exch = exchange or self._exchange(sym)
-        cid = _int_id(f"{exch}:{sym}")
+        cid = _int_id(sym)                        # the id is the symbol's: a feed row naming CBOT and the table's CME guess must agree
         self._contracts[cid] = (sym, exch)
         return cid
 

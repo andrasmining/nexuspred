@@ -240,6 +240,12 @@ app.add_middleware(GateMiddleware)
 app.add_middleware(security.BodyLimitMiddleware)
 
 
+@app.exception_handler(RecursionError)
+async def _too_deep(_request: Request, _exc: RecursionError) -> JSONResponse:
+    """``json.loads`` on a body nested thousands deep: a client error, not a crash."""
+    return JSONResponse({"detail": "Invalid JSON: nested too deeply"}, status_code=400)
+
+
 @app.exception_handler(config.SettingsUnavailable)
 async def _settings_unavailable(_request: Request, exc: config.SettingsUnavailable) -> JSONResponse:
     """A save that would have written defaults over unreadable settings was refused."""

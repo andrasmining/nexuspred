@@ -73,6 +73,7 @@ _MONTHS = "FGHJKMNQUVXZ"
 REQUEST_SPACING_S = 0.3
 PRIORITY_SPACING_S = 0.1          # orders / cancels / closes (and the reads of a close path): their own short gap, never behind polls
 PRIORITY_PENALTY_WAIT_S = 3.0     # a running 429 penalty shorter than this is waited out for an order; longer → refused at once
+MAX_PENALTY_S = 120.0            # the longest a 429 may hold the login (Tradovate caps the same way)
 PRIORITY_PATHS = ("/api/Order/place", "/api/Order/modify", "/api/Order/cancel", "/api/Position/closeContract")
 TOKEN_TTL_S = 20 * 3600
 ET = ZoneInfo("America/New_York")
@@ -127,10 +128,15 @@ class ProjectXSession(broker.BrokerSessionBase):
         self.user = str(entry.get("px_user") or "")
         self.api_key = str(entry.get("px_api_key") or "")
         firm = str(entry.get("px_firm") or "topstep").strip()
-        # a custom gateway must be https (a plain-http or non-URL value would send the API key in clear / nowhere)
-        self.base_url = (FIRMS.get(firm.lower()) or (firm if firm.startswith("https://") else FIRMS["topstep"])).rstrip("/")
+        # a custom gateway must be https (a plain-http or non-URL value would send the API key in clear / nowhere);
+        # an unusable value (a settings import can carry one) disables the login — never a silent fallback to another firm
+        usable = firm.lower() in FIRMS or firm.startswith("https://")
+        self.base_url = (FIRMS.get(firm.lower()) or (firm if usable else FIRMS["topstep"])).rstrip("/")
         self._custom_gateway = firm.lower() not in FIRMS       # a URL the operator typed: re-checked at every login (below)
         self.firm = firm
+        if not usable and self.enabled:
+            self.enabled = False
+            state.set_session_status(self.name, connected=False, last_error=f"px_firm {firm!r} is not a known firm or an https:// gateway — login disabled")
         self.account_spec = entry.get("account_spec") or ""
         self.account_id = int(entry.get("account_id") or 0)
         self.accounts = self._normalize_accounts(entry)
@@ -223,7 +229,7 @@ class ProjectXSession(broker.BrokerSessionBase):
             async with self._pace:
                 wait = max(self.penalty_until - time.monotonic(), self._last_sent + REQUEST_SPACING_S - time.monotonic())
                 if wait > 0:
-                    await asyncio.sleep(wait)
+                    await asyncio.sleep(min(wait, MAX_PENALTY_S))
                 self._last_sent = time.monotonic()
         try:
             r = await self._client().post(f"{self.base_url}{path}", json=body, headers={"Authorization": f"Bearer {token}"}, timeout=20.0)
@@ -236,12 +242,16 @@ class ProjectXSession(broker.BrokerSessionBase):
             return await self._post(path, body, retry=False)
         if r.status_code == 429:
             self.rate_limits += 1
-            retry_after = _num(r.headers.get("Retry-After"), 5.0)
+            retry_after = max(1.0, min(_num(r.headers.get("Retry-After"), 5.0), MAX_PENALTY_S))   # a bogus header never parks the login for an hour
             self.penalty_until = time.monotonic() + retry_after
             raise RateLimited(path, r.text[:200], retry_after)
+        if r.status_code in (502, 504) and path in PRIORITY_PATHS:
+            raise httpx.ReadTimeout(f"HTTP {r.status_code} from the gateway")                  # sent, may have executed → outcome unknown
         try:
             data = r.json() if r.content else {}
         except ValueError as exc:
+            if path in PRIORITY_PATHS:
+                raise httpx.ReadTimeout(f"unparseable answer ({r.status_code})") from exc    # a 2xx we cannot read is not a rejection
             raise TradovateError(f"[{self.name}] ProjectX {path}: invalid answer ({r.status_code})") from exc
         if r.status_code >= 400:
             raise TradovateError(f"[{self.name}] ProjectX {path}: HTTP {r.status_code} {str(data)[:200]}")
@@ -494,12 +504,16 @@ class ProjectXSession(broker.BrokerSessionBase):
                              "price": _num(o.get("limitPrice"), None), "stopPrice": _num(o.get("stopPrice"), None)}}
 
     async def orders_snapshot(self) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
+        """The login's orders for the copy feed: every *working* order (a GTC
+        stop resting for days must not vanish from the picture) plus the last
+        36 h of finals, one row per id."""
+        out: dict[int, dict[str, Any]] = {}
         failed: list[str] = []
         start = (datetime.now(timezone.utc) - timedelta(hours=36)).isoformat()
         for a in self.accounts:
             try:
-                data = await self._post("/api/Order/search", {"accountId": int(a["id"]), "startTimestamp": start})
+                working = await self._post("/api/Order/searchOpen", {"accountId": int(a["id"])})
+                finals = await self._post("/api/Order/search", {"accountId": int(a["id"]), "startTimestamp": start})
             except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
                 self._account_failed(a.get("spec", str(a["id"])), "orders", exc, failed)
                 continue
@@ -508,13 +522,16 @@ class ProjectXSession(broker.BrokerSessionBase):
                     raise
                 self._account_failed(a.get("spec", str(a["id"])), "orders", exc, failed)
                 continue
-            for o in data.get("orders") or []:
+            for o in [*(finals.get("orders") or []), *(working.get("orders") or [])]:   # a working row wins over its older copy
                 if isinstance(o, dict) and o.get("id") is not None:
-                    out.append(self._order_row(o))
+                    row = self._order_row(o)
+                    out[row["id"]] = row
         if failed and len(failed) == len(self.accounts):
             raise TradovateError(f"[{self.name}] orders: every account failed ({failed[0]})")
-        self._orders_cache = {r["id"]: r["_version"] for r in out}
-        return out
+        self._orders_cache.update({r["id"]: r["_version"] for r in out.values()})
+        if len(self._orders_cache) > 5000:
+            self._orders_cache = {r["id"]: r["_version"] for r in out.values()}
+        return list(out.values())
 
     async def order_versions(self, order_ids: list[int]) -> dict[int, dict[str, Any]]:
         if any(int(i) not in self._orders_cache for i in order_ids):
@@ -642,10 +659,16 @@ class ProjectXSession(broker.BrokerSessionBase):
         return {"order_id": first["order_id"], "oco_id": second["order_id"], "status": "submitted", "linked": True,
                 "raw": {"first": first.get("raw"), "second": second.get("raw")}}
 
-    def _account_of_order(self, order_id: int, account_id: int | None, account_spec: str | None) -> int:
-        if account_id or account_spec:
-            return self._acct(account_spec, account_id)[1]
-        return int(self.account_id or (self.accounts[0]["id"] if self.accounts else 0))
+    def _unknown(self, what: str, *, name: str, aid: int, order_id: int | None = None, symbol: str = "",
+                 qty: int = 0, order_type: str = "Market") -> OrderOutcomeUnknown:
+        """Log + alert a mutation whose answer was lost and build the exception
+        the engine treats as "maybe done" (never a rejection, never retried blind)."""
+        msg = f"{name}: {what} timed out — outcome unknown, CHECK THE ACCOUNT"
+        state.log_order({"action": what.split()[0].capitalize(), "symbol": symbol, "account": name, "account_id": aid, "qty": qty,
+                         "order_type": order_type, "order_id": order_id, "status": "unknown", "raw": {"errorText": "timeout"}})
+        state.log_event("error", msg)
+        events.emit("execution.problem", title=f"Order outcome unknown on {name}", message=msg)
+        return OrderOutcomeUnknown(msg)
 
     async def modify_order(self, order_id: int, *, qty: int, order_type: str,
                            price: float | None = None, stop_price: float | None = None,
@@ -659,6 +682,9 @@ class ProjectXSession(broker.BrokerSessionBase):
             data = await self._post("/api/Order/modify", body)
         except TradovateError as exc:
             failure = str(exc)
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            raise self._unknown(f"modify order {order_id}", name=account_name or self.name, aid=aid, order_id=order_id,
+                                qty=qty, order_type=order_type) from None
         state.log_order({"action": "Modify", "symbol": "", "account": account_name or self.name, "qty": qty, "order_type": order_type,
                          "price": body["limitPrice"], "stop_price": body["stopPrice"], "order_id": order_id,
                          "status": "rejected" if failure else "modified", "raw": data})
@@ -686,6 +712,8 @@ class ProjectXSession(broker.BrokerSessionBase):
             await self._post("/api/Order/cancel", {"accountId": aid, "orderId": int(order_id)})
         except TradovateError as exc:
             raise TradovateError(f"cancel order {order_id} rejected — {exc}") from exc
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            raise self._unknown(f"cancel order {order_id}", name=self.name, aid=aid, order_id=order_id) from None
         return {"order_id": order_id, "status": "cancelled"}
 
     async def liquidate_position(self, symbol: str, *, account_id: int | None = None,
@@ -697,6 +725,8 @@ class ProjectXSession(broker.BrokerSessionBase):
             data = await self._post("/api/Position/closeContract", {"accountId": aid, "contractId": rec["id"]})
         except TradovateError as exc:
             failure = str(exc)
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            raise self._unknown(f"liquidate {str(symbol).upper()}", name=account_name or self.name, aid=aid, symbol=str(symbol).upper()) from None
         state.log_order({"action": "Liquidate", "symbol": str(symbol).upper(), "account": account_name or self.name, "account_id": aid, "qty": 0,
                          "order_type": "Market", "status": "rejected" if failure else "submitted", "raw": data})
         if failure:

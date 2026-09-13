@@ -120,7 +120,7 @@ async def test_contracts_front_month_and_exchanges(rsess):
     assert rithmic.exchange_for("MGCZ6") == "COMEX" and rithmic.exchange_for("MCL") == "NYMEX" and rithmic.exchange_for("YM") == "CBOT"
     assert (await s.contract_find("MGCZ6"))["exchange"] == "COMEX"
     assert [c["name"] for c in await s.contract_suggest("MNQ")] == ["MNQZ6", "MNQH7"]
-    assert await s.contract_id("MNQZ6") == rithmic._int_id("CME:MNQZ6")
+    assert await s.contract_id("MNQZ6") == rithmic._int_id("MNQZ6")           # one id per symbol, whichever exchange named it
 
 
 async def test_orders_place_modify_cancel_liquidate_and_rejects(rsess):

@@ -330,7 +330,10 @@ async def api_stream(request: Request) -> StreamingResponse:
     captured before the generator starts (it runs after the request's area
     context has been reset)."""
     area = context.get_area()
-    sub = state.subscribe(area)
+    try:
+        sub = state.subscribe(area)
+    except state.TooManyStreams as exc:
+        raise HTTPException(status_code=429, detail=f"{exc} — close some dashboard tabs") from exc
 
     async def gen():
         try:
