@@ -295,7 +295,7 @@ async def test_lock_account_never_overwrites_the_risk_guards_record(monkeypatch,
     from tests.test_risk import Sess
     sess = Sess()
     monkeypatch.setattr(automations, "_find_account", lambda aid, spec: (sess, sess.accounts[0]))
-    risk._lock(1, "DEMO11", "loss", "daily loss limit", -500.0, realized=-500.0, clock_day="2026-09-13")
+    risk._write_lock_record(1, "DEMO11", "loss", "daily loss limit", -500.0, realized=-500.0, clock_day="2026-09-13")
     await automations._flatten_accounts(1, ["DEMO11"], lock_reason="automation 'x'")
     rec = risk.lock_of(1, "DEMO11")
     assert rec["kind"] == "loss" and rec["realized"] == -500.0                          # the guard's own record survives

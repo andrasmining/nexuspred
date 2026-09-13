@@ -97,14 +97,6 @@ def any_active(settings: dict[str, Any]) -> bool:
     return False
 
 
-def config_for(area_id: int, spec: str) -> dict[str, Any]:
-    for t in config.load_settings(area_id=area_id).get("token_accounts") or []:
-        for a in t.get("accounts") or []:
-            if (a.get("spec") or a.get("account_spec")) == spec:
-                return dict(a.get("risk") or {})
-    return {}
-
-
 # ------------------------------------------------------------------ state
 def _zone(settings: dict[str, Any]) -> ZoneInfo:
     try:
@@ -163,7 +155,7 @@ def unlock(area_id: int, spec: str) -> bool:
     return True
 
 
-def _lock(area_id: int, spec: str, kind: str, reason: str, total: float, *,
+def _write_lock_record(area_id: int, spec: str, kind: str, reason: str, total: float, *,
           realized: Optional[float] = None, clock_day: str = "") -> None:
     st = _state(area_id)
     st[spec] = {"day": trading_day(), "kind": kind, "reason": reason,
@@ -265,7 +257,7 @@ async def check_area(area_id: int, sessions: list[Any], snapshots: list[dict[str
         async with lk:
             # lock first: from this moment every bridge order for the account is
             # refused, so nothing can slip in while the flatten is under way
-            _lock(area_id, spec, kind, reason, total, realized=realized, clock_day=clock_day)
+            _write_lock_record(area_id, spec, kind, reason, total, realized=realized, clock_day=clock_day)
             c, f, errs = await flatten_account(sess, acc)
             snap["risk"].update({"locked": True, "reason": reason, "kind": kind})
             state.log_event("warn", f"🔒 Risk guard: {spec} flattened and locked for today — {reason}"

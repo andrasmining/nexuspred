@@ -156,9 +156,8 @@ async def test_api_saves_rules_lists_and_unlocks(client, admin):
     r = await client.post("/api/trade-accounts", json=[{"token_idx": 0, "spec": "DEMO11", "enabled": True, "risk": {"flatten_at": "99:00"}}])
     assert r.status_code == 400
     with context.use_area(1):
-        assert risk.config_for(1, "DEMO11")["loss_limit"] == 400.0
         assert risk.any_active(config.load_settings())
-        risk._lock(1, "DEMO11", "loss", "daily loss limit hit", -450)
+        risk._write_lock_record(1, "DEMO11", "loss", "daily loss limit hit", -450)
     r = await client.get("/api/risk")
     assert r.json()[0]["locked"] and r.json()[0]["lock"]["kind"] == "loss"
     r = await client.get("/api/trade-accounts")

@@ -210,7 +210,7 @@ async def test_bracket_entry_places_entry_tps_and_stop(live):
 
     places = a.of("place")
     assert len(places) == 5 and len(r["orders"]) == 5
-    entry, tp1, tp2, tp3, sl = places
+    entry, sl, tp1, tp2, tp3 = places                      # the stop leaves first, together with the targets
     assert (entry["action"], entry["qty"], entry["order_type"], entry["price"]) == ("Sell", 3, "Market", 100.0)
     assert [(t["action"], t["qty"], t["order_type"], t["price"]) for t in (tp1, tp2, tp3)] == \
         [("Buy", 1, "Limit", 97.0), ("Buy", 1, "Limit", 94.0), ("Buy", 1, "Limit", 91.0)]
@@ -230,7 +230,7 @@ async def test_bracket_qty_from_payload_rounds_and_falls_back(live):
     live.use(a)
     w = wh("bracket", default_qty=3)
     await signals.process({**ENTRY, "qty": 2.9}, w)
-    assert a.of("place")[0]["qty"] == 3          # int(2.9)=2 -> 2*1.5=3
+    assert a.of("place")[0]["qty"] == 5          # a fractional qty is invalid -> default 3 -> 3*1.5=4.5 -> 5 (never silently floored)
     await signals.process({**ENTRY, "qty": "abc"}, w)
     assert a.of("place")[-5]["qty"] == 5         # invalid -> default 3 -> 3*1.5=4.5 -> 5 (half up, like copy trading)
     await signals.process({**ENTRY, "contracts": 0}, w)
@@ -250,7 +250,7 @@ async def test_bracket_entry_omits_missing_tps(live):
     a = FakeExecutor("A")
     live.use(a)
     await signals.process({"action": "buy", "symbol": "MNQ1!", "sl": 90.0, "tp1": 105.0}, wh("bracket", default_qty=2))
-    assert [p["order_type"] for p in a.of("place")] == ["Market", "Limit", "Stop"]
+    assert [p["order_type"] for p in a.of("place")] == ["Market", "Stop", "Limit"]     # the stop leaves first, with the targets
     assert [p["action"] for p in a.of("place")] == ["Buy", "Sell", "Sell"]
 
 
@@ -319,7 +319,7 @@ async def test_move_sl_breakeven_message_without_tp_index_keeps_qty(live):
     w = wh("bracket", default_qty=3)
     await signals.process(ENTRY, w)
     await signals.process({"action": "move_sl", "symbol": "MNQ1!", "message": "SL to breakeven"}, w)
-    assert a.of("modify")[-1] == {"order_id": a.of("place")[4]["order_id"], "qty": 3,
+    assert a.of("modify")[-1] == {"order_id": a.of("place")[1]["order_id"], "qty": 3,
                                   "order_type": "Stop", "stop_price": 100.0}
 
 

@@ -161,7 +161,7 @@ def matches(rule: dict[str, Any], kind: str, data: dict[str, Any], area_id: int,
     if not rule.get("enabled", True) or rule["event"] != kind:
         return False
     fields = KINDS[kind]
-    if rule["accounts"]:
+    if rule["accounts"] and (fields.get("account") or data.get("accounts")):   # events without an account cannot be filtered by one
         acc = str(data.get(fields.get("account", ""), "") or "")
         # trade.executed carries the list of accounts it went to
         accs = {acc} | {str(a) for a in (data.get("accounts") or [])}
@@ -252,7 +252,7 @@ async def _flatten_accounts(area_id: int, specs: list[str], *, lock_reason: str 
             return f"{spec}: not found"
         sess, acc = found
         if lock_reason and not risk.lock_of(area_id, spec):          # never overwrite the risk guard's own record
-            risk._lock(area_id, spec, "automation", lock_reason, 0.0, clock_day=risk.trading_day())
+            risk._write_lock_record(area_id, spec, "automation", lock_reason, 0.0, clock_day=risk.trading_day())
         c, f, errs = await risk.flatten_account(sess, acc)
         return f"{spec}: {c} cancelled, {f} flattened" + (f", errors: {'; '.join(errs)}" if errs else "") + (" — locked for today" if lock_reason else "")
 
@@ -354,6 +354,8 @@ def _on_event(kind: str, data: dict[str, Any]) -> Any:
     hit = [r for r in rules if matches(r, kind, data, area_id, aliases) and _cooldown_ok(area_id, r, now)]
     if not hit:
         return None
+    for r in hit:
+        _last_fired[(area_id, r["id"])] = now      # reserved now: two events in one tick fire a rule once, not twice
     return _run(area_id, hit, kind, data, aliases)
 
 

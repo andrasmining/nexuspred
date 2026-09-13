@@ -14,4 +14,9 @@ import uvicorn
 if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "9000"))
-    uvicorn.run("app.main:app", host=host, port=port, reload=False)
+    # The per-request access log is off by default: the bridge keeps its own
+    # event / signal / order logs, and one synchronous stdout line per webhook
+    # is measurable at the rates the fan-out reaches. NEXUSPRED_ACCESS_LOG=1
+    # switches it on for debugging a proxy.
+    uvicorn.run("app.main:app", host=host, port=port, reload=False,
+                access_log=os.environ.get("NEXUSPRED_ACCESS_LOG", "") == "1")

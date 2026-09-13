@@ -81,7 +81,7 @@ async def test_bare_root_skips_a_contract_past_its_roll_date(admin, monkeypatch)
 async def test_reconcile_skips_a_risk_locked_follower(admin):
     from app import copy as cp
     with context.use_area(1):
-        risk._lock(1, "F1", "loss", "daily loss limit hit", -600)
+        risk._write_lock_record(1, "F1", "loss", "daily loss limit hit", -600)
     r = cp.GroupRunner(1, {**cp.new_group("G"), "leader": {"token_idx": 0, "spec": "LEAD", "account_id": 1},
                            "followers": [cp.normalize_follower({"token_idx": 1, "spec": "F1"})], "feed": "poll"})
     r.feed_ok = True

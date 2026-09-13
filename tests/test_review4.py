@@ -50,7 +50,7 @@ async def test_set_sl_tp_rejects_a_bad_target_before_touching_the_stop(live):
 def test_signal_qty_bounds():
     assert common._signal_qty("1e15", 3, strict=False) == 3.0                      # bracket: back to the webhook default
     assert common._signal_qty("nan", 3, strict=False) == 3.0
-    assert common._signal_qty(2.7, 3, strict=False) == 2.7
+    assert common._signal_qty(2.7, 3, strict=False) == 3.0                          # fractional contracts are invalid: the default
     with pytest.raises(signals.SignalError):
         common._signal_qty("1e15", 1, strict=True)                                 # simple / TS-Hunter: refused
     with pytest.raises(signals.SignalError):

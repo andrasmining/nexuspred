@@ -26,7 +26,7 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     # every price is parsed before the first broker call: a malformed target must
     # never leave a live entry untracked and unprotected
     sl_price = _price(payload["sl"], "sl") if payload.get("sl") is not None else None
-    tps = [_price(payload[k], k) for k in ("tp1", "tp2", "tp3") if payload.get(k) is not None]
+    tps = [(n, _price(payload[k], k)) for n, k in ((1, "tp1"), (2, "tp2"), (3, "tp3")) if payload.get(k) is not None]
     entry_price = _price(payload["entry"], "entry") if payload.get("entry") is not None else None
 
     async def place_for(ex):
@@ -41,38 +41,57 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
         )
         acc_orders = [entry]
 
-        # 2) TP limit orders + protective stop, placed in parallel.
+        # 2) The protective stop and the TP limit orders leave together — the
+        #    stop first in the line, so the position is covered one round trip
+        #    after the entry instead of after the last target's answer. A stop
+        #    that fails on this first attempt gets its retry (or the
+        #    cancel-and-close resolution) once the targets' ids are known.
         bracket: list[tuple[str, Any]] = []
         remaining = entry_qty                       # the TP slices together never exceed the entry
-        for tp_price in tps:
+        tp_slices: list[list[int]] = []
+        for n, tp_price in tps:
             if remaining > 0:
                 slice_qty = min(tp_qty, remaining)
                 remaining -= slice_qty
+                tp_slices.append([n, slice_qty])
                 bracket.append(("tp", ex.place_order(
                     symbol=contract, action=exit_side, qty=slice_qty,
                     order_type=s.get("tp_order_type", "Limit"), price=tp_price)))
+        if sl_price is not None:
+            bracket.insert(0, ("stop", ex.place_order(symbol=contract, action=exit_side, qty=entry_qty,
+                                                     order_type=sl_type, stop_price=sl_price)))
         tp_ids: list[int] = []
         sl_id = None
+        sl: dict[str, Any] | None = None
+        first_error: Exception | None = None
         if bracket:
             kinds = [k for k, _ in bracket]
             results = await asyncio.gather(*(c for _, c in bracket), return_exceptions=True)
             for kind, res in zip(kinds, results):
+                if kind == "stop":
+                    if isinstance(res, asyncio.CancelledError):
+                        raise res
+                    if isinstance(res, Exception):
+                        first_error = res
+                    else:
+                        sl = res
+                    continue
                 if isinstance(res, Exception):
                     state.log_event("warn", f"{tag}{kind} order failed for {ex.name}: {res}")
                     continue
                 acc_orders.append(res)
                 if kind == "tp" and res.get("order_id"):
                     tp_ids.append(res["order_id"])
-        if sl_price is not None:
-            # the protective stop is placed on its own, with a retry and a loud
-            # alert when it fails: the entry is live by now
+        if sl_price is not None and sl is None:
+            # the first attempt failed: one retry on a confirmed rejection, a loud
+            # resolution otherwise — the entry is live by now
             sl = await _place_stop_with_retry(ex, symbol=contract, action=exit_side, qty=entry_qty,
                                               order_type=sl_type, stop_price=sl_price, tag=tag,
-                                              cancel_ids=tp_ids,
+                                              cancel_ids=tp_ids, first_error=first_error,
                                               resting_entry_id=entry.get("order_id") if str(entry.get("order_type") or s.get("entry_order_type", "Market")) != "Market" else None)
-            if sl is not None:
-                acc_orders.append(sl)
-                sl_id = sl.get("order_id")
+        if sl is not None:
+            acc_orders.append(sl)
+            sl_id = sl.get("order_id")
 
         info = {
             "name": ex.name, "contract": contract, "entry_qty": entry_qty,
@@ -80,7 +99,7 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
             "tp_qty": tp_qty, "qty": entry_qty, "entry_price": entry_price,
             "sl_order_id": sl_id, "sl_type": sl_type,
             "sl_stop": sl_price,
-            "tp_order_ids": tp_ids,
+            "tp_order_ids": tp_ids, "tp_slices": tp_slices,
         }
         return ex.name, info, acc_orders, contract
 
@@ -114,11 +133,17 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
 
 
 def _remaining_qty(info: dict[str, Any], tp_index: int | None) -> int:
-    """Position left after ``tp_index`` take-profits filled (1 contract each by
-    default). 0 means the last target closed the position: the stop is retired."""
+    """Position left after ``tp_index`` take-profits filled. The entry records
+    the slices it placed as ``tp_slices`` [[n, qty], ...] (a payload with tp1 and
+    tp3 only has two); a record without them (set_sl_tp's) counts ``tp_qty``
+    per target. 0 means the last target closed the position: the stop is retired."""
+    entry = int(info.get("entry_qty") or info.get("qty") or 0)
     if tp_index is None:
-        return int(info.get("qty") or info.get("entry_qty", 1))
-    return max(0, int(info["entry_qty"]) - tp_index * int(info["tp_qty"]))
+        return int(info.get("qty") or entry or 1)
+    slices = info.get("tp_slices")
+    if slices:
+        return max(0, entry - sum(int(q) for n, q in slices if int(n) <= tp_index))
+    return max(0, entry - tp_index * int(info.get("tp_qty") or 1))
 
 
 def _is_breakeven_move(payload: dict[str, Any], tp_index: int | None) -> bool:

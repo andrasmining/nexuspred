@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, automations, config, context, copy, crypto, db, drawdown, health, history, http, journal, metrics, news, pnl, push, security, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
+from . import auth, automations, config, context, copy, crypto, db, drawdown, health, history, http, journal, metrics, news, pnl, push, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
 from .discord_signals.routes import router as discord_router
 from .routers import ROUTERS
 from .web import BASE_DIR, is_auth_exempt, mfa_setup_allowed, wants_html
@@ -69,6 +69,12 @@ async def _startup() -> None:
     except Exception as exc:  # noqa: BLE001
         state.log_event("warn", f"history restore failed: {exc}")
     history.start()
+    try:
+        restored = signals.hydrate_active(db.all_area_ids())
+        if restored:
+            state.log_event("info", f"{restored} tracked trade(s) restored from before the restart")
+    except Exception as exc:  # noqa: BLE001
+        state.log_event("warn", f"tracked trades not restored: {exc}")
     state.log_event("info", f"Bridge started (v{config.get_version()})")
     _loop_tasks[:] = [asyncio.create_task(health.health_loop(), name="health-loop"),
                       asyncio.create_task(health.discord_health_loop(), name="discord-health-loop"),
@@ -77,7 +83,8 @@ async def _startup() -> None:
                       asyncio.create_task(pnl.pnl_loop(), name="pnl-loop"),
                       asyncio.create_task(copy.copy_loop(), name="copy-loop"),
                       asyncio.create_task(news.news_loop(), name="news-loop"),
-                      asyncio.create_task(watchdog.heartbeat_loop(), name="heartbeat-loop")]
+                      asyncio.create_task(watchdog.heartbeat_loop(), name="heartbeat-loop"),
+                      asyncio.create_task(signals.persist_loop(), name="active-trades-loop")]
     health.start_discord_listeners()     # the health loop keeps them alive from here on
 
 
@@ -92,7 +99,13 @@ async def _history_prune_loop() -> None:
 
 
 async def _shutdown() -> None:
-    """Stop the background loops and Discord listeners; close the HTTP pool."""
+    """Stop the background loops and Discord listeners; close the HTTP pool.
+    Signals still running finish first: a restart must never split an entry
+    from its protective stop. The tracked trades are written out last."""
+    with contextlib.suppress(Exception):
+        left = await signals.drain_background()
+        if left:
+            state.log_event("error", f"shutdown: {left} signal task(s) still running after 20 s — check the broker for unprotected positions")
     for t in _loop_tasks:
         t.cancel()
     for t in _loop_tasks:
@@ -105,6 +118,8 @@ async def _shutdown() -> None:
     await health.stop_discord_listeners()
     await http.aclose_all()
     await asyncio.to_thread(history.stop)  # drain queued history writes
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(signals.persist_active, force=True)
 
 
 @asynccontextmanager

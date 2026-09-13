@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
-from .. import automations, config, context, db, exposure, metrics, security, signals, state, tradovate
+from .. import automations, config, context, db, exposure, metrics, security, signals, state, tradovate, history
 from ..engine.common import _base_root, _close_contract
 from ..tradovate import OrderOutcomeUnknown, TradovateError
 
@@ -83,14 +83,14 @@ async def api_manual_order(request: Request) -> dict[str, Any]:
     symbol = str(body.get("symbol") or "").strip()
     if not symbol or len(symbol) > 20:
         raise HTTPException(status_code=400, detail="symbol is required")
-    s = config.load_settings()
-    if not s.get("trading_enabled"):
+    if not config.peek("trading_enabled"):
         raise HTTPException(status_code=409, detail="Trading is disabled — switch it on in the top bar first")
-    target = (s.get("symbol_map") or {}).get(symbol) or (s.get("symbol_map") or {}).get(symbol.upper()) or symbol.upper()
+    symbol_map = config.peek("symbol_map") or {}
+    target = symbol_map.get(symbol) or symbol_map.get(symbol.upper()) or symbol.upper()
     ex = _executor(body)
     detail = f"{action} {qty} {target} {order_type}" + (f" @ {price}" if price is not None else "") + (f" stop {stop_price}" if stop_price is not None else "")
-    if user:                                     # audited before the broker call: an unknown outcome still names who sent it
-        db.log_action(user["id"], user["email"], "manual_order", ex.name, detail)
+    if user:                                     # audited before the broker call (queued in order, off the loop): an unknown outcome still names who sent it
+        history.defer(db.log_action, user["id"], user["email"], "manual_order", ex.name, detail)
     try:
         contract = await ex.resolve_contract(target)
         order = await ex.place_order(symbol=contract, action=action.capitalize(), qty=qty, order_type=order_type,

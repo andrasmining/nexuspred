@@ -16,7 +16,7 @@ import httpx
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import broker, config, context, events, http, risk, sizing, state
+from . import broker, config, context, events, http, risk, sizing, state, history
 
 REQUEST_SPACING_S = 0.2   # minimum gap between two requests of one login (5/s)
 PRIORITY_SPACING_S = 0.06  # orders / cancels / liquidations: a small gap of their own, never behind polls
@@ -407,13 +407,14 @@ class TradovateSession:
         expires = _decode_jwt_exp(self._token) or _parse_iso(data.get("expirationTime"))
         self._token_expires = expires or datetime.now(timezone.utc) + timedelta(minutes=75)
         state.set_session_status(self.name, token_expires=self._token_expires.isoformat())
-        # Persist best-effort so a redeploy keeps the renewed token.
+        # Persist best-effort so a redeploy keeps the renewed token — on the
+        # history writer thread: the SELECT + decrypt + UPDATE must not stall
+        # the order that triggered the renewal.
         try:
-            config.update_token_account(
-                self.idx, area_id=self.area_id, lid=self.lid,
-                access_token=self._token, md_token=self._md_token or "",
-                token_expires=self._token_expires.isoformat(),
-            )
+            history.defer(config.update_token_account,
+                          self.idx, area_id=self.area_id, lid=self.lid,
+                          access_token=self._token, md_token=self._md_token or "",
+                          token_expires=self._token_expires.isoformat())
         except Exception as exc:  # noqa: BLE001 - a renewed token must never fail because the disk did
             state.log_event("warn", f"[{self.name}] could not persist token: {exc}")
 

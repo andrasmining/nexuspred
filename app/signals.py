@@ -35,6 +35,7 @@ credentials, risk, or a configured webhook.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import hmac
@@ -274,7 +275,7 @@ async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *
             marketplace.note_outcome(webhook, context.get_area(), "error")
         events.emit("signal.done", webhook=name, status="error", reason=str(exc)[:200], action="", seconds=time.perf_counter() - started)
         await events.emit_async("signal.failed", webhook=name, reason=str(exc), settings=settings)
-        await _after_subscription_error(webhook, exc)
+        await _after_subscription_outcome(webhook, exc, None)
     except Exception as exc:  # noqa: BLE001
         state.log_event("error", f"Signal failed: {exc}", payload=payload)
         state.log_signal(payload, result=f"error: {exc}", webhook=name, webhook_id=wid, latency_ms=ms())
@@ -283,14 +284,10 @@ async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *
             marketplace.note_outcome(webhook, context.get_area(), "error")
         events.emit("signal.done", webhook=name, status="error", reason=str(exc)[:200], action="", seconds=time.perf_counter() - started)
         await events.emit_async("signal.failed", webhook=name, reason=str(exc), settings=settings)
-        await _after_subscription_error(webhook, exc)
+        await _after_subscription_outcome(webhook, exc, None)
 
 
 _sub_errors: dict[tuple[int, int], int] = {}      # (area, subscription id) → consecutive errors
-
-
-async def _after_subscription_error(webhook: dict[str, Any], exc: Exception) -> None:
-    await _after_subscription_outcome(webhook, exc, None)
 
 
 async def _after_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, result: dict[str, Any] | None) -> None:
@@ -423,7 +420,7 @@ async def process(
 
     async def run() -> dict[str, Any]:
         if action in ("buy", "sell"):
-            if not simulate and not config.setting("trading_enabled"):
+            if not simulate and not config.peek("trading_enabled"):
                 # the switch may have been flipped while this signal waited for the trade lock
                 state.log_event("warn", f"Trading disabled — signal '{action}' for {root} not executed")
                 return {"status": "skipped", "reason": "trading_disabled", "action": action}
@@ -512,7 +509,7 @@ async def _process_ts_hunter(payload, webhook, active_map, simulate, s):
 
     async def run() -> dict[str, Any]:
         if event == "signal":
-            if not simulate and not config.setting("trading_enabled"):
+            if not simulate and not config.peek("trading_enabled"):
                 state.log_event("warn", f"Trading disabled — TS-Hunter signal for {root} (trade {trade_id}) not executed")
                 return {"status": "skipped", "reason": "trading_disabled"}
             return await ts_hunter.handle_entry(
@@ -592,6 +589,84 @@ def active_trades(simulate: bool = False) -> dict[str, Any]:
     src = _map_for(simulate)
     with _lock:
         return {k: dict(v) for k, v in src.items()}
+
+
+# ---- persistence of the live active-trade map -------------------------------
+# The records live in process memory; every deploy restarts the process, and a
+# TS-Hunter runner whose record is gone keeps its full-size stop through every
+# target. A JSON snapshot per area (meta row) is written whenever it changed and
+# once more at shutdown, and read back at startup.
+_persisted: dict[int, str] = {}
+
+
+def _snapshot(area_id: int) -> str:
+    with _lock:
+        m = _active.get(area_id) or {}
+        return json.dumps(m, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def persist_active(*, force: bool = False) -> int:
+    """Write the changed areas' live records; returns how many were written.
+    Synchronous sqlite: call it from a thread or at shutdown."""
+    from . import db
+    written = 0
+    with _lock:
+        ids = list(_active)
+    for aid in ids:
+        snap = _snapshot(aid)
+        if force or _persisted.get(aid) != snap:
+            try:
+                db.meta_set(f"active_trades:{aid}", snap)
+                _persisted[aid] = snap
+                written += 1
+            except Exception as exc:  # noqa: BLE001
+                log.warning("active trades of area %s not persisted: %s", aid, exc)
+    return written
+
+
+def hydrate_active(area_ids: list[int]) -> int:
+    """Restore the live records written by ``persist_active`` (startup)."""
+    from . import db
+    restored = 0
+    for aid in area_ids:
+        try:
+            raw = db.meta_get(f"active_trades:{aid}")
+            if not raw:
+                continue
+            m = json.loads(raw)
+            if not isinstance(m, dict):
+                continue
+            fresh = {k: v for k, v in m.items() if isinstance(v, dict) and time.time() - float(v.get("ts") or 0) < ACTIVE_TTL_S}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("active trades of area %s not restored: %s", aid, exc)
+            continue
+        with _lock:
+            _active.setdefault(aid, {}).update(fresh)
+        _persisted[aid] = _snapshot(aid)
+        restored += len(fresh)
+    return restored
+
+
+async def persist_loop(interval: float = 3.0) -> None:
+    """Background: snapshot changed areas every few seconds (a crash loses at
+    most that much; a clean shutdown writes the rest)."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.to_thread(persist_active)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("active-trade snapshot failed: %s", exc)
+
+
+async def drain_background(timeout: float = 20.0) -> int:
+    """Wait for in-flight signal tasks (an entry between its fill and its stop
+    must finish before the HTTP pool closes). Returns how many were still
+    running after ``timeout``."""
+    pending = [t for t in _bg_tasks if not t.done()]
+    if not pending:
+        return 0
+    done, still = await asyncio.wait(pending, timeout=timeout)
+    return len(still)
 
 
 def active_trades_for(area_id: int) -> dict[str, Any]:

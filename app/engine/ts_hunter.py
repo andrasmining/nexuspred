@@ -14,7 +14,7 @@ import asyncio
 from typing import Any
 
 from .. import config, events, state
-from ..tradovate import TradovateError
+from ..tradovate import OrderOutcomeUnknown, TradovateError
 from .common import _close_contract, _collect_entries, _const, _entry_result, _lock, _opposite, OrdersLeftWorking, _place_stop_with_retry, _price, _resize_stop, _signal_qty, SignalError, _untrack_after_close
 from .. import broker
 from ..sizing import account_qty
@@ -123,13 +123,19 @@ async def handle_partial_close(payload, trade_id, executors, active_map, tag):
                 "skipping partial close for it"
             )
             return None
+        if info.get("remaining_qty") is None and "remaining_qty" in info:
+            raise TradovateError("quantity unknown after a lost close answer — send full_close")
         remaining = int(info.get("remaining_qty") or 0)
         if remaining <= 0:
             return None
         qty_to_close = max(1, min(remaining, round(remaining * percent / 100)))
-        order = await ex.place_order(
-            symbol=info["contract"], action=exit_side, qty=qty_to_close, order_type="Market",
-        )
+        try:
+            order = await ex.place_order(
+                symbol=info["contract"], action=exit_side, qty=qty_to_close, order_type="Market",
+            )
+        except OrderOutcomeUnknown:
+            info["remaining_qty"] = None                        # may have filled: only a full_close is safe now
+            raise
 
         new_remaining = remaining - qty_to_close
         # the close went through: the position is smaller — record that first,
@@ -207,8 +213,8 @@ async def handle_full_close(payload, trade_id, target, executors, active_map, ta
         for n in active["accounts"]:
             if n not in by_name:
                 state.log_event(
-                    "warn", f"{tag}TS-Hunter: account '{n}' no longer enabled, "
-                    "skipping full close for it"
+                    "error", f"{tag}TS-Hunter: account '{n}' is no longer routed here — its position "
+                    f"in {active.get('contract') or target} and its stop are NOT closed by this full_close: close them by hand"
                 )
     else:
         # Untracked trade (e.g. the bridge restarted) — fall back to flattening
@@ -225,20 +231,29 @@ async def handle_full_close(payload, trade_id, target, executors, active_map, ta
         errors: list[str] = []
         cancelled = 0
         sid = info.get("sl_order_id")
-        for extra in [oid for oid in (info.get("extra_stop_ids") or []) if oid]:
-            try:                                                      # a stop a repair left behind goes with the trade
-                await ex.cancel_order(extra)
-                cancelled += 1
-            except TradovateError as exc:
-                errors.append(f"cancel {extra}: {exc}")
+        extras = [oid for oid in (info.get("extra_stop_ids") or []) if oid]
+        if extras:                                                    # stops a repair left behind go with the trade, all at once
+            for extra, res in zip(extras, await asyncio.gather(*(ex.cancel_order(o) for o in extras), return_exceptions=True)):
+                if isinstance(res, TradovateError):
+                    errors.append(f"cancel {extra}: {res}")
+                elif isinstance(res, BaseException):
+                    raise res
+                else:
+                    cancelled += 1
         if sid:
             try:
                 await ex.cancel_order(sid)
-                cancelled = 1
+                cancelled += 1
             except TradovateError as exc:
                 errors.append(f"cancel {sid}: {exc}")
         if remaining > 0:
-            await ex.place_order(symbol=contract, action=exit_side, qty=remaining, order_type="Market")
+            try:
+                await ex.place_order(symbol=contract, action=exit_side, qty=remaining, order_type="Market")
+            except OrderOutcomeUnknown:
+                # the close may have filled: a retry with the same quantity could open the
+                # opposite position, so the next full_close flattens what the broker shows
+                info["remaining_qty"] = None
+                raise
         if errors and sid:
             try:                                                      # a stop left working on a flat trade would open a new one
                 await ex.cancel_order(sid)

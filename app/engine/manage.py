@@ -20,9 +20,15 @@ async def handle_close_all(root, target, executors, active_map, tag, webhook):
     # Without tracking (for example after a restart), keep the existing safety-net
     # behaviour and flatten every currently enabled account for the symbol.
     targets = [ex for ex in executors if ex.name in tracked_names] if tracked_names else list(executors)
+    for name in sorted(tracked_names - {ex.name for ex in executors}):
+        state.log_event("error", f"{tag}close_all: account '{name}' is no longer routed here — its position in "
+                                 f"{((tracked or {}).get('accounts') or {}).get(name, {}).get('contract') or target} and its orders are NOT closed: close them by hand")
 
     async def close_account(ex) -> int:
-        contract = await ex.resolve_contract(target)
+        # the contract the trade was placed in — after a rollover / symbol-map edit the
+        # *current* mapping may point at the next month, whose position is flat
+        info = ((tracked or {}).get("accounts") or {}).get(ex.name) or {}
+        contract = info.get("contract") or await ex.resolve_contract(target)
         # Only this contract's working orders — other symbols keep their stops.
         return await _close_contract(ex, tag, contract)
 

@@ -60,8 +60,15 @@ def _trade_key(webhook_id: str, root: str) -> str:
     return f"{webhook_id}:{root}"
 
 
+async def _contract_id_or_zero(ex: Any, contract: str) -> int:
+    try:
+        return int(await ex.contract_id(contract))
+    except (TradovateError, AttributeError, TypeError, ValueError):
+        return 0
+
+
 async def _orders_for_contract(ex: Any, orders: list[dict[str, Any]], contract: str,
-                               tag: str) -> list[dict[str, Any]]:
+                               tag: str, cid: int | None = None) -> list[dict[str, Any]]:
     """The subset of ``orders`` that belongs to ``contract``.
 
     A close for one symbol must not strip the protective stops / targets of
@@ -69,10 +76,8 @@ async def _orders_for_contract(ex: Any, orders: list[dict[str, Any]], contract: 
     numeric ``contractId``; the simulator's carry the contract ``symbol``. When
     neither can be matched the order is left alone (and reported), because
     cancelling it could unprotect an unrelated position."""
-    try:
-        cid = int(await ex.contract_id(contract))
-    except (TradovateError, AttributeError, TypeError, ValueError):
-        cid = 0
+    if cid is None:
+        cid = await _contract_id_or_zero(ex, contract)
     mine: list[dict[str, Any]] = []
     identifiable = 0
     for o in orders:
@@ -120,9 +125,9 @@ def _signal_qty(raw: Any, default: Any, *, strict: bool) -> float:
         if strict:
             raise SignalError(f"Invalid qty '{raw}'")
         q = float(default)
-    if not math.isfinite(q) or q <= 0 or q > QTY_HARD_CAP:
+    if not math.isfinite(q) or q <= 0 or q > QTY_HARD_CAP or q != int(q):
         if strict:
-            raise SignalError(f"qty must be positive (at most {QTY_HARD_CAP})")
+            raise SignalError(f"qty must be a positive whole number of contracts (at most {QTY_HARD_CAP})")
         q = float(default)
     if not math.isfinite(q) or q <= 0 or q > QTY_HARD_CAP:
         raise SignalError(f"Webhook default qty must be between 1 and {QTY_HARD_CAP}")
@@ -268,7 +273,8 @@ class StopFailed(TradovateError):
 async def _place_stop_with_retry(ex: Any, *, symbol: str, action: str, qty: int, order_type: str,
                                  stop_price: float, tag: str, what: str = "stop",
                                  cancel_ids: list[int] | None = None,
-                                 resting_entry_id: int | None = None) -> dict[str, Any] | None:
+                                 resting_entry_id: int | None = None,
+                                 first_error: Exception | None = None) -> dict[str, Any] | None:
     """Place a protective stop; one retry on a *confirmed* failure. When it
     still fails the entry is **closed again**: the trade's own orders
     (``cancel_ids``, the bracket's targets) are cancelled — every working order
@@ -284,10 +290,27 @@ async def _place_stop_with_retry(ex: Any, *, symbol: str, action: str, qty: int,
     ``resting_entry_id`` names a limit entry that may not have filled: it is
     cancelled and only what the broker shows as filled is closed (a blind market
     order on an unfilled limit would open the opposite position).
+    ``first_error`` is the failure of an attempt the caller already made (the
+    bracket sends the stop's first attempt alongside its targets): it counts as
+    attempt one, so a confirmed rejection gets the single retry and an unknown
+    outcome goes straight to the resolution.
     Returns the stop order."""
     from ..tradovate import RateLimited
     last: Exception | None = None
-    for attempt in (1, 2):
+
+    async def _penalty(exc: Exception) -> None:
+        # a 429 penalty set by some poll must not leave the entry naked: the
+        # stop is protective, not latency-critical, so it waits the penalty out
+        wait = min(float(getattr(exc, "retry_after", 0) or 0) + 0.2, STOP_PENALTY_WAIT_S) if isinstance(exc, RateLimited) else 0.5
+        await asyncio.sleep(wait)
+
+    attempts = (1, 2)
+    if first_error is not None:
+        last = first_error
+        attempts = () if isinstance(first_error, OrderOutcomeUnknown) else (2,)
+        if attempts:
+            await _penalty(first_error)
+    for attempt in attempts:
         try:
             return await ex.place_order(symbol=symbol, action=action, qty=qty, order_type=order_type, stop_price=stop_price)
         except asyncio.CancelledError:
@@ -297,10 +320,7 @@ async def _place_stop_with_retry(ex: Any, *, symbol: str, action: str, qty: int,
             if isinstance(exc, OrderOutcomeUnknown):
                 break                                  # may be working: resolve, never re-place
             if attempt == 1:
-                # a 429 penalty set by some poll must not leave the entry naked: the
-                # stop is protective, not latency-critical, so it waits the penalty out
-                wait = min(float(getattr(exc, "retry_after", 0) or 0) + 0.2, STOP_PENALTY_WAIT_S) if isinstance(exc, RateLimited) else 0.5
-                await asyncio.sleep(wait)
+                await _penalty(exc)
     how = "outcome unknown, not retried" if isinstance(last, OrderOutcomeUnknown) else "twice"
     state.log_event("error", f"{tag}{what} for {ex.name} on {symbol} FAILED ({how}: {last}) — closing the entry again")
     with broker.urgent():                                   # the reads of the resolution never queue behind polls
@@ -546,20 +566,27 @@ async def _cancel_working(ex: Any, tag: str, errors: list[str] | None = None,
     Returns how many were cancelled. Tradovate rejections are collected
     (``errors``) or logged per order; anything else propagates, as in v4."""
     orders: list[dict[str, Any]] = []
-    for attempt in (1, 2):
-        try:
-            orders = await ex.working_orders()
-            break
-        except TradovateError as exc:
-            if wait_penalty and attempt == 1 and await _penalty_wait(exc):
-                continue
-            if errors is not None:
-                errors.append(f"list orders: {exc}")
-            else:
-                state.log_event("error", f"{tag}Could not list working orders for {ex.name}: {exc} — nothing cancelled")
-            return 0
+    cid_task = asyncio.ensure_future(_contract_id_or_zero(ex, contract)) if contract else None   # alongside the order list
+    listed = False
+    try:
+        for attempt in (1, 2):
+            try:
+                orders = await ex.working_orders()
+                listed = True
+                break
+            except TradovateError as exc:
+                if wait_penalty and attempt == 1 and await _penalty_wait(exc):
+                    continue
+                if errors is not None:
+                    errors.append(f"list orders: {exc}")
+                else:
+                    state.log_event("error", f"{tag}Could not list working orders for {ex.name}: {exc} — nothing cancelled")
+                return 0
+    finally:
+        if not listed and cid_task is not None and not cid_task.done():
+            cid_task.cancel()                                # the list failed: the id is not needed
     if contract:
-        orders = await _orders_for_contract(ex, orders, contract, tag)
+        orders = await _orders_for_contract(ex, orders, contract, tag, cid=await cid_task)
     ids = [o.get("id") for o in orders if o.get("id") is not None]
     results = await asyncio.gather(*(ex.cancel_order(oid) for oid in ids), return_exceptions=True)
     cancelled = 0
