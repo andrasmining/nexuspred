@@ -6,6 +6,7 @@ import { store } from "../store.js";
 import { actions } from "../actions.js";
 import { getTheme, setTheme } from "../theme.js";
 import { isPrivate, setPrivate } from "../privacy.js";
+import { notificationBell } from "./notifications.js";
 import { t, locale } from "../i18n.js";
 
 export function renderTopbar(root, { navigate, onHamburger, onPrivacy }) {
@@ -111,10 +112,11 @@ export function renderTopbar(root, { navigate, onHamburger, onPrivacy }) {
   avatar.addEventListener("click", (e) => { e.stopPropagation(); userMenu.classList.toggle("open"); });
   document.addEventListener("click", () => userMenu.classList.remove("open"));
 
+  const bell = notificationBell(navigate);
   root.append(
     h("button", { type: "button", class: "btn btn-ghost btn-icon hamburger", title: t("Menu"), onClick: onHamburger }, icon("menu")),
     title, h("span", { class: "spacer" }),
-    h("div", { class: "right" }, updateBtn, streamPill, connPill, tradingPill, newsPill, sosBtn, privacyBtn, themeBtn, userMenu));
+    h("div", { class: "right" }, updateBtn, streamPill, connPill, tradingPill, newsPill, sosBtn, bell.el, privacyBtn, themeBtn, userMenu));
 
   const unsubs = [
     store.subscribe("route", (r) => { title.textContent = r ? r.title : t("Fluxbridge"); }, { immediate: true }),

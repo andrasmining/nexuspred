@@ -144,6 +144,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "copy_groups": [],
     "automations": [],                # per-workspace rules: when <event> then <action> (app.automations)
     # One summary per day (local time in journal_timezone) with realised P&L.
+    "alert_on_subscribers": True,       # alpha.97: publisher-side marketplace events
+    "alert_min_severity_push": "info",  # alpha.97: per channel, the least severe alert that gets through
+    "alert_min_severity_email": "info",
+    "alert_min_severity_discord": "info",
+    "alert_quiet_from": "",             # HH:MM in journal_timezone; critical alerts ignore the window
+    "alert_quiet_to": "",
+    "alert_digest_trades": False,       # fold trade alerts into one message every alert_digest_minutes
+    "alert_digest_minutes": 15,
     "alert_daily_summary": True,
     "daily_summary_time": "22:05",
     # Discord listener health (self-bot Gateway connection).

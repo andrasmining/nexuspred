@@ -22,7 +22,7 @@ class Field:
     min: Optional[float] = None
     max: Optional[float] = None
     choices: Optional[tuple] = None
-    fmt: str = ""                               # "time" (HH:MM) | "tz" (IANA) | "url" | ""
+    fmt: str = ""                               # "time" (HH:MM) | "time_or_empty" | "tz" (IANA) | "url" | ""
     secret: bool = False                        # masked in the API, never exported
     protected: bool = False                     # only its own endpoint writes it (never the generic form / import)
     portable: bool = True                       # travels in the settings export
@@ -73,6 +73,14 @@ SCHEMA: dict[str, Field] = {
     "alert_on_discord_restored": Field("bool"),
     "alert_on_webhook_failed": Field("bool"),
     "alert_on_rollover": Field("bool"),
+    "alert_on_subscribers": Field("bool"),
+    "alert_min_severity_push": Field("str", choices=("info", "warn", "critical")),
+    "alert_min_severity_email": Field("str", choices=("info", "warn", "critical")),
+    "alert_min_severity_discord": Field("str", choices=("info", "warn", "critical")),
+    "alert_quiet_from": Field("str", fmt="time_or_empty"),
+    "alert_quiet_to": Field("str", fmt="time_or_empty"),
+    "alert_digest_trades": Field("bool"),
+    "alert_digest_minutes": Field("int", min=1, max=240),
     "rollover_warn_days": Field("int", min=0, max=60),
     "rollover_notified": Field("dict", protected=True, portable=False),
     "discord_health_grace": Field("int", min=15, max=3600),
@@ -150,6 +158,8 @@ def coerce_one(key: str, value: Any) -> Any:
             raise ValueError(f"{key} is too long (at most {f.max_len} characters)")
         if f.fmt == "time":
             return _hhmm(s, key)
+        if f.fmt == "time_or_empty":
+            return _hhmm(s, key) if s.strip() else ""
         if f.fmt == "tz":
             from zoneinfo import ZoneInfo
             name = s.strip() or "Europe/Zurich"

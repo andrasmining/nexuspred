@@ -20,6 +20,7 @@ import subscriptions from "./subscriptions.js";
 import payments from "./payments.js";
 import platform from "./platform.js";
 import backups from "./backups.js";
+import cockpit from "./cockpit.js";
 import { general, security, updates, alerts, symbols, account } from "./settings.js";
 
 export const ROUTES = [
@@ -31,6 +32,7 @@ export const ROUTES = [
   { path: "/webhooks", page: webhooks },
   { path: "/webhooks/:id", page: webhooks },
   { path: "/marketplace", page: marketplace },
+  { path: "/cockpit", page: cockpit },
   { path: "/copy", page: copyTrading },
   { path: "/copy/:id", page: copyTrading },
   { path: "/subscriptions", page: subscriptions },

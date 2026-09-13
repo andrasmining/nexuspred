@@ -318,12 +318,158 @@ def public_summary() -> dict[str, Any]:
                            "updates": [{"at": u["at"], "status": u["status"], "body": u["body"]} for u in i.get("updates", [])]} for i in incidents()]}
 
 
+_prev_status: Optional[str] = None
+_update_checked_day = ""
+
+
+async def _notify_transition(res: dict[str, Any]) -> None:
+    """alpha.97: admins hear when the overall state changes (once per change)."""
+    global _prev_status
+    st = res["status"]
+    if _prev_status is None:
+        _prev_status = st
+        return
+    if st == _prev_status:
+        return
+    prev, _prev_status = _prev_status, st
+    from . import alerts
+    bad = [f"{k}: {c['detail']}" for k, c in res["checks"].items() if c["status"] != "ok"]
+    if st == "ok":
+        await alerts.notify_admins("notice", {"title": "Bridge healthy again", "message": f"All checks pass again (was {prev}).", "button": "Open Platform", "url": (config.PUBLIC_URL or "") + "/#/settings/platform"},
+                                   inbox=("health.recovered", "info", "Bridge healthy again", "/#/settings/platform"), mail=False)
+    else:
+        await alerts.notify_admins("notice", {"title": f"Bridge {st}", "message": "; ".join(bad)[:800] or st, "button": "Open Platform", "url": (config.PUBLIC_URL or "") + "/#/settings/platform"},
+                                   inbox=("health.degraded", "critical" if st == "down" else "warn", f"Bridge {st}: " + (bad[0] if bad else st), "/#/settings/platform"),
+                                   mail=(st == "down" or prev == "ok"))
+
+
+async def _daily_update_check() -> None:
+    """alpha.97: once a day, tell the admins when a newer version is on GitHub (once per version)."""
+    global _update_checked_day
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _update_checked_day == today:
+        return
+    _update_checked_day = today
+    from . import alerts, updater
+    try:
+        res = await updater.check_for_update()
+    except Exception as exc:  # noqa: BLE001
+        log.info("update check skipped: %s", exc)
+        return
+    latest = str(res.get("latest_version") or "")
+    if not res.get("update_available") or not latest or db.meta_get("update_notified") == latest:
+        return
+    db.meta_set("update_notified", latest)
+    await alerts.notify_admins("notice", {"title": f"Update available: {latest}", "message": f"Fluxbridge {latest} is available (you run {res.get('current_version')}). Apply it under Settings → Updates.",
+                                          "button": "Open Updates", "url": (config.PUBLIC_URL or "") + "/#/settings/updates"},
+                               inbox=("update.available", "info", f"Update available: {latest}", "/#/settings/updates"))
+
+
 async def readiness_loop() -> None:
     """Refresh the cached result every 30 s so the public page never triggers a check."""
     while True:
         try:
-            await check()
+            res = await check()
+            await _notify_transition(res)
+            await _daily_update_check()
         except Exception as exc:  # noqa: BLE001
             log.warning("readiness check failed: %s", exc)
         await asyncio.sleep(30.0)
+
+
+# ------------------------------------------------------------- per-workspace readiness + onboarding (alpha.97)
+def _fix(status: str, label: str, detail: str, url: str, key: str) -> dict[str, Any]:
+    return {"key": key, "status": status, "label": label, "detail": detail, "url": url}
+
+
+def workspace_checks(area_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    """The "ready to trade" card: what a User needs, plus what the role adds."""
+    from . import backups, mailer, watchdog, web
+    from . import copy as cp
+    role = web.role_of(user)
+    s = config.load_settings(area_id=area_id)
+    sessions = state.session_statuses_for(area_id)
+    logins = [t for t in (s.get("token_accounts") or []) if t.get("enabled", True)]
+    checks: list[dict[str, Any]] = []
+    connected = sum(1 for x in sessions if x.get("connected"))
+    if not logins:
+        checks.append(_fix("fail", "Broker login", "no broker login yet", "/#/settings/accounts", "login"))
+    elif not connected:
+        checks.append(_fix("fail", "Broker login", f"{len(logins)} login(s), none connected", "/#/settings/accounts", "login"))
+    else:
+        checks.append(_fix("ok", "Broker login", f"{connected}/{len(sessions) or len(logins)} connected", "/#/settings/accounts", "login"))
+    accounts = [a for t in logins for a in (t.get("accounts") or []) if a.get("enabled", True)]
+    checks.append(_fix("ok" if accounts else "fail", "Trade accounts", f"{len(accounts)} enabled" if accounts else "no trade account enabled", "/#/settings/accounts", "accounts"))
+    checks.append(_fix("ok" if s.get("trading_enabled") else "warn", "Trading switch", "on" if s.get("trading_enabled") else "off — signals are logged only", "/#/", "trading"))
+    guarded = sum(1 for a in accounts if (a.get("risk") or {}).get("daily_loss_limit") or (a.get("risk") or {}).get("flatten_at"))
+    checks.append(_fix("ok" if guarded else "warn", "Risk guard", f"{guarded}/{len(accounts)} account(s) guarded" if accounts else "no accounts", "/#/settings/accounts", "risk"))
+    roll = state.rollover_warnings(area_id)
+    checks.append(_fix("warn" if roll else "ok", "Symbol mapping", f"{len(roll)} contract(s) due to roll" if roll else "no rollover due", "/#/settings/symbols", "rollover"))
+    dl = db.delivery_status(area_id)
+    any_ok = any(v.get("last_ok") for v in dl.values())
+    degraded = [k for k, v in dl.items() if v.get("degraded")]
+    channels_on = bool(s.get("alert_push_enabled", True) and db.list_push_subscriptions(area_id)) or bool(s.get("alert_discord_enabled") and s.get("alert_discord_webhook_url")) or bool(s.get("alert_email_enabled") and s.get("alert_email_to"))
+    checks.append(_fix("fail" if degraded else ("ok" if any_ok else ("warn" if channels_on else "warn")), "Alert channel",
+                       f"{', '.join(degraded)} failing" if degraded else ("delivered" if any_ok else ("enabled, never tested" if channels_on else "no channel enabled")), "/#/settings/alerts", "alerts"))
+    if s.get("heartbeat_url"):
+        hb = watchdog.status(area_id)
+        checks.append(_fix("ok" if hb.get("ok") else "warn", "External watchdog", "pinging" if hb.get("ok") else (hb.get("error") or "no ping yet"), "/#/settings/alerts", "watchdog"))
+    checks.append(_fix("ok" if user.get("totp_enabled") else "warn", "Two-factor", "on" if user.get("totp_enabled") else "off", "/#/settings/security", "2fa"))
+    if role in ("broadcaster", "admin"):
+        listings = [w for w in (s.get("webhooks") or []) if (w.get("sharing") or {}).get("enabled")]
+        groups = [g for g in cp.load_groups(area_id) if (g.get("sharing") or {}).get("enabled")]
+        n = len(listings) + len(groups)
+        checks.append(_fix("ok" if n else "warn", "Marketplace listing", f"{n} published" if n else "nothing published yet", "/#/webhooks", "listing"))
+        paused = [x for w in listings for x in db.list_subscribers(area_id, w["id"]) if x.get("status") == "paused" or not x.get("enabled")]
+        checks.append(_fix("warn" if paused else "ok", "Subscribers", f"{len(paused)} paused" if paused else "all subscribers running", "/#/webhooks", "subscribers"))
+        sized = sum(1 for w in listings if w.get("sized_for_k"))
+        if listings:
+            checks.append(_fix("ok" if sized == len(listings) else "warn", "Sizing hint", f"{sized}/{len(listings)} listings state their account size", "/#/webhooks", "sizing"))
+    if role == "admin":
+        bst = backups.status()
+        checks.append(_fix("fail" if bst["stale"] and bst["enabled"] and bst["count"] else ("warn" if not bst["enabled"] or bst["age_hours"] is None else "ok"), "Backup",
+                           "off" if not bst["enabled"] else (f"verified {bst['age_hours']} h ago" if bst["age_hours"] is not None else "no verified backup yet"), "/#/settings/backups", "backup"))
+        checks.append(_fix("ok" if mailer.configured() else "warn", "Platform mailer", mailer.get_config()["provider"] if mailer.configured() else "off — invites and resets fall back to workspace SMTP", "/#/settings/platform", "mailer"))
+        lr = _last_result or {}
+        disk = (lr.get("checks") or {}).get("disk") or {}
+        checks.append(_fix("ok" if disk.get("status", "ok") == "ok" else disk.get("status", "ok").replace("degraded", "warn").replace("down", "fail"), "Disk", disk.get("detail", "unknown"), "/#/settings/platform", "disk"))
+    ok = sum(1 for c in checks if c["status"] == "ok")
+    return {"role": role, "ok": ok, "total": len(checks), "checks": checks}
+
+
+ONBOARDING = {
+    "user": [("login", "Connect a broker login", "/#/settings/accounts"), ("risk", "Set a risk guard on an account", "/#/settings/accounts"),
+             ("alerts", "Test an alert channel", "/#/settings/alerts"), ("signal", "Create a webhook or subscribe on the marketplace", "/#/webhooks")],
+    "broadcaster": [("login", "Connect a broker login", "/#/settings/accounts"), ("record", "Import your track record (journal)", "/#/journal"),
+                    ("listing", "Publish a webhook or copy group", "/#/webhooks"), ("sizing", "State the account size your signals are sized for", "/#/webhooks"),
+                    ("alerts", "Test an alert channel", "/#/settings/alerts")],
+    "admin": [("mailer", "Set up the platform mailer", "/#/settings/platform"), ("backup", "Switch on off-site backups", "/#/settings/backups"),
+              ("heartbeat", "Point a monitor at the heartbeat", "/#/settings/platform"), ("status", "Open the public status page once", "/status"),
+              ("login", "Connect a broker login", "/#/settings/accounts")],
+}
+
+
+def onboarding(area_id: int, user: dict[str, Any], checks: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """The first-days checklist per role, with done flags computed from the workspace."""
+    from . import backups, mailer, web
+    role = web.role_of(user)
+    ch = {c["key"]: c for c in (checks or workspace_checks(area_id, user))["checks"]}
+    s = config.load_settings(area_id=area_id)
+    done: dict[str, bool] = {
+        "login": ch.get("login", {}).get("status") == "ok",
+        "risk": ch.get("risk", {}).get("status") == "ok",
+        "alerts": ch.get("alerts", {}).get("status") == "ok",
+        "signal": bool(s.get("webhooks")) or bool(db.list_subscriptions(area_id)),
+        "record": bool(db.journal_accounts(area_id)) if hasattr(db, "journal_accounts") else False,
+        "listing": ch.get("listing", {}).get("status") == "ok",
+        "sizing": ch.get("sizing", {}).get("status", "ok") == "ok" and ch.get("listing", {}).get("status") == "ok",
+        "mailer": mailer.configured(),
+        "backup": backups.get_config()["offsite"] != "off",
+        "heartbeat": bool(heartbeat_config()["url"]),
+        "status": db.meta_get("incidents") is not None or bool(db.meta_get(f"onboarding_status_seen:{user['id']}")),
+    }
+    steps = [{"key": k, "label": label, "url": url, "done": bool(done.get(k))} for k, label, url in ONBOARDING.get(role, ONBOARDING["user"])]
+    dismissed = db.meta_get(f"onboarding_dismissed:{user['id']}") == "1"
+    return {"role": role, "steps": steps, "done": sum(1 for x in steps if x["done"]), "total": len(steps),
+            "complete": all(x["done"] for x in steps), "dismissed": dismissed}
 

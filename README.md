@@ -615,6 +615,20 @@ the last hour and admin-posted incidents (Settings → Platform). `GET /api/publ
 **Platform heartbeat** (Settings → Platform): an outbound ping to healthchecks.io / Uptime Kuma
 every N seconds carrying the deep-health result — the monitor reports when the bridge itself is gone.
 
+## Notifications, severities and readiness
+
+- **Inbox (bell):** every alert lands as a row per workspace with severity and deep link, read or
+  unread, independent of the channels. Admins also see platform events there.
+- **Severity per channel, quiet hours, digest** (Settings → Alerts): info / warning / critical;
+  critical always gets through; quiet hours follow the journal timezone; trade alerts can be bundled.
+- **Role-specific alerts:** Broadcasters hear about subscribers, failed payments and paused fan-out;
+  users about new sign-in addresses and two-factor resets; admins about health changes, updates and
+  Stripe webhook problems.
+- **Ready to trade** and **Getting started** on the Overview: what is missing before the workspace can
+  run safely, with a Fix link per item; a first-days checklist per role.
+- **What's new** after each update, **release mail** to everyone who wants it, and per-user **mail
+  preferences** with one-click unsubscribe (Settings → Account).
+
 ## Alerts
 
 **Settings → Alerts** — three channels, each with its own on/off switch:
@@ -774,6 +788,20 @@ Subscriptions are stored in the `subscriptions` table; the sharing config lives 
 webhook itself (`sharing` key), so v4 data stays compatible.
 
 ---
+### Broadcaster business (cockpit, announcements, tiers, trials)
+
+- **Cockpit** (Broadcaster / Admin): subscribers per status, monthly revenue, new subscribers per
+  week, and per listing the tier, signals and error rate of the last 30 days, latency and P&L.
+- **Announcements:** a message to the subscribers of one listing or all — inbox, push and (opt-out)
+  e-mail on their side; at most three a day.
+- **Tiers** on the marketplace card, from facts only: Bronze (a week published with trades or a
+  subscriber), Silver (30 days, 30 broker-verified trades, error rate under 5 %), Gold (90 days, 100
+  verified trades, 90 days of history, five subscribers, under 2 % errors).
+- **Applying:** *Become a Broadcaster* takes strategy, instruments, experience and a link; the admin
+  sees them next to the applicant's journal track record and approves permanently or as a trial
+  (30/90/180 days). A trial warns the admins three days before it ends and lapses on its own.
+- **Weekly report** by mail on Monday morning (opt-out under Settings → Account).
+
 ### Verified track record
 
 Every published signal and copy group carries a **track record** on its marketplace card

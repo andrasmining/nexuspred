@@ -21,7 +21,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # Prefixes match whole subtrees; pages match exactly (``/loginx`` is *not* exempt).
 AUTH_EXEMPT_PREFIXES = ("/webhook/", "/static/", "/api/agent/")
 AUTH_EXEMPT_PATHS = frozenset({
-    "/healthz", "/readyz", "/status", "/api/public/status", "/metrics", "/guide", "/favicon.ico", "/sw.js", "/api/payments/webhook",
+    "/healthz", "/readyz", "/status", "/unsubscribe", "/api/public/status", "/metrics", "/guide", "/favicon.ico", "/sw.js", "/api/payments/webhook",
     "/login", "/logout", "/register", "/setup", "/reset", "/login/2fa",
 })
 # Paths a signed-in user who still has to enrol in two-factor may reach.
@@ -144,6 +144,8 @@ ROUTE_POLICY: list[tuple[tuple[str, ...] | None, str, str]] = [
     (None, "/api/backups", "admin"),
     (None, "/api/platform/", "admin"),
     (None, "/api/incidents", "admin"),
+    (None, "/api/broadcaster/", "broadcaster"),
+    (None, "/api/announcements", "broadcaster"),
     (("PUT", "POST", "DELETE"), "/api/webhooks", "user"),           # own webhooks: every role (sharing / subscribers: see the exact rules)
     (None, "/api/simulator", "broadcaster"),
     (None, "/api/simulate", "broadcaster"),
