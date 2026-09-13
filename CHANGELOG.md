@@ -4,6 +4,86 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.90
+Review round 7: six reviews (order engine, broker adapters, copy trading / marketplace, platform red team,
+frontend, performance profiling) — every finding re-verified against the code before a fix.
+- **Order engine**
+  - TS-Hunter: a lost answer on the trade's own market close marks the quantity unknown; the next `full_close`
+    flattens what the broker shows instead of sending the same close again (which could have opened the
+    opposite position, stop already cancelled). A partial close on an unknown quantity is refused.
+  - `close_all` closes the contract the trade was placed in, not the current symbol-map month (after a
+    rollover the current month is flat: nothing was cancelled and the record was dropped).
+  - Bracket: the stop and the targets leave together, the stop first — covered one round trip after the
+    entry instead of after the last target's answer (entry still before stop). The entry records the
+    target slices it placed (`tp_slices`), so `tp3_hit` on a tp1+tp3 payload resizes the stop instead of
+    retiring it; a `set_sl_tp` record without `entry_qty` no longer crashes a later `move_sl`.
+  - Tracked trades survive a restart: a JSON snapshot per workspace, written on change and at shutdown,
+    restored at start. Shutdown waits up to 20 s for signals in flight (an entry is never split from its
+    stop by a deploy).
+  - Automations: the cooldown is reserved when the rule matches, so two events in one tick fire it once;
+    an account filter on events without an account no longer silently disables the rule.
+  - A tracked account that is no longer routed is reported at error level when a close skips it.
+    Fractional quantities are invalid (never silently floored). Cancelled counts are right.
+  - Off the loop: the renewed Tradovate token is persisted on the writer thread; the manual order's audit
+    row too; single settings keys are peeked instead of copied.
+- **Broker adapters**
+  - Tradovate: a caller joining a shared read/lookup no longer dies with the leader's cancellation (a
+    P&L timeout could kill the copy feed and, 30 s later, flatten every follower); a pasted token brings
+    its own expiry (a stale stored one made a fresh token look expired); HTTP 502/504 and an unparseable
+    2xx on an order path are "outcome unknown", never a rejection (no blind re-place); a valid token needs
+    no lock (a renewal in flight no longer queues every order behind it); contract resolution is
+    single-flight per root; position names resolve together; error bodies are truncated.
+  - ProjectX: lost answers on modify / cancel / close are unknown outcomes (logged, alerted, never
+    retried blind); `Retry-After` is clamped to 120 s; the copy feed's order snapshot keeps working
+    orders older than 36 h; an unusable custom gateway disables the login instead of posting the API key
+    to the default firm.
+  - Rithmic: one contract id per symbol whichever exchange named it. Rollover asks a Tradovate session
+    only. The heartbeat URL is re-checked at send time. The agent pairing check is cached (no SQLite
+    read per relayed request). Trade-account saves validate the body shape.
+- **Copy trading and marketplace**
+  - A follower whose position memory was invalidated (news flatten, risk lock, a rejected order) is read
+    from the broker before the next delta — for every broker, not only cross-broker ones; the reconcile
+    forgets a locked follower's picture. Without this a leader close after a news flatten sent a
+    "Sell 2" on a flat account.
+  - The follower seed respects the order settle window and the per-follower lock (a stale snapshot could
+    undo a mirror just sent). A runner stop waits for shielded twin placements (no duplicate twins after
+    a group edit). Flatten pauses the group before closing. An account already following a marketplace
+    group cannot join an own group. Two subscribers with the same account name: the second is reported,
+    not silently dropped. A subscriber who leaves with an open position is alerted.
+  - Billing: a publisher's kick or a deleted listing cancels the subscriber's Stripe subscription (they
+    kept paying for nothing). A refund / dispute / uncollectible invoice stays withdrawn for the period it
+    hit — a routine subscription update no longer re-grants access (new column `revoked_until`). The daily
+    cap is reserved in the gate (two entries in one tick cannot both pass a cap of one). The publisher's
+    payment view carries no Stripe ids or checkout links.
+  - A subscriber's broker error (it starts with their login name) never reaches the publisher's status
+    or rows. The Discord test embed stays in the workspace (no fan-out). The Discord listener and the
+    copy loop no longer copy the settings per message / per area every 5 s. Fan-out uses a read-only
+    settings view per subscriber (no deep copy per target). Follower cancels and modifies of copied
+    orders run in parallel; twin writes go through the writer thread.
+- **Platform**
+  - Red team (score 82/100, no tenant leak found): NAT64-mapped internal addresses are rejected by the
+    SSRF guard; at most 40 live streams per workspace (429 beyond); a JSON body nested too deeply is a
+    400 on every endpoint; `NEXUSPRED_PROXY_HOPS=0` documented for deployments without a proxy.
+  - Performance (profiled): the history writer commits per drain instead of per row (the loop's settings
+    writes stalled behind the busy handler); the live stream probes for a gone client on the idle tick
+    only (a third of the stream's CPU with 50 dashboards); a settings save returns the C-copied snapshot
+    instead of a Python deep copy; the webhook router is matched first; the push stack is warmed at
+    startup (the first alert imported it on the loop); `/api/status` and the accounts overview read the
+    cached settings. uvicorn's access log is opt-in (`NEXUSPRED_ACCESS_LOG=1`).
+- **Frontend**
+  - Static assets are served under `/static/v/<version>/` with a one-year immutable cache (a deploy
+    changes every URL, so nothing is ever stale); the German dictionary is loaded only for German.
+  - A proxy's HTML error page is never shown raw; requests time out after 30 s so buttons re-enable.
+    ~70 strings that bypassed translation now go through it (mixed-language German UI), with a test
+    that lints for bare UI strings; duplicate and stale dictionary keys removed.
+  - The drawer is a real modal (focus inside, Tab trapped, shell inert, focus restored); toggles carry
+    labels; native prompts replaced by a dialog; deep links keep the sidebar item and title; selects no
+    longer clip their text; raw exceptions are truncated with the full text on hover; hint contrast
+    meets AA and nothing is set below 11 px; polling pauses in hidden tabs; double submits blocked;
+    dates carry the year outside the current one; the SOS emoji is an icon, status colours no longer
+    paint a live account red, labels are sentence case.
+- 30 new regression tests (792 total).
+
 ## 5.0.0-alpha.89
 - **PR #23 merged** (andrasmining, must-fix audit of alpha.88 — reviewed finding by finding, all
   eight confirmed, no policy changes, the same-broker Tradovate path is untouched):

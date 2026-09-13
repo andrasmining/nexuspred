@@ -220,7 +220,9 @@ ProjectX tick size / tick value, for Rithmic from the built-in table by product 
   minute server-wide — so rotating or spoofing IPs buys an attacker nothing. The client
   address is taken from the hop the *trusted* proxy appended to `X-Forwarded-For`
   (`NEXUSPRED_PROXY_HOPS`, default 1 = Render / one nginx; 0 = no proxy, ignore the
-  header; 2 = Cloudflare in front of nginx). 256 KB request-body cap.
+  header — set it when the bridge is reachable without a proxy, or a client could pick its
+  own rate-limit bucket; 2 = Cloudflare in front of nginx). 256 KB request-body cap; at most
+  40 live-stream connections per workspace.
 - **Signal ingress**: at most 60 signals per webhook per 10 seconds (HTTP 429) and 256
   queued signal tasks bridge-wide (HTTP 503), so a leaked webhook URL cannot queue unbounded
   broker work; every price and quantity in a payload is validated before the first broker
@@ -369,9 +371,11 @@ contract, the log and an alert say so:
 ```
 
 Trades are tracked by `trade_id`, not symbol — several concurrent TS-Hunter trades on the
-same symbol never collide. If the bridge restarts and loses track of a trade, `full_close`
-still works: it falls back to flattening the symbol on every account the webhook currently
-routes to (there is no tracked quantity to isolate on).
+same symbol never collide. Tracked trades survive a restart since alpha.90 (a snapshot per
+workspace is written whenever they change and once more at shutdown, and read back at
+start); a trade the bridge does not know any more is still closed by `full_close`: it falls
+back to flattening the symbol on every account the webhook currently routes to (there is no
+tracked quantity to isolate on).
 
 **Protective stop that cannot be placed.** For `bracket` and `ts_hunter` entries the stop is
 retried once (waiting out a rate-limit penalty). When it fails again the entry is **closed
@@ -529,14 +533,15 @@ budget holds).
 ---
 ## Performance
 
-Measured on alpha.84 with a fake broker (20 ms per call) and the real request pacing; the
+Measured on alpha.89/90 with a fake broker (20 ms per call) and the real request pacing; the
 scripts live outside the repo, the numbers are for orientation:
 
 | Path | Result |
 |---|---|
 | Webhook ingress → first broker call (bridge time) | 0.2–0.5 ms, independent of the number of accounts (all accounts in flight together) |
-| `POST /webhook/{token}` | 1.1 ms p50 at concurrency 1 (~900 req/s), ~1100 req/s at 10–50 |
-| 50 dashboards on the live stream | a webhook costs 3.3 ms, every frame delivered |
+| `POST /webhook/{token}` | 0.9 ms p50 at concurrency 1 (~1000 req/s), ~1200 req/s at 10–50 (one worker saturates there) |
+| 50 dashboards on the live stream | a webhook costs 2.4 ms (3.3 before alpha.90), every frame delivered; 200 dashboards 3 ms |
+| Memory | 96 MB RSS after 20 000 webhooks and 2 000 stream connects; no module-level container grows past its cap |
 | Fan-out to 50 subscribers | publisher's first order 1.7 ms, last subscriber's 5 ms p50 |
 | Kill switch, 20 accounts on 20 logins | one account's time (325 ms) — logins are independent |
 | Kill switch, 20 accounts on **one** login | 2.6 s: 44 calls through the login's 60 ms order lane |
@@ -545,10 +550,18 @@ scripts live outside the repo, the numbers are for orientation:
 What is left is by choice, not by accident: Tradovate orders, cancels, liquidations and the
 reads of a close go through one lane per login spaced 60 ms apart (ProjectX 100 ms) so a burst
 never trips the 429 that would refuse the stop of the same bracket; a bracket places the entry,
-then the targets, then the stop (three dependent round trips per account). Shortening the
-lane, sending the stop first or using the broker's OCO would cut a multi-account bracket or a
-one-login kill switch by up to half — both change order-path behaviour and are decisions for
-the operator, not for a review pass.
+then its stop and targets together — the stop first in the line, so the position is covered
+one round trip after the entry (alpha.90; before, the stop waited for the last target's
+answer). Shortening the lane or using the broker's OCO would cut a multi-account bracket or a
+one-login kill switch further — both change order-path behaviour and are decisions for the
+operator, not for a review pass.
+
+Off the order path: the history writer commits its queue in batches (one transaction per
+drain, so a settings save on the loop never waits behind row-by-row commits), the live stream
+probes for a gone client on its idle tick only, static assets are served under a versioned
+path with a one-year immutable cache (a deploy changes every URL), the German dictionary is
+fetched only for German, and uvicorn's per-request access log is off unless
+`NEXUSPRED_ACCESS_LOG=1` (the bridge keeps its own signal, order and event logs).
 
 ## Alerts
 
@@ -1179,8 +1192,9 @@ logins stay valid, webhook URLs and Tradovate tokens carry over — nothing to r
   deploy. No `/setup`, no migration. Rollback = set the branch to `backup/v4.11.0`.
 - **Self-hosted**: `git fetch && git checkout main && pip install -r requirements.txt`,
   restart. Rollback = `git checkout backup/v4.11.0`.
-- Deploy while **flat**: a restart (any version) drops the in-memory trade tracking, so
-  stop/partial-close signals for trades opened *before* the restart are skipped.
+- Since alpha.90 tracked trades survive a restart (snapshot per workspace, written on change
+  and at shutdown; signals in flight finish before the process stops). Deploying while flat
+  is still the calm option.
 - **Never run two instances against the same `NEXUSPRED_DATA_DIR` at the same time.**
   Both would renew the same Tradovate tokens and execute the same webhooks twice. For a
   side-by-side comparison, **copy** the data directory and enable **Trading** in only one
