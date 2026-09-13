@@ -1,9 +1,8 @@
-"""Safety extensions for copy-trading follower flattening.
+"""Safety extensions for copy-trading execution and follower flattening.
 
 The main GroupRunner remains the high-churn feed/mirror implementation. This
-subclass narrows the feed-loss flatten policy: a submitted market close is not
-proof of a flat follower, and unknown/slow broker outcomes are reconciled with
-read-only position checks rather than another financial mutation.
+subclass adds the financial-safety boundaries that must be checked at mutation
+time: marketplace authorization and broker-confirmed feed-loss flattening.
 """
 from __future__ import annotations
 
@@ -11,30 +10,122 @@ import asyncio
 import time
 from typing import Any, Optional
 
-from .. import context
+from .. import config, context, db, marketplace, news
+from ..tradovate import TradovateError
 from .group_runner import (
     FEED_STALE_S,
     POLL_ERROR_SLEEP_S,
     GroupRunner as _BaseGroupRunner,
 )
+from .groups import load_groups, target_qty
 
 FLATTEN_VERIFY_DELAY_S = 0.25
 FLATTEN_VERIFY_READS = 3
 
 
 class GroupRunner(_BaseGroupRunner):
-    """GroupRunner with broker-truth feed-loss flatten semantics."""
+    """GroupRunner with execution-time ACL and broker-truth flatten semantics."""
 
     def __init__(self, area_id: int, group: dict[str, Any]) -> None:
         super().__init__(area_id, group)
         self.flatten_unresolved: list[str] = []
 
-    async def _confirm_flat(self, ex: Any, cid: int) -> Optional[int]:
-        """Read broker positions until flat or the short settle window expires.
+    def _external_authorized(self, follower: dict[str, Any]) -> bool:
+        """Current publisher/subscriber authorization for one external follower."""
+        if not follower.get("external"):
+            return True
+        try:
+            farea = self._area_of(follower)
+            sub_id = int(follower.get("sub_id") or 0)
+            sub = db.get_subscription(sub_id, area_id=farea) if sub_id else None
+            current = next((g for g in load_groups(self.area_id) if g.get("id") == self.id), None)
+            if not sub or not current or not current.get("enabled"):
+                return False
+            if not sub.get("enabled") or str(sub.get("status") or "active") != "active":
+                return False
+            if int(sub.get("publisher_area_id") or 0) != self.area_id:
+                return False
+            if str(sub.get("webhook_id") or "") != f"copy:{self.id}":
+                return False
+            sh = marketplace.sharing_of(current)
+            if not sh.get("enabled") or sh.get("paused"):
+                return False
+            return marketplace.subscription_allowed(current, sub)
+        except Exception:  # noqa: BLE001 - authorization uncertainty fails closed
+            return False
 
-        No close order is sent here. ``0`` confirms flat, a non-zero value is
-        residual exposure, and ``None`` means broker truth could not be read.
-        """
+    async def _mirror_follower(self, f: dict[str, Any], cid: int, name: str, net: int, unit: int,
+                               copy_adds: bool, reason: str, t0: Optional[float]) -> None:
+        """Mirror one follower with authorization checked inside its execution lock."""
+        spec = f["spec"]
+        lock = self.locks.setdefault(spec, asyncio.Lock())
+        async with lock:
+            # This check is intentionally immediately before the order path. A
+            # selected-user ACL revocation must not wait for sync_area's next
+            # five-second refresh before it stops new financial actions.
+            if not self._external_authorized(f):
+                self._record("skipped", follower=spec, symbol=name,
+                             detail=f"{reason}: marketplace authorization no longer valid")
+                return
+
+            target = target_qty(f, net, unit, copy_adds=copy_adds)
+            ex = self._executor(f)
+            if ex is None:
+                self.follower_err[spec] = "login disabled or account gone"
+                self._record("reject", follower=spec, symbol=name, detail="login disabled or account gone")
+                return
+            farea = self._area_of(f)
+            if not config.setting("trading_enabled", area_id=farea):
+                self._record("skipped", follower=spec, symbol=name,
+                             detail=f"{reason}: trading switch is off" + (" in the follower's workspace" if farea != self.area_id else ""))
+                return
+            if reason == "drift" and self.leader_net.get(cid, 0) != net:
+                return
+            if news.flattened_lock(farea):
+                self._record("skipped", follower=spec, symbol=name,
+                             detail=f"{reason}: news lock (flatten) active in the follower's workspace")
+                return
+            if self.orders.touched_recently(spec, cid):
+                await self.orders.cancel_all(reason="leader position changed", spec=spec, cid=cid)
+                actual = await self._broker_net(ex, cid)
+                if actual is not None:
+                    self.follower_pos[(spec, cid)] = actual
+            have = self.follower_pos.get((spec, cid), 0)
+            delta = target - have
+            if delta == 0:
+                return
+            with context.use_area(farea):
+                try:
+                    res = await ex.place_order(symbol=name, action="Buy" if delta > 0 else "Sell",
+                                               qty=abs(delta), order_type="Market")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    err = f"{exc}" if isinstance(exc, TradovateError) else f"{type(exc).__name__}: {exc}"
+                    self.follower_err[spec] = err[:200]
+                    self.follower_err_at[spec] = time.monotonic()
+                    self._record("reject", follower=spec, symbol=name, detail=f"{reason}: {err}")
+                    self._alert(f"Copy reject: {spec}", f"{name} {reason}: {err}", area_id=farea)
+                    return
+            if not isinstance(res, dict) or res.get("status") != "submitted":
+                raw = res.get("raw") if isinstance(res, dict) else None
+                err = str((raw or {}).get("errorText") or (res.get("status") if isinstance(res, dict) else res))
+                self.follower_err[spec] = err[:200]
+                self.follower_err_at[spec] = time.monotonic()
+                self._record("reject", follower=spec, symbol=name, detail=f"{reason}: {err}")
+                self._alert(f"Copy reject: {spec}", f"{name} {reason}: {err}", area_id=farea)
+                return
+            self.follower_pos[(spec, cid)] = target
+            self.last_order_at[spec] = time.monotonic()
+            self.follower_err.pop(spec, None)
+            self.follower_err_at.pop(spec, None)
+            latency = int((time.monotonic() - t0) * 1000) if t0 is not None else None
+            self.last_latency_ms = latency if latency is not None else self.last_latency_ms
+            self._record("mirror", follower=spec, symbol=name, latency_ms=latency,
+                         detail=f"{reason} → {'Buy' if delta > 0 else 'Sell'} {abs(delta)} (now {target:+d})")
+
+    async def _confirm_flat(self, ex: Any, cid: int) -> Optional[int]:
+        """Read broker positions until flat or the short settle window expires."""
         last: Optional[int] = None
         for attempt in range(FLATTEN_VERIFY_READS):
             last = await self._broker_net(ex, cid)
@@ -98,8 +189,6 @@ class GroupRunner(_BaseGroupRunner):
         contracts |= {int(t.get("contract_id") or 0) for t in self.orders.twins.values() if t.get("contract_id")}
         contract_ok = {cid: True for cid in contracts}
 
-        # Anything still present in the twin registry survived/was unresolved by
-        # cancel_all; a flat position with a live copied exit order is not safe.
         for (spec, _leader_id), twin in list(self.orders.twins.items()):
             cid = int(twin.get("contract_id") or 0)
             if cid in contract_ok:
