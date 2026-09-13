@@ -541,8 +541,8 @@ budget holds).
 ---
 ## Performance
 
-Measured on alpha.89/90 with a fake broker (20 ms per call) and the real request pacing; the
-scripts live outside the repo, the numbers are for orientation:
+Measured with a fake broker (20 ms per call) and the real request pacing; the scripts live
+outside the repo, the numbers are for orientation. Re-measured for alpha.101:
 
 | Path | Result |
 |---|---|
@@ -554,6 +554,10 @@ scripts live outside the repo, the numbers are for orientation:
 | Kill switch, 20 accounts on 20 logins | one account's time (325 ms) — logins are independent |
 | Kill switch, 20 accounts on **one** login | 2.6 s: 44 calls through the login's 60 ms order lane |
 | Risk guard, 10 accounts tripping at once | one flatten's time — together, not one after the other |
+| Webhook token lookup, on every signal | 7 µs (22 µs before alpha.101), 50 webhooks in the workspace |
+| Auth gate per request (role, quota, support window) | ~7 µs — not a bottleneck |
+| Manual order, the ledger writes around the broker call | 2.3 ms (2.9 ms before alpha.101) |
+| Start until `/healthz` answers | ~1.0 s |
 
 What is left is by choice, not by accident: Tradovate orders, cancels, liquidations and the
 reads of a close go through one lane per login spaced 60 ms apart (ProjectX 100 ms) so a burst
@@ -643,6 +647,13 @@ every N seconds carrying the deep-health result — the monitor reports when the
 - **Assisted support:** a user grants 24 hours of write access; every change is logged under the admin.
 - **Quotas per role** (5/3/2, 25/10/5, unlimited), per-user overrides on the Users page.
 - **Monthly roles report** and **admin broadcasts** with banner.
+
+### One process, by design
+
+Broker sessions, tracked trades, the copy runners, the history writer and every background loop
+are in-process state. A second worker would log in twice at the broker, mirror every copy trade
+twice and send every mail twice — silently. The bridge therefore refuses to start when
+`WEB_CONCURRENCY` (or `UVICORN_WORKERS` / `GUNICORN_WORKERS`) is above 1.
 
 ## Alerts
 

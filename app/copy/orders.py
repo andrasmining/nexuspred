@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from .. import config, context, db, history
 from . import feed as leader_feed
-from ..tradovate import WORKING_STATUSES, RateLimited, TradovateError
+from ..tradovate import WORKING_STATUSES, OrderOutcomeUnknown, RateLimited, TradovateError
 
 if TYPE_CHECKING:  # pragma: no cover
     from .group_runner import GroupRunner
@@ -41,6 +41,7 @@ GONE = {"Filled", "Canceled", "Cancelled", "Rejected", "Expired", "Completed"}  
 MIRRORED_TYPES = {"Limit", "Stop", "StopLimit"}
 TOUCH_WINDOW_S = 30.0       # after a twin event the position mirror reads the broker's position
 DONE_HOLD_S = 30.0          # a twin that filled / vanished at the broker is not re-created for this long
+UNKNOWN_HOLD_S = 3600.0     # a placement whose outcome nobody knows is never re-sent on its own: it may be live
 
 
 def _num(v: Any) -> Optional[float]:
@@ -67,6 +68,7 @@ class OrderMirror:
         self._apply_lock = asyncio.Lock()                      # poll, socket and reconcile never diff concurrently
         self._dirty = False                                    # socket events arrived while an apply ran
         self._done_at: dict[tuple[str, int], float] = {}       # (spec, leader order id) → twin found done (monotonic)
+        self._unknown: dict[tuple[str, int], float] = {}       # (spec, leader order id) → placement whose outcome nobody knows
         self._inflight: set[asyncio.Future] = set()            # shielded placements a stop() waits for
 
     # ------------------------------------------------------------ helpers
@@ -398,7 +400,12 @@ class OrderMirror:
         now = time.monotonic()
         for k in [k for k, t in self._done_at.items() if now - t >= DONE_HOLD_S]:
             self._done_at.pop(k, None)
-        return now - self._done_at.get(self._twin_key(spec, leader_order_id), -1e9) < DONE_HOLD_S
+        for k in [k for k, t in self._unknown.items() if now - t >= UNKNOWN_HOLD_S]:
+            self._unknown.pop(k, None)
+        key = self._twin_key(spec, leader_order_id)
+        if now - self._unknown.get(key, -1e9) < UNKNOWN_HOLD_S:
+            return True
+        return now - self._done_at.get(key, -1e9) < DONE_HOLD_S
 
     async def _create_for(self, f: dict[str, Any], o: dict[str, Any], partner: Optional[dict[str, Any]], name: str) -> int:
         """One twin (or OCO pair) for one follower. Returns twins placed."""
@@ -462,6 +469,19 @@ class OrderMirror:
                     qty_by = {o["id"]: qty, partner["id"]: pq}
             except asyncio.CancelledError:
                 raise
+            except OrderOutcomeUnknown as exc:
+                # The order may be resting at the follower's broker. Re-sending it
+                # would double the position, so this twin is held back and the
+                # workspace is told to check that account — the same rule the
+                # position mirror and the engine follow for an unknown outcome.
+                self._unknown[self._twin_key(spec, o["id"])] = time.monotonic()
+                if partner is not None:
+                    self._unknown[self._twin_key(spec, partner["id"])] = time.monotonic()
+                self.r.follower_err[spec] = f"outcome unknown: {exc}"[:200]
+                self.r.follower_err_at[spec] = time.monotonic()
+                self._record("order_unknown", follower=spec, symbol=name,
+                             detail=f"leader {o['action']} {o['qty']} {o['order_type']}: outcome unknown — not re-sent, check this account's working orders")
+                return 0
             except Exception as exc:  # noqa: BLE001
                 err, ids = (f"{exc}" if isinstance(exc, TradovateError) else f"{type(exc).__name__}: {exc}"), []
         if err is not None:

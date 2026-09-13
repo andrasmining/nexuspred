@@ -12,7 +12,7 @@ import { renderTopbar } from "./components/topbar.js";
 import { closeDrawer } from "./components/drawer.js";
 import { ROUTES } from "./pages/index.js";
 import { registerWorker } from "./push.js";
-import { t } from "./i18n.js";
+import { t, ready as i18nReady } from "./i18n.js";
 
 const shell = $("#shell");
 const view = $("#view");
@@ -137,6 +137,7 @@ function render() {
 
 /* ---------------------------------------------------------------- boot */
 async function boot() {
+  await i18nReady();          // the dictionary before the first string is rendered
   initTheme();
   shell.classList.toggle("collapsed", collapsed);
   $("#scrim").addEventListener("click", () => shell.classList.remove("sidebar-open"));

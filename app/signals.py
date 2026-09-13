@@ -91,6 +91,35 @@ def _release_trade_lock(key: str) -> None:
 _active: dict[int, dict[str, dict[str, Any]]] = {}
 _sim_active: dict[int, dict[str, dict[str, Any]]] = {}
 
+# Lock keys held by a signal that is running right now. An entry holds its lock
+# for the whole handler but only becomes a *tracked* trade at the very end, so a
+# manual close that derives its keys from the tracked map alone would miss it and
+# run concurrently with the entry — cancelling and liquidating between the entry
+# fill and its protective stop. Anything that has to serialise against a live
+# signal asks here as well as the tracked map.
+_inflight_keys: dict[tuple[int, str], set[str]] = {}
+
+
+def _inflight_add(area_id: int, root: str, key: str) -> None:
+    with _lock:
+        _inflight_keys.setdefault((area_id, root), set()).add(key)
+
+
+def _inflight_drop(area_id: int, root: str, key: str) -> None:
+    with _lock:
+        keys = _inflight_keys.get((area_id, root))
+        if keys is None:
+            return
+        keys.discard(key)
+        if not keys:
+            _inflight_keys.pop((area_id, root), None)
+
+
+def inflight_lock_keys(area_id: int, root: str) -> list[str]:
+    """Lock keys of the signals running right now for this area and symbol root."""
+    with _lock:
+        return sorted(_inflight_keys.get((area_id, root)) or ())
+
 
 ACTIVE_TTL_S = 45 * 24 * 3600     # a record whose position closed without a signal (stop hit) is forgotten after this — longer than any prop-firm hold, shorter than forever
 _sweep_n = 0
@@ -464,8 +493,12 @@ async def process(
     # Serialise all signals for this webhook+symbol so concurrent events (e.g. two
     # TP moves arriving together) don't race on the shared active-trade state.
     lock_key = f"{context.get_area()}:{'sim' if simulate else 'live'}:{webhook['id']}:{root}"
-    async with _trade_lock(lock_key):
-        result = await run()
+    _inflight_add(context.get_area(), root, lock_key)
+    try:
+        async with _trade_lock(lock_key):
+            result = await run()
+    finally:
+        _inflight_drop(context.get_area(), root, lock_key)
     if action == "close_all" or _trade_key(webhook["id"], root) not in active_map:
         _release_trade_lock(lock_key)                # nothing tracked: the lock must not outlive the trade
     return result

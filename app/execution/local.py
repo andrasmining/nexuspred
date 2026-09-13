@@ -62,7 +62,12 @@ async def close_position(command: ClosePosition) -> dict[str, Any]:
     # root, not necessarily the broker contract's root.
     lock_keys = [f"{context.get_area()}:live:ts:{t['trade_id']}" if t.get("trade_id") else
                  f"{context.get_area()}:live:{t.get('webhook_id') or k.rsplit(':', 1)[0]}:{t.get('root') or root}"
-                 for k, t in trades.items()] or [f"{context.get_area()}:live:manual:{root}"]
+                 for k, t in trades.items()]
+    # An entry that is still running holds its lock but is not tracked yet: it
+    # only lands in the map once every leg is placed. Without this the close
+    # would cancel and liquidate between the entry fill and its protective stop.
+    lock_keys += signals.inflight_lock_keys(context.get_area(), root)
+    lock_keys = lock_keys or [f"{context.get_area()}:live:manual:{root}"]
     locks = [signals._trade_lock(k) for k in sorted(set(lock_keys))]
     acquired = []
     try:

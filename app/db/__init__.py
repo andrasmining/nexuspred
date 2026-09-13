@@ -193,6 +193,7 @@ from .push import (  # noqa: F401
 )
 from .audit import (  # noqa: F401
     log_action,
+    prune_audit,
     LOGIN_ACTIONS,
     list_audit,
 )

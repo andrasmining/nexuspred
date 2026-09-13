@@ -9,6 +9,7 @@ import asyncio
 import logging
 import contextlib
 import gc
+import os
 import secrets
 from typing import Any
 from contextlib import asynccontextmanager
@@ -26,7 +27,25 @@ from .web import BASE_DIR, is_auth_exempt, mfa_setup_allowed, wants_html
 _loop_tasks: list[asyncio.Task] = []
 
 
+def _refuse_multiple_workers() -> None:
+    """One process owns the runtime state: broker sessions, active trades, the
+    copy runners, the history writer, every background loop. A second worker
+    would log in twice at the broker, mirror every copy trade twice and send
+    every mail twice — silently. Refuse to start rather than do that."""
+    for var in ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GUNICORN_WORKERS"):
+        raw = os.environ.get(var) or ""
+        try:
+            n = int(raw)
+        except ValueError:
+            continue
+        if n > 1:
+            raise RuntimeError(
+                f"{var}={n}: Fluxbridge runs as exactly one process — broker sessions, active trades, "
+                "copy runners and the background loops are in-process state. Set it to 1.")
+
+
 async def _startup() -> None:
+    _refuse_multiple_workers()
     try:
         restored = backups.apply_pending_restore()          # alpha.99: a rollback's database, before the first open
     except Exception as exc:  # noqa: BLE001
@@ -76,6 +95,25 @@ async def _startup() -> None:
                                     "environment so the key lives outside the DB file.")
     except Exception as exc:  # noqa: BLE001 - never block startup on the migration
         state.log_event("warn", f"secret encryption pass failed: {exc}")
+    # Warm the settings cache for every workspace before the first request. A
+    # cold read is a synchronous SQLite SELECT plus one decrypt per secret, and
+    # it would land on the event loop inside the first signal after a deploy —
+    # exactly when the operator is checking that the deploy works.
+    try:
+        def _warm() -> int:
+            n = 0
+            for aid in db.all_area_ids():
+                try:
+                    config.load_settings(area_id=aid)
+                    n += 1
+                except Exception:  # noqa: BLE001 - one unreadable workspace must not stop the others
+                    pass
+            return n
+        warmed = await asyncio.to_thread(_warm)
+        if warmed:
+            logging.getLogger(__name__).info("settings cache warmed for %s workspace(s)", warmed)
+    except Exception as exc:  # noqa: BLE001
+        state.log_event("warn", f"settings warm-up failed: {exc}")
     # Durable signal/order history: prune, refill the live buffers, start the writer.
     try:
         db.prune_copy_events()
@@ -133,8 +171,14 @@ async def _history_prune_loop() -> None:
             await asyncio.to_thread(db.prune_deliveries)
             await asyncio.to_thread(db.prune_notifications)
             await asyncio.to_thread(db.prune_escalations)
+            await asyncio.to_thread(db.prune_audit)
+            from .db import execution as _execution_ledger
+            await asyncio.to_thread(_execution_ledger.prune_commands)
         except Exception as exc:  # noqa: BLE001
             state.log_event("warn", f"history prune failed: {exc}")
+
+
+SHUTDOWN_GRACE_S = 40.0   # a protective stop in flight must finish before the HTTP pool closes
 
 
 async def _shutdown() -> None:
@@ -144,7 +188,13 @@ async def _shutdown() -> None:
     with contextlib.suppress(Exception):
         left = await signals.drain_background()
         if left:
-            state.log_event("error", f"shutdown: {left} signal task(s) still running after 20 s — check the broker for unprotected positions")
+            # The HTTP pool closes a few lines below: a protective stop still in
+            # flight would lose its connection mid-request and leave the position
+            # unprotected. Give it a second, longer grace period before that.
+            state.log_event("warn", f"shutdown: {left} signal task(s) still running after 20 s — waiting up to {SHUTDOWN_GRACE_S:.0f} s more")
+            left = await signals.drain_background(SHUTDOWN_GRACE_S)
+            if left:
+                state.log_event("error", f"shutdown: {left} signal task(s) still running — check the broker for unprotected positions")
     for t in _loop_tasks:
         t.cancel()
     for t in _loop_tasks:

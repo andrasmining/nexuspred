@@ -1851,6 +1851,7 @@ export const DE = {
   "No escalation yet. A critical alert opens one when escalation is switched on.": "Noch keine Eskalation. Ein kritischer Alert öffnet eine, wenn Eskalation eingeschaltet ist.",
   "since {when} · stage {stage}": "seit {when} · Stufe {stage}",
   "Acknowledge": "Bestätigen",
+  "Acknowledged": "Bestätigt",
   "acknowledged by {who}": "bestätigt von {who}",
   "Escalations": "Eskalationen",
   "Push at once with an acknowledge link, e-mail after 2 minutes, Telegram / SMS after 5 — until someone acknowledges.": "Push sofort mit Bestätigungslink, E-Mail nach 2 Minuten, Telegram / SMS nach 5 — bis jemand bestätigt.",

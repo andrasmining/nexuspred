@@ -4,6 +4,73 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.101
+Review round 8: six reviews (red team, trade path, performance, new modules, frontend, operations)
+against alpha.100, every finding verified in the code before it was changed, each with a regression
+test in `tests/test_alpha101.py`.
+
+**Trading safety**
+- **A manual close now waits for an entry that is still running.** An entry holds its lock for the
+  whole handler but only becomes a *tracked* trade once every leg is placed. Until then the dashboard's
+  Close button derived its lock from the tracked map alone, took a different lock, and could cancel and
+  liquidate between the entry's fill and its protective stop. Running signals now register their lock
+  key, and the close waits for them.
+- **A copy order whose outcome is unknown is never sent again.** A timeout on a follower's placement was
+  recorded as a rejection, so the next reconcile pass (every 10 s) placed the order a second time while
+  the first may have been resting at the broker. It is now held back for an hour and shown as
+  "outcome unknown" on the copy page — the rule the position mirror and the engine already followed.
+- **Assisted support can trade again.** alpha.100's execution boundary required a workspace membership
+  row, which a support admin never has, so the write window a customer granted stopped working —
+  including the emergency flatten. The boundary now accepts the granted window, re-reads it on every
+  order, and still refuses an admin without one.
+
+**Security**
+- The platform heartbeat URL is checked again immediately before every ping, not only when it is saved:
+  a short-lived DNS record could otherwise point an accepted host into the internal network afterwards.
+- Changing another administrator's quota or feature entitlements is now reserved for the bootstrap
+  admin, like every other cross-admin action.
+- A mail subject can no longer contain a line break, which used to make every recipient's delivery fail.
+
+**Backups and restore**
+- A snapshot is integrity-checked immediately before it replaces the live database; a broken one is
+  refused and the live database is left untouched.
+- Rotation always keeps the newest *verified* snapshot, instead of dropping it as soon as newer
+  snapshots fail their check.
+- The encrypted off-site copy is deleted whenever no mail actually took it, so a failed off-site run
+  no longer leaves a full copy of the database on disk every day.
+- A snapshot is skipped rather than half-written when the disk cannot hold the rewrite it needs.
+
+**Operations**
+- The sign-in / admin-action log and settled manual commands are pruned daily; they were the two tables
+  that grew forever.
+- The history writer's queue is bounded: a stalled disk drops the oldest bookkeeping row and says so
+  instead of growing in memory, and the trade itself never waits on it. Shutdown gives the queue time
+  proportional to what is in it and reports anything lost.
+- A protective stop still in flight at shutdown gets a second grace period before the HTTP pool closes.
+- The bridge refuses to start with more than one worker configured, instead of silently logging in
+  twice at the broker and mirroring every copy trade twice.
+- The manual-command ledger waits as long as the rest of the app for the database lock.
+- The canary rehearses in a book of its own. It used to run in the operator's workspace, where it
+  shared the Simulator page's trade map and position book.
+- A version is only marked "release notes sent" once a mailer existed to send them.
+- The settings history no longer records a version claiming every key changed after each restart.
+
+**Performance** (same machine, before → after)
+- Webhook token lookup, on every signal: 22 µs → 7 µs (benchmark workspace: 50 webhooks, 66 KB of settings).
+- Manual order ledger, the writes around the broker call: 2.9 ms → 2.3 ms. The claim keeps its full
+  crash-safety; the two writes that only record what the broker already answered do not need it, since
+  a restart marks them for reconciliation rather than replaying them.
+- The settings cache is warmed for every workspace at startup, so the first signal after a deploy no
+  longer pays for a blocking database read and decrypt on the event loop.
+- A backup snapshot runs on its own thread and can no longer queue in front of an order-path write.
+
+**Frontend**
+- The Telegram link poller stops when the page is left instead of polling every 4 s for 15 minutes.
+- The German dictionary is no longer loaded with a top-level await, which broke the whole dashboard on
+  older Safari.
+- The platform page's cards are torn down on leaving, and late answers no longer paint into a page that
+  is gone.
+
 ## 5.0.0-alpha.100
 Two community contributions by andrasmining merged, plus a CI fix.
 - **Execution-service boundary (PR #25).** Dashboard manual orders, position close and the emergency

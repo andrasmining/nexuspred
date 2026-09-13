@@ -13,9 +13,12 @@ export function telegramCard() {
   const status = h("div", { class: "callout" }, t("Loading…"));
   const codeBox = h("div", { class: "hidden", style: "margin-top:10px" });
   const btns = h("div", { class: "form-actions" });
+  let alive = true, poll = null, stopPoll = null;
+  const clearPoll = () => { if (poll) clearInterval(poll); if (stopPoll) clearTimeout(stopPoll); poll = stopPoll = null; };
   async function paint() {
     try {
       const s = await api.get("/api/telegram");
+      if (!alive) return;
       status.className = `callout ${!s.configured ? "warn" : s.linked ? "ok" : ""}`;
       status.textContent = !s.configured ? t("Telegram is not set up on this bridge yet — an admin adds the bot under Settings → Platform.")
         : s.linked ? t("Linked to chat {name}. Alerts at or above the Telegram threshold go there; the last escalation step uses it too.", { name: s.chat_name || "?" })
@@ -30,15 +33,18 @@ export function telegramCard() {
           try { const r = await api.post("/api/telegram/link-code"); clear(codeBox); codeBox.classList.remove("hidden");
             codeBox.append(h("div", null, t("Send this to the bot within 15 minutes:")), h("code", { style: "font-size:18px;display:inline-block;margin:6px 0;user-select:all" }, `/start ${r.code}`),
               h("div", { class: "muted", style: "font-size:12px" }, t("The page updates by itself once the chat is linked.")));
-            const timer = setInterval(async () => { const s2 = await api.get("/api/telegram").catch(() => null); if (s2 && s2.linked) { clearInterval(timer); codeBox.classList.add("hidden"); paint(); toast(t("Telegram linked"), "success"); } }, 4000);
-            setTimeout(() => clearInterval(timer), 15 * 60000);
+            clearPoll();
+            poll = setInterval(async () => { const s2 = await api.get("/api/telegram").catch(() => null); if (!alive) { clearPoll(); return; } if (s2 && s2.linked) { clearPoll(); codeBox.classList.add("hidden"); paint(); toast(t("Telegram linked"), "success"); } }, 4000);
+            stopPoll = setTimeout(clearPoll, 15 * 60000);
           } catch (e) { toast(e.message, "error"); }
         } }, icon("link"), t("Get a link code")));
       }
-    } catch (e) { status.className = "callout danger"; status.textContent = e.message; }
+    } catch (e) { if (!alive) return; status.className = "callout danger"; status.textContent = e.message; }
   }
   paint();
-  return card({ title: t("Telegram"), hint: t("A chat that receives your alerts — switched on and thresholded below like the other channels.") }, status, codeBox, btns);
+  const el = card({ title: t("Telegram"), hint: t("A chat that receives your alerts — switched on and thresholded below like the other channels.") }, status, codeBox, btns);
+  el.cleanup = () => { alive = false; clearPoll(); };
+  return el;
 }
 
 /* ---------------------------------------------------------------- escalations (Settings → Alerts) */

@@ -1,7 +1,10 @@
 """Audit log."""
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from .core import _connect, _now, init
+
+KEEP_DAYS = 400            # a year of sign-ins and admin actions, then the row goes
 
 
 def log_action(actor_user_id: Optional[int], actor_email: str, action: str,
@@ -39,3 +42,12 @@ def list_audit(limit: int = 100, *, logins: Optional[bool] = None) -> list[dict[
         return [{"id": r["id"], "created_at": r["created_at"], "actor_email": r["actor_email"],
                  "action": r["action"], "target": r["target"], "detail": r["detail"]}
                 for r in rows]
+
+
+def prune_audit(days: int = KEEP_DAYS) -> int:
+    """Drop audit rows older than ``days``. The table is append-only on every
+    sign-in and admin action, so without this it is the one that fills the disk."""
+    init()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as c:
+        return int(c.execute("DELETE FROM audit_log WHERE created_at<?", (cutoff,)).rowcount)

@@ -30,7 +30,7 @@ function knownRoots(settings) {
   return [...out].filter(Boolean).sort();
 }
 const KIND_TONE = { mirror: "on", feed_up: "on", resumed: "on", reject: "off", feed_lost: "warn", paused: "warn", drift: "warn", flatten: "warn", ws_miss: "warn", filtered: "", skipped: "", ignored: "",
-  order_mirror: "on", order_modify: "accent", order_cancel: "", order_done: "", order_skip: "", order_reject: "off", ws_up: "", ws_lost: "" };
+  order_mirror: "on", order_modify: "accent", order_cancel: "", order_done: "", order_skip: "", order_reject: "off", order_unknown: "warn", ws_up: "", ws_lost: "" };
 const orderText = (o) => `${o.action} ${o.qty} ${o.type}${o.price != null ? ` @ ${o.price}` : ""}${o.stop != null ? ` stop ${o.stop}` : ""}${o.oco ? t(" · OCO") : ""}`;
 
 function feedTag(g) {

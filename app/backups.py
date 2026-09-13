@@ -23,6 +23,7 @@ never on the order path, and everything blocking is on a thread.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -40,6 +41,7 @@ from urllib.parse import quote
 from . import config, context, crypto, db, http, security, state
 
 log = logging.getLogger("nexuspred.backups")
+_snapshot_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="backup")
 
 META_KEY = "backups"
 INDEX_KEY = "backups:index"
@@ -211,7 +213,15 @@ def write_snapshot(path: str) -> None:
             dst.execute("DELETE FROM password_resets WHERE used_at IS NULL")
             dst.execute("DELETE FROM invites WHERE used_by IS NULL")
             dst.execute("DELETE FROM agent_pairings")
-        dst.execute("VACUUM")               # the deleted rows must not survive in free pages
+        # VACUUM rewrites the whole file: it needs the snapshot's size again in
+        # free space. On a full disk that fails halfway, so it is skipped (with a
+        # warning) rather than risking the snapshot that is otherwise complete.
+        need = Path(path).stat().st_size * 2 + (16 << 20)
+        free = free_bytes()
+        if free is not None and free < need:
+            log.warning("backup: skipping VACUUM, %.0f MB free but %.0f MB needed", free / 1e6, need / 1e6)
+        else:
+            dst.execute("VACUUM")           # the deleted rows must not survive in free pages
     finally:
         dst.close()
         src.close()
@@ -278,6 +288,11 @@ def rotate(rows: list[dict[str, Any]], cfg: Optional[dict[str, Any]] = None) -> 
     for role, n in keep.items():
         for r in [r for r in ordered if role in (r.get("roles") or ["daily"])][:n]:
             needed.add(r["name"])
+    # Recency alone would rotate away the last *verified* snapshot as soon as a
+    # few newer ones fail their integrity check — exactly when it is needed.
+    newest_verified = next((r for r in ordered if r.get("verified")), None)
+    if newest_verified:
+        needed.add(newest_verified["name"])
     for r in ordered:
         if r.get("pinned"):
             needed.add(r["name"])
@@ -384,6 +399,7 @@ async def push_offsite(entry: dict[str, Any]) -> str:
         return ""
     enc = path.with_suffix(".db.enc")
     await asyncio.to_thread(encrypt_file, path, enc)
+    handed_over = False                      # only a queued mail owns the file afterwards
     try:
         if cfg["offsite"] == "s3":
             data = await asyncio.to_thread(enc.read_bytes)
@@ -397,9 +413,10 @@ async def push_offsite(entry: dict[str, Any]) -> str:
                                                   "url": (config.PUBLIC_URL or "") + "/#/settings/backups"}, attachment=str(enc))
         if not n:
             raise RuntimeError("no admin has a mail route (platform mailer off)")
+        handed_over = True                   # the mailer deletes the attachment after the send
         return f"mail:{n} admin(s)"
     finally:
-        if cfg["offsite"] != "mail":              # the mailer deletes the attachment after the send
+        if not handed_over:                  # every other path (S3, size refusal, no route, error) owns it
             try:
                 enc.unlink()
             except OSError:
@@ -426,7 +443,9 @@ async def run(reason: str = "scheduled") -> dict[str, Any]:
     _running = True
     try:
         try:
-            entry = await asyncio.to_thread(_make_snapshot_sync, reason)
+            # Its own thread: a snapshot of a large database runs for seconds and
+            # must never sit in front of an order-path write in the shared pool.
+            entry = await asyncio.get_running_loop().run_in_executor(_snapshot_pool, _make_snapshot_sync, reason)
         except Exception as exc:  # noqa: BLE001
             await _alarm("snapshot failed", f"{type(exc).__name__}: {exc}")
             raise
@@ -553,6 +572,23 @@ def apply_pending_restore() -> Optional[str]:
     src = backup_dir() / name
     if not src.exists():
         log.error("pending restore: snapshot %s is gone", name)
+        return None
+    # A snapshot can rot between being written and being restored. Only the
+    # integrity check applies here — probe()'s row comparison is against the
+    # live database, which is exactly the one being replaced.
+    try:
+        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        try:
+            integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+            tables = int(conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0])
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        log.error("pending restore: %s cannot be opened (%s) — the live database is untouched", name, exc)
+        return None
+    if integrity != "ok" or tables == 0:
+        log.error("pending restore: %s fails its integrity check (%s, %s tables) — the live database is untouched",
+                  name, integrity, tables)
         return None
     live = Path(db.DB_FILE)
     db.disconnect()

@@ -264,7 +264,7 @@ async def api_flatten_all(request: Request) -> dict[str, Any]:
 
     user = getattr(request.state, "user", None) or {}
     try:
-        return await service.execution.flatten(current_actor(user.get("id")))
+        return await service.execution.flatten(current_actor(user.get("id"), getattr(request.state, "support", None)))
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ExecutionError as exc:
