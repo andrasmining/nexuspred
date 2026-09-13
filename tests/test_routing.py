@@ -171,7 +171,7 @@ async def test_flatten_all_collects_errors(accounts, monkeypatch):
             raise tradovate.TradovateError("nope")
     monkeypatch.setattr(signals, "AccountExecutor", Failing)
     r = await signals.flatten_all()
-    assert r["flattened"] == 0 and sorted(r["errors"]) == ["A1: flatten X: nope", "A2: flatten X: nope"]
+    assert r["flattened"] == 0 and sorted(r["errors"]) == ["A1: flatten X: nope — broker still reports +1", "A2: flatten X: nope — broker still reports +1"]
 
 
 # --------------------------------------------------------- trade accounts

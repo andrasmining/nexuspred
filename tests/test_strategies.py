@@ -373,10 +373,12 @@ async def test_set_sl_tp_places_stop_and_target_from_live_position(live):
     info = active("wh_st:MNQ")["accounts"]["A"]
     assert info["sl_order_id"] == stop["order_id"] and info["tp_order_ids"] == [tgt["order_id"]]
 
-    # A repeated move cancels the previous orders and places fresh ones.
+    # A repeated stop move modifies the tracked stop in place: one broker call,
+    # and never two full-size stops working at once.
     await signals.process({"action": "set_sl_tp", "symbol": "MNQ1!", "new_sl": 95.0}, w)
-    assert [c["order_id"] for c in a.of("cancel")] == [stop["order_id"]]
-    assert a.of("place")[-1]["stop_price"] == 95.0
+    assert a.of("cancel") == []
+    assert a.of("modify")[-1] == {"order_id": stop["order_id"], "qty": 2, "order_type": "Stop", "stop_price": 95.0}
+    assert active("wh_st:MNQ")["accounts"]["A"]["sl_order_id"] == stop["order_id"]
 
 
 async def test_set_sl_tp_short_position_exits_with_buy(live):

@@ -171,6 +171,26 @@ def visible_to(sharing: dict[str, Any], user_id: int) -> bool:
     return True
 
 
+def subscription_allowed(sharing: dict[str, Any], sub: dict[str, Any]) -> bool:
+    """Whether a persisted subscription is still authorised by the publisher's
+    *current* ACL — checked at every fan-out, because a subscription row is not
+    a lease: a user removed from a "selected users" listing must stop receiving
+    signals at once, even while their row stays enabled (and paid). Free of
+    reads: ``sharing`` is the normalised config and ``sub`` carries the
+    subscriber's user id from the cached subscription row. A listing open to
+    everyone needs no check; a "selected" listing admits only a known user on
+    its list (an unknown principal never receives a private listing)."""
+    if sharing.get("visibility") != "selected":
+        return True
+    uid = sub.get("user_id")
+    if uid is None:
+        return False
+    try:
+        return int(uid) in (sharing.get("allowed_user_ids") or [])
+    except (TypeError, ValueError):
+        return False
+
+
 def public_view(webhook: dict[str, Any], publisher_area_id: int,
                 publisher_email: Optional[str] = None) -> dict[str, Any]:
     """What a subscriber may see of a published webhook (no token, no accounts)."""

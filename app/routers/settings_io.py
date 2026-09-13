@@ -37,10 +37,23 @@ def export_settings(area_id: int) -> dict[str, Any]:
             "version": config.get_version(), "settings": out}
 
 
+def _unpublished(raw: dict[str, Any]) -> dict[str, Any]:
+    """A listing's metadata as an unpublished draft: the export keeps the full
+    sharing block (it is the operator's own backup), but publication state and
+    the numeric user ACL are installation-local — imported, they would publish
+    a listing on the target bridge and grant it to whoever carries those ids
+    there. Title, description, price, tags and limits travel; the operator
+    republishes (and re-selects users) by hand."""
+    sh = dict(raw)
+    sh.update({"enabled": False, "allowed_user_ids": [], "published_at": "", "paused": False})
+    return sh
+
+
 def _import_webhook(w: dict[str, Any], current: dict[str, Any], area_id: int) -> dict[str, Any]:
     """A webhook from the file, normalised like the create/edit endpoints do.
     Routing survives only for logins that exist here (matched by login id);
-    a token already used by another workspace is replaced."""
+    a token already used by another workspace is replaced; a listing arrives
+    unpublished with its user list cleared (``_unpublished``)."""
     try:
         wh = config.new_webhook(name=str(w.get("name") or "Imported webhook")[:80],
                                 strategy=str(w.get("strategy") or "simple"),
@@ -66,7 +79,7 @@ def _import_webhook(w: dict[str, Any], current: dict[str, Any], area_id: int) ->
                              "sizing": sz})
         wh["accounts"] = accounts
         if isinstance(w.get("sharing"), dict):
-            wh["sharing"] = marketplace.normalize_sharing(w["sharing"])
+            wh["sharing"] = marketplace.normalize_sharing(_unpublished(w["sharing"]))
         if w.get("trade_window"):
             wh["trade_window"] = trade_window.normalize(w["trade_window"])
     except (TypeError, ValueError, AttributeError) as exc:

@@ -71,6 +71,9 @@ ORDER_STATUS = {0: "Working", 1: "Working", 2: "Filled", 3: "Canceled", 4: "Expi
 SIDES = {"Buy": 0, "Sell": 1}
 _MONTHS = "FGHJKMNQUVXZ"
 REQUEST_SPACING_S = 0.3
+PRIORITY_SPACING_S = 0.1          # orders / cancels / closes (and the reads of a close path): their own short gap, never behind polls
+PRIORITY_PENALTY_WAIT_S = 3.0     # a running 429 penalty shorter than this is waited out for an order; longer → refused at once
+PRIORITY_PATHS = ("/api/Order/place", "/api/Order/modify", "/api/Order/cancel", "/api/Position/closeContract")
 TOKEN_TTL_S = 20 * 3600
 ET = ZoneInfo("America/New_York")
 
@@ -135,6 +138,8 @@ class ProjectXSession(broker.BrokerSessionBase):
         self._token_at: float = 0.0
         self._lock = asyncio.Lock()
         self._pace = asyncio.Lock()
+        self._prio = asyncio.Lock()                   # the order lane (see _post)
+        self._last_prio = 0.0
         self._last_sent = 0.0
         self.penalty_until = 0.0
         self.rate_limits = 0
@@ -194,11 +199,25 @@ class ProjectXSession(broker.BrokerSessionBase):
     async def _post(self, path: str, body: dict[str, Any], *, retry: bool = True) -> dict[str, Any]:
         """One authenticated call, paced per login; 401 → re-login once, 429 → RateLimited."""
         token = await self._get_token()
-        async with self._pace:
-            wait = max(self.penalty_until - time.monotonic(), self._last_sent + REQUEST_SPACING_S - time.monotonic())
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_sent = time.monotonic()
+        if path in PRIORITY_PATHS or broker.is_urgent():
+            # orders, cancels, closes and the reads of a close path: a short gap of
+            # their own instead of the poll spacing — the polls then wait behind
+            # them (``_last_sent`` moves too), so the per-minute budget holds; a
+            # long 429 penalty is refused at once, never waited out for minutes
+            async with self._prio:
+                left = self.penalty_until - time.monotonic()
+                if left > PRIORITY_PENALTY_WAIT_S:
+                    raise RateLimited(path, "", left)
+                gap = max(left, self._last_prio + PRIORITY_SPACING_S - time.monotonic())
+                if gap > 0:
+                    await asyncio.sleep(gap)
+                self._last_prio = self._last_sent = time.monotonic()
+        else:
+            async with self._pace:
+                wait = max(self.penalty_until - time.monotonic(), self._last_sent + REQUEST_SPACING_S - time.monotonic())
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                self._last_sent = time.monotonic()
         try:
             r = await self._client().post(f"{self.base_url}{path}", json=body, headers={"Authorization": f"Bearer {token}"}, timeout=20.0)
         except (httpx.ConnectTimeout, httpx.PoolTimeout, httpx.ConnectError) as exc:

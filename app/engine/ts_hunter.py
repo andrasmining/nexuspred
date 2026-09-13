@@ -75,6 +75,7 @@ async def handle_entry(payload, side, root, target, trade_id, executors, active_
     results = await asyncio.gather(*(place_for(ex) for ex in executors), return_exceptions=True)
 
     acct_state, orders, summary, contract = _collect_entries(executors, results, tag=tag, label="TS-Hunter entry", fallback_contract=target, qty_key="qty")
+    failed = [ex.name for ex, res in zip(executors, results) if isinstance(res, Exception)]
 
     if acct_state:
         with _lock:
@@ -85,13 +86,20 @@ async def handle_entry(payload, side, root, target, trade_id, executors, active_
             }
 
     state.log_event(
-        "info", f"{tag}[{webhook.get('name', '?')}] TS-Hunter {side.upper()} {contract} "
+        "error" if failed else "info",
+        f"{tag}[{webhook.get('name', '?')}] TS-Hunter {side.upper()} {contract} "
         f"(trade {trade_id}) on {len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}"
+        + (f"; failed: {', '.join(failed)}" if failed else ""),
     )
     if acct_state and not tag:
         events.emit("trade.executed", webhook=webhook.get("name", "?"), action=side, contract=contract, accounts=list(acct_state), settings=s)
-    return {"status": "ok", "action": "signal", "contract": contract, "trade_id": trade_id,
-            "accounts": summary, "orders": orders, "simulated": tag != ""}
+    # a failed account is isolated (and, after a failed stop, closed again by the
+    # engine): the entry stays "ok" for the others; the names travel in ``failed``
+    out = {"status": "ok", "action": "signal", "contract": contract, "trade_id": trade_id,
+           "accounts": summary, "orders": orders, "simulated": tag != ""}
+    if failed:
+        out["failed"] = failed
+    return out
 
 
 async def handle_partial_close(payload, trade_id, executors, active_map, tag):
@@ -133,44 +141,59 @@ async def handle_partial_close(payload, trade_id, executors, active_map, tag):
         new_remaining = remaining - qty_to_close
         # the close went through: the position is smaller — record that first,
         # then bring the stop in line; a failed stop change is reported loudly
+        # and makes the account a failure of this close (the position is smaller
+        # than its stop, or flat with a stop still working)
         info["remaining_qty"] = new_remaining
         info["qty"] = new_remaining
+        protection_error = ""
 
         if info.get("sl_order_id"):
             if new_remaining > 0:
                 try:
                     await _resize_stop(ex, info, new_remaining, info.get("sl_stop"))
                 except TradovateError as exc:
+                    protection_error = f"stop not resized: {exc}"
                     state.log_event("error", f"{tag}{ex.name}: stop could not be resized to {new_remaining} after the partial close: {exc} — it still covers {remaining}")
             else:
                 try:
                     await ex.cancel_order(info["sl_order_id"])
                     info["sl_order_id"] = None
                 except TradovateError as exc:
+                    protection_error = f"stop not retired: {exc}"
                     state.log_event("error", f"{tag}{ex.name}: stop could not be retired after the position closed: {exc} — cancel it by hand")
 
-        return order
+        return order, protection_error
 
     names = list(active["accounts"])
     results = await asyncio.gather(*(close_for(n) for n in names), return_exceptions=True)
 
     orders: list[dict[str, Any]] = []
     closed_accounts: list[str] = []
+    failed: list[str] = []
     for name, r in zip(names, results):
         if isinstance(r, Exception):
-            state.log_event("warn", f"{tag}TS-Hunter partial close failed for {name}: {r}")
+            failed.append(name)
+            state.log_event("error", f"{tag}TS-Hunter partial close failed for {name}: {r} — its position is unchanged")
             continue
         if r is not None:
-            orders.append(r)
+            order, protection_error = r
+            orders.append(order)
             closed_accounts.append(name)
+            if protection_error:
+                failed.append(name)
 
     state.log_event(
-        "info", f"{tag}TS-Hunter {stage or 'partial close'} for trade {trade_id}: "
+        "error" if failed else "info",
+        f"{tag}TS-Hunter {stage or 'partial close'} for trade {trade_id}: "
         f"{percent:.2f}% of remaining closed on {len(closed_accounts)} account(s)"
+        + (f"; close/stop failed on {', '.join(failed)}" if failed else ""),
     )
-    return {"status": "ok", "action": "partial_close_percent", "lifecycle_stage": stage,
-            "trade_id": trade_id, "accounts": closed_accounts, "orders": orders,
-            "simulated": tag != ""}
+    out = {"status": "error" if failed else "ok", "action": "partial_close_percent", "lifecycle_stage": stage,
+           "trade_id": trade_id, "accounts": closed_accounts, "orders": orders,
+           "simulated": tag != ""}
+    if failed:
+        out["failed"] = failed
+    return out
 
 
 async def handle_full_close(payload, trade_id, target, executors, active_map, tag):
@@ -231,15 +254,16 @@ async def handle_full_close(payload, trade_id, target, executors, active_map, ta
             raise OrdersLeftWorking(f"stop remains after closing trade {trade_id} on {contract}: {detail}")
         return cancelled
 
-    results = await asyncio.gather(
-        *(close_account(ex, info) for ex, info in targets), return_exceptions=True
+    # enabled accounts the record does not list are left alone — reported when
+    # they hold the contract; that look runs alongside the closes, never after them
+    tracked_now = {ex.name for ex, _ in targets}
+    results, untracked = await asyncio.gather(
+        asyncio.gather(*(close_account(ex, info) for ex, info in targets), return_exceptions=True),
+        _report_untracked(executors, tracked_now, tag, target, trade_id) if tracked else _nobody(),
     )
     cancelled = sum(r for r in results if isinstance(r, int))
     failed = [ex.name for (ex, _), r in zip(targets, results) if isinstance(r, Exception)]
     succeeded = [ex.name for (ex, _), r in zip(targets, results) if isinstance(r, int)]
-    # enabled accounts the record does not list are left alone — reported when they hold the contract
-    tracked_now = {ex.name for ex, _ in targets}
-    untracked = await _report_untracked(executors, tracked_now, tag, target, trade_id) if tracked else []
     for (ex, _), r in zip(targets, results):
         if isinstance(r, Exception):
             state.log_event("error", f"{tag}TS-Hunter full_close FAILED for {ex.name}: {r} — "
@@ -250,13 +274,19 @@ async def handle_full_close(payload, trade_id, target, executors, active_map, ta
     reason = payload.get("reason", "")
     suffix = f": {reason}" if reason else ""
     state.log_event(
-        "info", f"{tag}TS-Hunter full_close for trade {trade_id} on {len(targets)} "
+        "error" if failed else "info",
+        f"{tag}TS-Hunter full_close for trade {trade_id} on {len(targets)} "
         f"account(s) ({cancelled} working orders cancelled){suffix}"
         + (f"; left alone: untracked position on {', '.join(untracked)}" if untracked else "")
+        + (f"; failed: {', '.join(failed)}" if failed else ""),
     )
     return {"status": "error" if failed else "ok", "action": "full_close", "trade_id": trade_id,
             "accounts": len(targets), "cancelled": cancelled,
             "failed": failed, "untracked": untracked, "simulated": tag != ""}
+
+
+async def _nobody() -> list[str]:
+    return []
 
 
 async def _report_untracked(executors, tracked_names, tag, target, trade_id) -> list[str]:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import sys
 from typing import Any
@@ -83,18 +84,28 @@ async def check_for_update() -> dict[str, Any]:
     return result
 
 
-def _run(cmd: list[str]) -> tuple[bool, str]:
+PIP_TIMEOUT_S = 900          # a cold install that builds cryptography / async_rithmic on a small VPS takes minutes
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _run(cmd: list[str], timeout: float = 120) -> tuple[bool, str]:
     try:
         out = subprocess.run(
             cmd,
             cwd=str(config.ROOT_DIR),
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
         )
         return out.returncode == 0, (out.stdout + out.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return False, f"timed out after {int(timeout)} s"
     except (subprocess.SubprocessError, OSError) as exc:
         return False, str(exc)
+
+
+def _pip_install() -> tuple[bool, str]:
+    return _run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], timeout=PIP_TIMEOUT_S)
 
 
 async def apply_update() -> dict[str, Any]:
@@ -118,7 +129,13 @@ async def apply_update() -> dict[str, Any]:
         }
 
     old_version = config.get_version()
-    state.log_event("info", f"Applying update from GitHub (current v{old_version})…")
+    # the revision to fall back to, verified before anything moves: a message
+    # where a SHA should be would turn a rollback into a second failure
+    ok, head_out = await asyncio.to_thread(_run, ["git", "rev-parse", "--verify", "HEAD^{commit}"])
+    old_head = head_out.strip().splitlines()[0].strip() if ok and head_out.strip() else ""
+    if not _SHA_RE.match(old_head):
+        return {"success": False, "message": f"Could not determine the current git revision — update not started: {head_out or 'no output'}"}
+    state.log_event("info", f"Applying update from GitHub (current v{old_version}, {old_head[:10]})…")
 
     ok, fetch_out = await asyncio.to_thread(
         _run, ["git", "fetch", "--all", "--tags", "--prune"]
@@ -134,10 +151,30 @@ async def apply_update() -> dict[str, Any]:
     if not ok:
         return {"success": False, "message": f"git update failed: {pull_out}"}
 
-    # Best-effort dependency refresh; ignore failures so a restart still happens.
-    await asyncio.to_thread(
-        _run, [sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"]
-    )
+    # Dependencies must install before the new code may run: a restart into a
+    # revision whose requirements are missing would not come back up. On a
+    # failure the checkout goes back to the previous revision (and its
+    # requirements are re-installed, best effort) and no restart is scheduled.
+    dep_ok, dep_out = await asyncio.to_thread(_pip_install)
+    if not dep_ok:
+        rb_ok, rb_out = await asyncio.to_thread(_run, ["git", "reset", "--hard", old_head])
+        if rb_ok:
+            await asyncio.to_thread(_pip_install)
+            config.get_version(force=True)
+        state.log_event("error", f"Update: dependency install failed ({dep_out[:500]}) — "
+                                 + (f"checkout restored to {old_head[:10]}, no restart" if rb_ok else f"and the rollback failed too: {rb_out[:300]}"))
+        return {
+            "success": False,
+            "message": (
+                f"Dependency installation failed ({dep_out[:200]}). The checkout was restored to the previous revision and "
+                "no restart was scheduled; installed packages may differ from that revision — check the log and run "
+                "pip install -r requirements.txt by hand if needed."
+                if rb_ok
+                else f"Dependency installation failed ({dep_out[:200]}) and the rollback failed ({rb_out[:200]}). "
+                     "No restart was scheduled; restore the checkout by hand."
+            ),
+            "previous_version": old_version,
+        }
 
     new_version = config.get_version(force=True)
     state.log_event("info", f"Updated v{old_version} → v{new_version}; restarting…")

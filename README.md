@@ -517,6 +517,14 @@ its own. Who asks what:
 | Rollover | contract lookups | once a day |
 | Signals, risk guard, flatten | orders, cancels, liquidations | on demand |
 
+Orders, cancels and liquidations never queue behind the polls: they have a short lane of
+their own (a burst is spaced 60 ms apart), and a running 429 penalty longer than 3 s is
+refused at once rather than waited out. The **reads of a close** — the order list before a
+cancel, the position list before a flatten or a stop repair — take that lane too
+(`broker.urgent()`), so a kill switch or a close is never held behind a monitor's poll.
+ProjectX has the same order lane (100 ms spacing; the polls wait behind it, the 200/min
+budget holds).
+
 ---
 ## Alerts
 
@@ -668,6 +676,9 @@ An admin can **publish** one of their webhooks; other users find it on the
   subscribers* is switched on (confirmation required).
 - Unpublishing pauses subscriptions; deleting the webhook removes them. Publish,
   subscribe, unsubscribe and removals are recorded in the admin audit log.
+- A subscription is **not a lease**: on a *selected users* listing every signal is
+  re-checked against the current user list — a user removed from it receives nothing
+  from that moment on (their subscription row stays; add them back and it resumes).
 
 Subscriptions are stored in the `subscriptions` table; the sharing config lives on the
 webhook itself (`sharing` key), so v4 data stays compatible.
@@ -971,8 +982,11 @@ and are gated by the **Allowed symbols** list.
 - The dashboard checks GitHub (`tobiasgiger/nexuspred`) for the latest **release tag**,
   falling back to the `VERSION` file on the default branch.
 - When the remote version is newer, the **Update available** button appears in the header.
-- Clicking it runs `git fetch` + `git reset --hard origin/<branch>`, refreshes
-  dependencies, and **re-execs** the process so it boots on the new code.
+- Clicking it runs `git fetch` + `git reset --hard origin/<branch>`, installs the
+  dependencies, and **re-execs** the process so it boots on the new code. When the
+  dependency install fails (or times out after 15 min) the checkout is restored to the
+  previous revision and **no restart** is scheduled — the running process keeps its old
+  code; installed packages may then differ from that revision (the log says so).
 - Requires the app to be running from a `git` checkout. Override the tracked branch with
   the `NEXUSPRED_BRANCH` environment variable (default `main`).
 
@@ -990,7 +1004,9 @@ the file's values after a confirmation (keys absent from the file are left alone
 ids and tokens travel with the file, so TradingView alerts pointing at the old bridge keep
 working on the new one; a token already used by another workspace on the target bridge gets
 a fresh one. Routing is kept only for logins that exist on the target (matched by login id) —
-re-route the webhook after moving to a bridge with different logins. Every value passes the
+re-route the webhook after moving to a bridge with different logins. A marketplace listing
+arrives **unpublished** with its user list cleared (title, description, price and tags
+travel; user ids mean other people on another bridge) — republish it by hand. Every value passes the
 same validation as the settings form; both actions are recorded in the audit log. The
 database backup above is the full copy including secrets.
 

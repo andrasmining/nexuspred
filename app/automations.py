@@ -11,6 +11,7 @@ never automatable itself) and rate-limited per rule by its cooldown.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import secrets
 import time
@@ -245,17 +246,23 @@ async def _flatten_accounts(area_id: int, specs: list[str], *, lock_reason: str 
     from . import risk
     if not specs:
         return "no account to act on"
-    lines = []
-    for spec in specs:
+    async def one(spec: str) -> str:
         found = _find_account(area_id, spec)
         if not found:
-            lines.append(f"{spec}: not found")
-            continue
+            return f"{spec}: not found"
         sess, acc = found
         if lock_reason and not risk.lock_of(area_id, spec):          # never overwrite the risk guard's own record
             risk._lock(area_id, spec, "automation", lock_reason, 0.0, clock_day=risk.trading_day())
         c, f, errs = await risk.flatten_account(sess, acc)
-        lines.append(f"{spec}: {c} cancelled, {f} flattened" + (f", errors: {'; '.join(errs)}" if errs else "") + (" — locked for today" if lock_reason else ""))
+        return f"{spec}: {c} cancelled, {f} flattened" + (f", errors: {'; '.join(errs)}" if errs else "") + (" — locked for today" if lock_reason else "")
+
+    # every account at once: an action on several accounts is one broker round trip long, not N
+    results = await asyncio.gather(*(one(spec) for spec in specs), return_exceptions=True)
+    lines = []
+    for spec, r in zip(specs, results):
+        if isinstance(r, asyncio.CancelledError):
+            raise r
+        lines.append(f"{spec}: failed ({type(r).__name__}: {r})" if isinstance(r, BaseException) else r)
     return "; ".join(lines)
 
 

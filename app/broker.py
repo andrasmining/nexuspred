@@ -16,7 +16,31 @@ Tradovate-specific report access (the journal importer) is explicitly marked
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, runtime_checkable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator, Optional, Protocol, runtime_checkable
+
+_urgent: ContextVar[bool] = ContextVar("broker_urgent", default=False)
+
+
+@contextmanager
+def urgent() -> Iterator[None]:
+    """Mark the reads of a close path as urgent: inside this block a broker's
+    request pacing treats list reads (working orders, positions) like orders —
+    their own short spacing, never queued behind the monitors' polls, and a
+    long 429 penalty is refused at once instead of waited out for minutes. A
+    close, a flatten and a stop repair read before they act; that read must not
+    be the slow step. Task-local (a ContextVar): every await inside inherits it,
+    nothing outside does."""
+    tok = _urgent.set(True)
+    try:
+        yield
+    finally:
+        _urgent.reset(tok)
+
+
+def is_urgent() -> bool:
+    return _urgent.get()
 
 BROKERS = ("tradovate", "rithmic", "projectx")   # implementations the bridge ships
 

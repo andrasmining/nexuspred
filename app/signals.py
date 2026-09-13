@@ -47,6 +47,7 @@ from .engine import bracket, manage, simple, ts_hunter
 from .engine.common import (  # noqa: F401 - re-exported for callers/tests
     SignalError,
     _cancel_working,
+    _flatten_account,
     _lock,
     _resolve_symbol,
     _trade_key,
@@ -194,7 +195,17 @@ def accept(payload: dict[str, Any], webhook: dict[str, Any], *, forward: bool = 
     accepted = time.perf_counter()
     _spawn(process_background(payload, webhook, settings=s, accepted_at=accepted))
     if forward:
-        forward_to_subscribers(payload, webhook, accepted_at=accepted)
+        # the fan-out (views, per-subscriber logs, task spawns) runs as its own
+        # loop step *after* the publisher's task has taken its first step: the
+        # publisher's own order never waits for the bookkeeping of others
+        asyncio.get_running_loop().call_soon(_forward_safely, payload, webhook, accepted)
+
+
+def _forward_safely(payload: dict[str, Any], webhook: dict[str, Any], accepted_at: float) -> None:
+    try:
+        forward_to_subscribers(payload, webhook, accepted_at=accepted_at)
+    except Exception as exc:  # noqa: BLE001 - a fan-out failure never reaches the publisher
+        state.log_event("error", f"[{webhook.get('name', '?')}] fan-out to subscribers failed: {exc}")
 
 
 def forward_to_subscribers(payload: dict[str, Any], webhook: dict[str, Any],
@@ -215,14 +226,21 @@ def forward_to_subscribers(payload: dict[str, Any], webhook: dict[str, Any],
     subs = db.active_subscriptions(aid, webhook.get("id", ""))
     random.shuffle(subs)                    # fairness: no subscriber is systematically first in the queue
     shared = {k: v for k, v in payload.items() if not (isinstance(k, str) and "passphrase" in k.lower())}
+    dispatched = revoked = 0
     for sub in subs:
+        if not marketplace.subscription_allowed(sh, sub):
+            revoked += 1                    # no longer on the publisher's list: the row is not a lease
+            continue
         view = marketplace.subscription_view(webhook, sub, aid)
         with context.use_area(sub["area_id"]):
             state.log_signal(dict(shared), result="received", webhook=view.get("name", ""), webhook_id=str(view.get("id") or ""))
             _spawn(process_background(dict(shared), view, trusted=True, accepted_at=accepted_at))
-    if subs:
-        state.log_event("info", f"[{webhook.get('name', '?')}] forwarded to {len(subs)} subscriber(s)")
-    return len(subs)
+        dispatched += 1
+    if revoked:
+        state.log_event("warn", f"[{webhook.get('name', '?')}] {revoked} subscription(s) skipped: no longer on the listing's user list")
+    if dispatched:
+        state.log_event("info", f"[{webhook.get('name', '?')}] forwarded to {dispatched} subscriber(s)")
+    return dispatched
 
 
 async def process_background(payload: dict[str, Any], webhook: dict[str, Any], *, trusted: bool = False,
@@ -527,30 +545,8 @@ async def flatten_all() -> dict[str, Any]:
         state.log_event("warn", "🆘 SOS flatten-all: no trade accounts found")
         return {"status": "ok", "accounts": 0, "cancelled": 0, "flattened": 0, "errors": []}
 
-    async def flatten(ex: AccountExecutor) -> tuple[int, int, list[str]]:
-        errors: list[str] = []
-        # 1) Cancel every working order first (so stops/targets don't re-fill).
-        cancelled = await _cancel_working(ex, "", errors)
-        # 2) Flatten every open position (any symbol) on this account — all at once.
-        flattened = 0
-        try:
-            positions = await ex.positions()
-        except TradovateError as exc:
-            errors.append(f"list positions: {exc}")
-            positions = []
-        symbols = [p.get("symbol") for p in positions if p.get("symbol")]
-        results = await asyncio.gather(*(ex.liquidate_position(s) for s in symbols),
-                                       return_exceptions=True)
-        for sym, r in zip(symbols, results):
-            if isinstance(r, TradovateError):
-                errors.append(f"flatten {sym}: {r}")
-            elif isinstance(r, BaseException):
-                raise r
-            else:
-                flattened += 1
-        return cancelled, flattened, errors
-
-    results = await asyncio.gather(*(flatten(ex) for ex in executors), return_exceptions=True)
+    # per account: cancel, then liquidate every position at once; every account in flight together
+    results = await asyncio.gather(*(_flatten_account(ex, "") for ex in executors), return_exceptions=True)
 
     cancelled = flattened = 0
     all_errors: list[str] = []

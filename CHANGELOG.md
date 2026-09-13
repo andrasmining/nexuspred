@@ -4,6 +4,80 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.82
+Selective adoption of the external PR #21 ("Harden execution reconciliation and platform
+safety") — everything that survived review, **without** the three policy reversals (alpha.72:
+a stop that will not cancel is an error and the trade stays tracked; alpha.73: an unknown stop
+outcome cancels the contract's orders and closes the entry again; alpha.78: fan-out for every
+subscriber of an open listing) — plus a pass over the execution path for serial waits. 696
+tests, 29 new. Tradovate order requests are unchanged; the reads of a close now take the
+order lane (see below).
+
+**Engine**
+- A protective stop whose answer was lost (`OrderOutcomeUnknown`) is **not retried**: a second
+  attempt could put two full-size stops on the position. It goes straight to the alpha.73
+  resolution — the contract's working orders are cancelled and the entry is closed again.
+- `set_sl_tp` **modifies a tracked stop in place** (one call, never two full-size stops working
+  at once). A *rejected* modify falls back to place-new-then-cancel-old, so a stale or
+  ineligible id still ends in a protected position; a *lost* answer keeps the old stop tracked
+  and reports the account. A replacement target whose old target will not cancel is **rolled
+  back** (one target working, never two). An account whose positions cannot be read is a
+  failure (`failed`), never "no open position".
+- `trail_active` **retires the stop** when the last target filled instead of modifying it to
+  quantity 0 (a rejection at the broker).
+- Every handler names the accounts it could not serve in **`failed`** and logs at error level.
+  Entries stay `ok` for the other accounts (a failed account is isolated and, after a failed
+  stop, closed again by the engine); management actions (`move_sl`, `trail_active`,
+  `partial_close_percent`, `close_all`, `full_close`, `set_sl_tp`) report `error` when any
+  account failed. A partial close whose stop could not follow marks the account.
+- One shared emergency flatten (`engine.common._flatten_account`) for the SOS button, the risk
+  guard and the automations: every symbol liquidated **once** (duplicate rows deduplicated),
+  all liquidations in flight together, a liquidation whose call raised is judged by **one**
+  broker re-read (a lost answer with a flat position is a success; a rejection reports the
+  residual quantity). No settle waits, no second blanket cancel — the kill switch stays a
+  millisecond path, and a cancel after the liquidation could cancel the liquidation itself.
+
+**Marketplace / copy**
+- A subscription row is **not a lease**: at every fan-out a "selected users" listing is
+  re-checked against its current user list — a removed user receives nothing, at once, even
+  with an enabled (and paid) row; the same check takes their accounts out of a copy group's
+  mirror at the next sync. Read-free: the subscriber's user id rides along in the cached
+  subscription rows. Listings open to everyone are not gated at all.
+- The copy feed-loss flatten keeps closing every follower **at once**, then does **one**
+  verification pass (one settle wait, every follower's position list together): what the
+  broker still shows open, could not be re-read, or still has a copied order working is listed
+  in `flatten_unresolved` (status) and in the pause reason — never re-sent, a close whose answer
+  was lost may well have filled.
+
+**Platform**
+- Settings **import** neutralises a listing's publication state and numeric user ACL (it arrives
+  unpublished, with an empty user list; title, description, price, tags travel). The **export**
+  stays complete — it is the operator's own backup, and restoring it must not silently
+  unpublish anything.
+- Updater: the rollback revision is verified (`git rev-parse --verify`, a 40-hex SHA) before
+  anything moves; a **failed dependency install** restores the checkout and schedules **no
+  restart** (the previous behaviour restarted into code whose requirements were missing).
+  `pip` gets 15 minutes instead of 2, and a timeout is reported as such. The message says
+  what was restored and that packages may need attention.
+
+**Parallel execution path**
+- **Urgent read lane** (`broker.urgent()`): the reads of a close — working orders before a
+  cancel, positions before a flatten or a protective change — take the broker's *order* lane
+  instead of the poll lane: their own short spacing, never queued behind the monitors' polls,
+  and a long 429 penalty is refused at once instead of being waited out for up to two minutes
+  (Tradovate `/order/list`, `/position/list`; ProjectX gets an order lane of its own —
+  orders, cancels, closes at 0.1 s spacing, polls wait behind them, the 200/min budget holds).
+- The **risk guard** flattens every account that trips on one tick at the same time; an
+  **automation** acting on several accounts flattens them together; `close_all` and the
+  TS-Hunter `full_close` look at the untracked accounts **while** the tracked ones close.
+- The marketplace fan-out (views, per-subscriber logs, task spawns) runs as its own loop step
+  **after** the publisher's task took its first step: the publisher's order never waits for the
+  bookkeeping of others.
+- Not adopted from the PR: the publisher-window gate on the fan-out (a silent product change —
+  subscribers have their own window), the watchdog DNS re-validation (breaks split-horizon
+  installs, no-op redirect flag), the `id(session)` feed key (unbounded growth), the full
+  safety subclass of the copy runner (production and tests would run different classes).
+
 ## 5.0.0-alpha.81
 - **Event archive**: a past calendar event leaves the news list and the calendar's default
   ranges 8 h after its time (`news.ARCHIVE_AFTER_H`). The "Past 7 days" range still shows

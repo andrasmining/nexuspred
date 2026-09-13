@@ -20,10 +20,13 @@ def _row_to_sub(r: sqlite3.Row) -> dict[str, Any]:
         controls = json.loads(r["controls"] or "{}") if "controls" in r.keys() else {}
     except json.JSONDecodeError:
         controls = {}
-    return {"id": r["id"], "area_id": r["area_id"], "publisher_area_id": r["publisher_area_id"],
-            "webhook_id": r["webhook_id"], "enabled": bool(r["enabled"]), "accounts": accounts,
-            "status": (r["status"] if "status" in r.keys() else "active") or "active", "controls": controls if isinstance(controls, dict) else {},
-            "created_at": r["created_at"], "updated_at": r["updated_at"]}
+    out = {"id": r["id"], "area_id": r["area_id"], "publisher_area_id": r["publisher_area_id"],
+           "webhook_id": r["webhook_id"], "enabled": bool(r["enabled"]), "accounts": accounts,
+           "status": (r["status"] if "status" in r.keys() else "active") or "active", "controls": controls if isinstance(controls, dict) else {},
+           "created_at": r["created_at"], "updated_at": r["updated_at"]}
+    if "user_id" in r.keys():
+        out["user_id"] = r["user_id"]                  # the subscriber (owner of the subscribing workspace)
+    return out
 
 
 SUB_STATUSES = ("active", "pending", "paused", "unpaid")
@@ -169,7 +172,10 @@ def active_subscriptions(publisher_area_id: int, webhook_id: str) -> list[dict[s
         return [dict(s) for s in cached]
     init()
     with _connect() as c:
-        rows = c.execute("SELECT * FROM subscriptions WHERE publisher_area_id=? AND webhook_id=? AND enabled=1 AND status='active' ORDER BY id",
+        # the subscriber's user id rides along (one join, cached with the row): the
+        # fan-out re-checks a "selected users" listing without any read of its own
+        rows = c.execute("SELECT s.*, a.owner_user_id AS user_id FROM subscriptions s LEFT JOIN areas a ON a.id = s.area_id "
+                         "WHERE s.publisher_area_id=? AND s.webhook_id=? AND s.enabled=1 AND s.status='active' ORDER BY s.id",
                          key).fetchall()
     subs = [_row_to_sub(r) for r in rows]
     _active_subs[key] = subs

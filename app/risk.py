@@ -209,28 +209,11 @@ def evaluate(r: dict[str, Any], total: float, now_local: datetime, now_ny: Optio
 async def flatten_account(session: Any, account: dict[str, Any]) -> tuple[int, int, list[str]]:
     """Cancel every working order and close every position of one account.
     Returns (cancelled, flattened, errors)."""
-    from .engine.common import _cancel_working
-    from .tradovate import AccountExecutor, TradovateError
+    from .engine.common import _flatten_account
+    from .tradovate import AccountExecutor
     ex = AccountExecutor(session, account)
-    errors: list[str] = []
-    with bypass():
-        cancelled = await _cancel_working(ex, "", errors)
-        try:
-            positions = await ex.positions()
-        except TradovateError as exc:
-            errors.append(f"list positions: {exc}")
-            positions = []
-        symbols = [p.get("symbol") for p in positions if p.get("symbol")]
-        results = await asyncio.gather(*(ex.liquidate_position(s) for s in symbols), return_exceptions=True)
-    flattened = 0
-    for sym, r in zip(symbols, results):
-        if isinstance(r, TradovateError):
-            errors.append(f"flatten {sym}: {r}")
-        elif isinstance(r, BaseException):
-            errors.append(f"flatten {sym}: {type(r).__name__}: {r}")
-        else:
-            flattened += 1
-    return cancelled, flattened, errors
+    with bypass():                                   # the lock just written must not refuse the guard's own orders
+        return await _flatten_account(ex, "")
 
 
 _warned_no_id: set[tuple[int, str]] = set()
@@ -269,6 +252,31 @@ async def check_area(area_id: int, sessions: list[Any], snapshots: list[dict[str
                 state.log_event("error", f"Risk guard: {a.get('spec')} has rules but no broker account id — "
                                          "it is NOT guarded; run Connect & Verify on its login")
     fired: list[dict[str, Any]] = []
+    jobs: list[Any] = []                                 # the tick's flattens: started together below
+
+    async def reflatten(sess: Any, acc: dict[str, Any], spec: str, lock: dict[str, Any]) -> None:
+        c, f, errs = await flatten_account(sess, acc)
+        if f or errs:
+            state.log_event("warn", f"🔒 {spec} is locked ({lock.get('reason')}): position closed again"
+                                    + (f" — {'; '.join(errs)}" if errs else ""))
+
+    async def trigger(lk: asyncio.Lock, sess: Any, acc: dict[str, Any], snap: dict[str, Any], spec: str,
+                      kind: str, reason: str, total: float, realized: float, clock_day: str) -> dict[str, Any]:
+        async with lk:
+            # lock first: from this moment every bridge order for the account is
+            # refused, so nothing can slip in while the flatten is under way
+            _lock(area_id, spec, kind, reason, total, realized=realized, clock_day=clock_day)
+            c, f, errs = await flatten_account(sess, acc)
+            snap["risk"].update({"locked": True, "reason": reason, "kind": kind})
+            state.log_event("warn", f"🔒 Risk guard: {spec} flattened and locked for today — {reason}"
+                                    f" ({c} order(s) cancelled, {f} position(s) closed" + (f"; errors: {'; '.join(errs)}" if errs else "") + ")")
+            with context.use_area(area_id):
+                try:
+                    await events.emit_async("risk.triggered", spec=spec, kind=kind, reason=reason, pnl=total, errors=errs)
+                except Exception as exc:  # noqa: BLE001
+                    state.log_event("warn", f"risk alert failed: {exc}")
+            return {"spec": spec, "kind": kind, "reason": reason, "cancelled": c, "flattened": f, "errors": errs, "pnl": total}
+
     for snap in snapshots:
         snap_aid = int(snap.get("account_id") or 0)
         pair = by_id.get((str(snap.get("login") or ""), snap_aid))
@@ -288,10 +296,7 @@ async def check_area(area_id: int, sessions: list[Any], snapshots: list[dict[str
             # still locked: a position that came back (manual trade) is closed again
             holds = ((sess.name, snap_aid) in open_accounts) if open_accounts is not None else bool(float(snap.get("open") or 0))
             if holds and _due(area_id, spec):
-                c, f, errs = await flatten_account(sess, acc)
-                if f or errs:
-                    state.log_event("warn", f"🔒 {spec} is locked ({lock.get('reason')}): position closed again"
-                                            + (f" — {'; '.join(errs)}" if errs else ""))
+                jobs.append(reflatten(sess, acc, spec, lock))
             continue
         if not active(r):
             continue
@@ -307,20 +312,17 @@ async def check_area(area_id: int, sessions: list[Any], snapshots: list[dict[str
         lk = _flatten_lock.setdefault(key, asyncio.Lock())
         if lk.locked():
             continue
-        async with lk:
-            # lock first: from this moment every bridge order for the account is
-            # refused, so nothing can slip in while the flatten is under way
-            _lock(area_id, spec, kind, reason, total, realized=realized, clock_day=clock.date().isoformat())
-            c, f, errs = await flatten_account(sess, acc)
-            snap["risk"].update({"locked": True, "reason": reason, "kind": kind})
-            fired.append({"spec": spec, "kind": kind, "reason": reason, "cancelled": c, "flattened": f, "errors": errs, "pnl": total})
-            state.log_event("warn", f"🔒 Risk guard: {spec} flattened and locked for today — {reason}"
-                                    f" ({c} order(s) cancelled, {f} position(s) closed" + (f"; errors: {'; '.join(errs)}" if errs else "") + ")")
-            with context.use_area(area_id):
-                try:
-                    await events.emit_async("risk.triggered", spec=spec, kind=kind, reason=reason, pnl=total, errors=errs)
-                except Exception as exc:  # noqa: BLE001
-                    state.log_event("warn", f"risk alert failed: {exc}")
+        jobs.append(trigger(lk, sess, acc, snap, spec, kind, reason, total, realized, clock.date().isoformat()))
+    if jobs:
+        # every account that trips on this tick is flattened at the same time —
+        # the second account never waits for the first one's broker round trips
+        for r in await asyncio.gather(*jobs, return_exceptions=True):
+            if isinstance(r, asyncio.CancelledError):
+                raise r
+            if isinstance(r, BaseException):
+                state.log_event("error", f"Risk guard: flatten failed: {type(r).__name__}: {r}")
+            elif isinstance(r, dict):
+                fired.append(r)
     return fired
 
 

@@ -232,11 +232,12 @@ class TradovateSession:
         uses this login shares that budget, so one busy loop cannot get the
         whole login banned."""
         import time as _time
-        if path.startswith(PRIORITY_PATHS):
-            # orders, cancels, liquidations: never queue behind polls; a burst of
-            # them is spaced a little so it does not trip the 429 that would then
-            # refuse the stop of the same bracket; a short running penalty is
-            # waited out, a long one is an immediate refusal (never a minute late)
+        if path.startswith(PRIORITY_PATHS) or broker.is_urgent():
+            # orders, cancels, liquidations (and the reads of a close path, see
+            # ``broker.urgent``): never queue behind polls; a burst of them is
+            # spaced a little so it does not trip the 429 that would then refuse
+            # the stop of the same bracket; a short running penalty is waited
+            # out, a long one is an immediate refusal (never a minute late)
             async with self._prio_lock:
                 left = self.penalty_until - _time.monotonic()
                 if left > PRIORITY_PENALTY_WAIT_S:

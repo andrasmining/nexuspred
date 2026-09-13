@@ -310,11 +310,14 @@ def external_followers(area_id: int, group_id: str, *, group: Optional[dict[str,
     account of every enabled subscription, stamped with the subscriber's area
     (their logins, trading switch, risk locks, logs) and subscription id.
     ``group`` is the already loaded group (saves a settings read)."""
+    from .. import marketplace
     out: list[dict[str, Any]] = []
     sh = sharing_of(group) if group is not None else find_published(area_id, group_id)[1]
     if not sh.get("enabled") or sh.get("paused"):       # the publisher's pause takes every marketplace follower out of the mirror
         return out                                   # unpublished: subscribers' accounts leave the mirror
     for sub in db.active_subscriptions(area_id, f"copy:{group_id}"):
+        if not marketplace.subscription_allowed(sh, sub):
+            continue                                 # removed from a "selected users" listing: out of the mirror at the next sync
         for a in sub.get("accounts") or []:
             if not isinstance(a, dict) or not a.get("enabled", True):
                 continue
