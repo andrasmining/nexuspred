@@ -103,6 +103,10 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     failed += [res[0] for res in results
                if not isinstance(res, Exception) and res[1].get("protection_outcome_unknown")]
     failed = list(dict.fromkeys(failed))
+    unresolved = [ex.name for ex, res in zip(executors, results) if isinstance(res, OrderOutcomeUnknown)]
+    unresolved += [res[0] for res in results
+                   if not isinstance(res, Exception) and res[1].get("protection_outcome_unknown")]
+    unresolved = list(dict.fromkeys(unresolved))
 
     if acct_state:
         key = _trade_key(webhook["id"], root)
@@ -121,7 +125,10 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     )
     if acct_state and not tag:
         events.emit("trade.executed", webhook=webhook.get("name", "?"), action=action, contract=contract, accounts=list(acct_state), settings=s)
-    out = {"status": "error" if failed else "ok", "action": action, "contract": contract,
+    # Known rejected/safety-closed accounts preserve the established status="ok"
+    # response and are exposed in ``failed``. Only genuinely uncertain live
+    # exposure upgrades the top-level status to error.
+    out = {"status": "error" if unresolved else "ok", "action": action, "contract": contract,
            "accounts": summary, "orders": orders, "simulated": tag != ""}
     if failed:
         out["failed"] = failed
