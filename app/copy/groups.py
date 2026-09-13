@@ -186,7 +186,14 @@ def public_view(g: dict[str, Any], area_id: int, email: Optional[str] = None) ->
     tokens = config.load_settings(area_id=area_id).get("token_accounts") or []
     env = str(tokens[lead_idx].get("environment") or "demo") if 0 <= lead_idx < len(tokens) else "demo"
     r = _runners.get((area_id, g["id"]))
+    lead_id = int((g.get("leader") or {}).get("account_id") or 0)
+    lead_tier = None
+    if lead_id:
+        from .. import sizing, state
+        bal = next((a.get("cash") for a in (state.pnl(area_id).get("accounts") or []) if int(a.get("account_id") or 0) == lead_id), None)
+        lead_tier = sizing.size_tier(bal)            # coarse (50K …): lets a follower size to the same risk share; never the balance itself
     return {"kind": "copy", "publisher_area_id": area_id, "group_id": g["id"],
+            "leader_tier": (lead_tier or {}).get("tier"), "leader_size": (lead_tier or {}).get("size"),
             "title": sh["title"] or g.get("name") or "Copy group", "description": sh["description"], "visibility": sh["visibility"],
             "publisher_email": email if email is not None else db.area_owner_email(area_id),
             "symbols": list(g.get("symbols") or []), "environment": env, "copy_orders": bool(g.get("copy_orders")),

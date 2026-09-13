@@ -16,6 +16,45 @@ from typing import Any, Optional
 
 MODES = ("same", "multiplier", "fixed")
 
+# The usual prop-firm / eval sizes. A balance within TIER_TOLERANCE of one of
+# them (an eval account drifts with its P&L) is shown as that size; anything
+# else as "≈ nK" — coarse either way, never the exact figure.
+TIERS_K = (10, 25, 50, 75, 100, 150, 200, 250, 300, 500, 1000)
+TIER_TOLERANCE = 0.08
+
+
+def size_tier(balance: Any) -> Optional[dict[str, Any]]:
+    """The account-size label for a balance: ``{"tier": "50K", "size": 50000,
+    "exact": True}`` (a known size) or ``{"tier": "≈12K", "size": 12000,
+    "exact": False}``; ``None`` when there is no usable balance."""
+    try:
+        bal = float(balance)
+    except (TypeError, ValueError):
+        return None
+    if bal <= 0:
+        return None
+    k = bal / 1000.0
+    best = min(TIERS_K, key=lambda tk: abs(tk - k))
+    if abs(best - k) <= best * TIER_TOLERANCE:
+        return {"tier": f"{best}K", "size": best * 1000, "exact": True}
+    rounded = max(1, int(round(k)))
+    return {"tier": f"≈{rounded}K", "size": rounded * 1000, "exact": False}
+
+
+def suggest_sizing(follower_size: Any, leader_size: Any) -> Optional[dict[str, Any]]:
+    """The follower's sizing for the same risk share as the leader:
+    ``{"ratio": 0.33, "multiplier": 0.25, "fixed": 1}`` — the multiplier in
+    quarter steps (never below 0.25), the fixed count per leader contract
+    (never below 1). ``None`` without both sizes."""
+    try:
+        f, l = float(follower_size), float(leader_size)
+    except (TypeError, ValueError):
+        return None
+    if f <= 0 or l <= 0:
+        return None
+    ratio = f / l
+    return {"ratio": round(ratio, 2), "multiplier": max(0.25, round(ratio * 4) / 4), "fixed": max(1, int(round(ratio)))}
+
 
 def _round_half_up(x: float) -> int:
     return int(x + 0.5) if x >= 0 else -int(-x + 0.5)

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import broker, config, context, db, projectx, risk, rithmic, security, state, tradovate
+from .. import broker, config, context, db, projectx, risk, rithmic, security, state, tradovate, sizing
 
 router = APIRouter(prefix="/api", tags=["accounts"])
 
@@ -17,6 +17,7 @@ def trade_accounts_overview() -> list[dict[str, Any]]:
     and live connection status — powers the Trade Accounts overview."""
     out: list[dict[str, Any]] = []
     s = config.view()                                # read-only: /api/status asks every 15 s per dashboard
+    balances = {int(a.get("account_id") or 0): a.get("cash") for a in (state.pnl().get("accounts") or []) if a.get("account_id")}
     for idx, t in enumerate(s.get("token_accounts") or []):
         tname = t.get("name") or f"account {idx + 1}"
         env = t.get("environment") or "demo"
@@ -37,6 +38,10 @@ def trade_accounts_overview() -> list[dict[str, Any]]:
                 "qty_multiplier": float(a.get("qty_multiplier", t.get("qty_multiplier", 1)) or 1),
                 "risk": dict(a.get("risk") or {}),
                 "locked": risk.lock_of(context.get_area(), a.get("spec") or a.get("account_spec") or "", settings=s),
+                # the broker's balance from the P&L tick and its coarse size tier (50K …): the
+                # copy drawer sizes followers by it — a tier says nothing exact
+                "balance": balances.get(int(a.get("id") or a.get("account_id") or 0)),
+                "tier": sizing.size_tier(balances.get(int(a.get("id") or a.get("account_id") or 0))),
             })
     return out
 

@@ -4,6 +4,17 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.91
+- **Account size, shown coarse.** Every trade account carries its broker balance rounded to the usual
+  prop-firm sizes (`50K`, `100K`, `150K` …; a live account shows `≈12K`) as a small pill next to its
+  name in the copy-group drawer and the marketplace follow dialog — the exact balance only on hover and
+  only with privacy mode off. Above the follower table: the leader's size. Under each follower: a
+  one-tap suggestion for the same risk share as the leader (`≈ ×0.25` in multiplier mode, `≈ 1
+  contract` in fixed mode), computed from the two sizes in quarter steps. A published copy group
+  exposes the leader's tier (never the balance) so subscribers can size the same way. Sizes come from
+  the P&L tick (Tradovate cash snapshot, ProjectX balance, Rithmic account balance); an account without
+  a connected login shows no pill rather than a wrong one.
+
 ## 5.0.0-alpha.90
 Review round 7: six reviews (order engine, broker adapters, copy trading / marketplace, platform red team,
 frontend, performance profiling) — every finding re-verified against the code before a fix.

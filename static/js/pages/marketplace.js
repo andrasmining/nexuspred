@@ -1,6 +1,7 @@
 /* Marketplace: signals other users published; subscribe with your own accounts. */
 import { h, card, tag, toast, confirmDialog, pageHead, clear } from "../ui.js";
 import { maskAccount } from "../privacy.js";
+import { sizePill, suggestionChip, leaderSizeLine } from "../components/accountSize.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { store } from "../store.js";
@@ -117,7 +118,9 @@ export function openCopySubscriptionDrawer(item, onDone) {
     empty: t("No trade accounts discovered yet — add a login under Settings → Broker Accounts and Connect & Verify."),
     columns: [
       { label: t("Follow"), render: (a) => h("input", { type: "checkbox", class: "switch cs-on", checked: selected.has(String(a.spec)) && (selected.get(String(a.spec)).enabled !== false), dataset: { spec: a.spec } }) },
-      { label: t("Account"), render: (a) => h("span", null, h("code", null, maskAccount(a.spec)), h("small", { class: "muted", style: "display:block" }, `${a.token_name} · ${(a.environment || "").toUpperCase()}`)) },
+      { label: t("Account"), render: (a) => h("span", null, h("code", null, maskAccount(a.spec)), " ", sizePill(a),
+        h("small", { class: "muted", style: "display:block" }, `${a.token_name} · ${(a.environment || "").toUpperCase()}`),
+        suggestionChip(a, item.leader_size, () => ({ mode: q("cs-mode", a.spec), mult: q("cs-mult", a.spec), fixed: q("cs-fixed", a.spec) }))) },
       { label: t("Mode"), render: (a) => { const f = selected.get(String(a.spec)) || {}; return h("select", { class: "cs-mode input-sm", dataset: { spec: a.spec } },
         h("option", { value: "multiplier", selected: (f.mode || "multiplier") === "multiplier" }, t("Multiplier")), h("option", { value: "fixed", selected: f.mode === "fixed" }, t("Fixed"))); } },
       { label: "×", render: (a) => h("input", { type: "number", class: "cs-mult input-sm", min: 0.01, step: 0.01, style: "width:70px", value: (selected.get(String(a.spec)) || {}).multiplier ?? 1, dataset: { spec: a.spec } }) },
@@ -163,6 +166,7 @@ export function openCopySubscriptionDrawer(item, onDone) {
         item.description ? h("div", { style: "margin-top:6px;white-space:pre-line" }, item.description) : null),
       h("label", { class: "switch-row" }, h("span", null, t("Subscription active"), h("small", null, t("Off = your accounts leave the mirror (positions stay). Your own Trading switch and risk locks apply as well."))), enabledSw),
       h("h3", null, t("Follow with my accounts")),
+      leaderSizeLine(item.leader_tier ? { tier: item.leader_tier, exact: !String(item.leader_tier).startsWith("≈") } : null),
       h("p", { class: "hint" }, t("Every position change of the leader is mirrored onto the accounts below, live, at market. Multiplier: leader size × factor. Fixed: this many contracts per leader entry. Max caps the size; Direction copies only longs or only shorts. A follower account is exclusive: do not trade it by hand or through another route. The leader never sees your accounts.")),
       accTable.el,
       h("div", { class: "callout warn", style: "margin-top:10px" }, t("Positions the leader already holds when you start following are not copied (baseline). Mirroring of such a contract begins once the leader is flat again. If the leader's feed is lost, the group's feed-loss rule applies to your accounts too (flatten or pause).")),

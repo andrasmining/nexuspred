@@ -883,7 +883,10 @@ contracts are matched by name, each follower's adapter resolves it at its own br
 
 - **Group** = leader account + optional symbol filter (roots picked from Settings → Symbol
   Mapping, e.g. `MNQ, ES`, or typed by hand) +
-  followers. Each follower has a **mode** — *multiplier* (leader size × factor, rounded,
+  followers. Each follower shows its **account size** (the broker balance rounded to the
+  usual prop-firm sizes, `50K` / `150K`; exact only on hover with privacy off) and a one-tap
+  suggestion for the same risk share as the leader (`≈ ×0.25`, or `≈ 1 contract` in fixed
+  mode). Each follower has a **mode** — *multiplier* (leader size × factor, rounded,
   never below 1 while the leader holds) or *fixed* (N contracts for the leader's entry;
   with *Fixed mode follows adds* on, 2 fixed contracts become 4 when the leader doubles
   up) — plus an optional **max** cap and a **direction** filter (both / long / short).

@@ -1516,4 +1516,10 @@ export const DE = {
   "Rename agent": "Agent umbenennen",
   "New name for this agent": "Neuer Name für diesen Agenten",
   "Orders": "Orders",
+  "Balance {v} — account size from the broker's balance, rounded to the usual prop-firm sizes": "Kontostand {v} — Kontogrösse aus dem Kontostand beim Broker, gerundet auf die üblichen Prop-Firm-Grössen",
+  "Account size from the broker's balance, rounded to the usual prop-firm sizes": "Kontogrösse aus dem Kontostand beim Broker, gerundet auf die üblichen Prop-Firm-Grössen",
+  "≈ {n} contract(s)": "≈ {n} Kontrakt(e)",
+  "Same risk share as the leader ({pct}% of its size) — tap to apply": "Gleicher Risikoanteil wie der Leader ({pct}% seiner Grösse) — antippen zum Übernehmen",
+  "Leader account size: ": "Kontogrösse des Leaders: ",
+  "— the suggestion under each account keeps the same risk share": "— der Vorschlag unter jedem Konto hält denselben Risikoanteil",
 };

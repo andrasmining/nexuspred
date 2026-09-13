@@ -296,3 +296,38 @@ def test_config_view_is_the_cache_itself(admin):
         config.save_settings({"trading_enabled": True})
         v = config.view()
         assert v is config.view() and v.get("trading_enabled") is True
+
+
+# ================================================================ account size (alpha.91)
+def test_size_tier_rounds_to_the_usual_prop_sizes():
+    from app import sizing
+    assert sizing.size_tier(51240) == {"tier": "50K", "size": 50000, "exact": True}      # an eval account drifting with its P&L
+    assert sizing.size_tier(148000) == {"tier": "150K", "size": 150000, "exact": True}
+    assert sizing.size_tier(12340) == {"tier": "≈12K", "size": 12000, "exact": False}    # a live account: coarse, and marked so
+    assert sizing.size_tier(0) is None and sizing.size_tier(None) is None and sizing.size_tier("x") is None
+
+
+def test_sizing_suggestion_keeps_the_same_risk_share():
+    from app import sizing
+    assert sizing.suggest_sizing(50000, 150000) == {"ratio": 0.33, "multiplier": 0.25, "fixed": 1}
+    assert sizing.suggest_sizing(100000, 50000) == {"ratio": 2.0, "multiplier": 2.0, "fixed": 2}
+    assert sizing.suggest_sizing(50000, None) is None
+
+
+async def test_trade_accounts_carry_a_size_tier_and_the_listing_the_leaders(client, monkeypatch):
+    from app.routers.accounts import trade_accounts_overview
+    with context.use_area(1):
+        config.save_settings({"token_accounts": [{"name": "L", "environment": "demo", "enabled": True, "access_token": "t", "lid": "l1",
+                                                  "accounts": [{"id": 11, "spec": "APEX-1", "enabled": True}, {"id": 12, "spec": "APEX-2", "enabled": True}]}]})
+        state.set_pnl({"accounts": [{"account_id": 11, "spec": "APEX-1", "realized": 0, "open": 0, "week": 0, "cash": 150400.0},
+                                    {"account_id": 12, "spec": "APEX-2", "realized": 0, "open": 0, "week": 0, "cash": 49800.0}],
+                       "realized": 0, "open": 0, "week": 0, "cash": 200200.0, "error": ""}, area_id=1)
+        rows = {a["spec"]: a for a in trade_accounts_overview()}
+    assert rows["APEX-1"]["tier"]["tier"] == "150K" and rows["APEX-1"]["balance"] == 150400.0
+    assert rows["APEX-2"]["tier"] == {"tier": "50K", "size": 50000, "exact": True}
+    r = await client.get("/api/trade-accounts")
+    assert r.status_code == 200 and [a["tier"]["tier"] for a in r.json()] == ["150K", "50K"]
+    g = {**cp.new_group("g"), "leader": {"token_idx": 0, "lid": "l1", "spec": "APEX-1", "account_id": 11}, "followers": []}
+    view = cp.public_view(g, 1, email="pub@example.com")
+    assert view["leader_tier"] == "150K" and view["leader_size"] == 150000     # coarse, never the balance itself
+    assert "balance" not in view and "150400" not in str(view)

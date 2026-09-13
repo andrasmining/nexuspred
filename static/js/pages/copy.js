@@ -5,6 +5,7 @@
    Deep link: #/copy/<id>. */
 import { h, card, tag, toast, confirmDialog, pageHead, clear, fmtDateTime, fmtTime, errText, everyVisible } from "../ui.js";
 import { maskAccount } from "../privacy.js";
+import { sizePill, suggestionChip, leaderSizeLine, sizeOf } from "../components/accountSize.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
 import { store, can } from "../store.js";
@@ -89,7 +90,9 @@ function groupDrawer(group, { reload, onClose = null }) {
     empty: t("No trade accounts discovered yet — add a login under Settings → Broker Accounts and Connect & Verify."),
     columns: [
       { label: t("Follow"), render: (a) => h("input", { type: "checkbox", class: "switch cp-on", "aria-label": t("Follow with {account}", { account: maskAccount(a.spec) }), checked: !!(selected.get(accountKey(a.token_idx, a.spec)) || {}).enabled && selected.has(accountKey(a.token_idx, a.spec)), dataset: { key: accountKey(a.token_idx, a.spec) } }) },
-      { label: t("Account"), render: (a) => h("span", null, h("code", null, maskAccount(a.spec)), h("small", { class: "muted", style: "display:block" }, `${a.token_name} · ${(a.environment || "").toUpperCase()}`)) },
+      { label: t("Account"), render: (a) => { const key = accountKey(a.token_idx, a.spec); return h("span", null, h("code", null, maskAccount(a.spec)), " ", sizePill(a),
+        h("small", { class: "muted", style: "display:block" }, `${a.token_name} · ${(a.environment || "").toUpperCase()}`),
+        suggestionChip(a, leaderSize(), () => ({ mode: pick("cp-mode", key), mult: pick("cp-mult", key), fixed: pick("cp-fixed", key) }))); } },
       { label: t("Mode"), render: (a) => { const f = selected.get(accountKey(a.token_idx, a.spec)) || {}; return h("select", { class: "cp-mode input-sm sel-sizing", dataset: { key: accountKey(a.token_idx, a.spec) } },
         h("option", { value: "multiplier", selected: (f.mode || "multiplier") === "multiplier" }, t("Multiplier")), h("option", { value: "fixed", selected: f.mode === "fixed" }, t("Fixed"))); } },
       { label: "×", render: (a) => h("input", { type: "number", class: "cp-mult input-sm", min: 0.01, step: 0.01, style: "width:70px", value: (selected.get(accountKey(a.token_idx, a.spec)) || {}).multiplier ?? 1, dataset: { key: accountKey(a.token_idx, a.spec) } }) },
@@ -99,10 +102,18 @@ function groupDrawer(group, { reload, onClose = null }) {
         [["both", t("both")], ["long", t("long")], ["short", t("short")]].map(([d, l]) => h("option", { value: d, selected: (f.direction || "both") === d }, l))); } },
     ],
   });
-  const paintFollowers = () => fTable.update(known.filter((a) => accountKey(a.token_idx, a.spec) !== leaderSel.value));
+  const leaderAcct = () => known.find((a) => accountKey(a.token_idx, a.spec) === leaderSel.value);
+  const leaderSize = () => sizeOf((leaderAcct() || {}).tier);
+  const leaderLine = h("div");
+  const paintFollowers = () => {
+    clear(leaderLine);
+    const line = leaderSizeLine((leaderAcct() || {}).tier);
+    if (line) leaderLine.append(line);
+    fTable.update(known.filter((a) => accountKey(a.token_idx, a.spec) !== leaderSel.value));
+  };
+  const pick = (cls, key) => fTable.tbody.querySelector(`.${cls}[data-key="${CSS.escape(key)}"]`);
   paintFollowers();
   leaderSel.addEventListener("change", paintFollowers);
-  const pick = (cls, key) => fTable.tbody.querySelector(`.${cls}[data-key="${CSS.escape(key)}"]`);
   const collectFollowers = () => known.map((a) => {
     const key = accountKey(a.token_idx, a.spec);
     const on = pick("cp-on", key);
@@ -290,6 +301,7 @@ function groupDrawer(group, { reload, onClose = null }) {
         h("label", { class: "switch-row" }, h("span", null, t("Fixed mode follows adds / reductions"), h("small", null, t("On: 2 fixed contracts become 4 when the leader doubles up. Off: always the fixed size."))), addsSw)),
       h("label", { class: "switch-row" }, h("span", null, t("Mirror working orders (limits, stops, brackets)"), h("small", null, t("Every working limit / stop order of the leader gets a twin on each follower, sized by the same rule, following the leader's modifications and cancelled when the leader's order is gone. A stop / target pair becomes an OCO pair on the follower. When a leader order fills, the follower's twin is cancelled first and the follower's real broker position decides the market order — a twin that already filled is never doubled."))), ordersSw),
       h("h3", null, t("Followers")),
+      leaderLine,
       h("p", { class: "hint" }, t("Multiplier: leader size × factor (rounded, never below 1 while the leader holds). Fixed: this many contracts for the leader's entry. Max caps the size; Direction copies only longs or only shorts. A follower account is exclusive: the mirror treats its whole position in a contract as its own, so do not trade a follower by hand or through another route, and an account can follow one leader only.")),
       fTable.el,
       h("div", { class: "callout", style: "margin-top:10px" }, t("Positions the leader already holds when the group starts are not copied (baseline). Mirroring of such a contract begins once the leader is flat again — or right away with Sync now.")),
