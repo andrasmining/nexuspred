@@ -220,7 +220,7 @@ function groupDrawer(group, { reload, onClose = null }) {
   // --- Marketplace (admins, saved groups): publish the group as a product
   let sharingPane = null;
   const me = store.get("me");
-  if (!isNew && can(me, "admin")) {
+  if (!isNew && can(me, "publish")) {
     const sh = { enabled: false, title: "", description: "", visibility: "all", allowed_user_ids: [], ...(g.sharing || {}) };
     const pubSw = h("input", { type: "checkbox", class: "switch", checked: !!sh.enabled });
     const titleInp = h("input", { value: sh.title || "", placeholder: g.name, maxlength: 80 });
@@ -229,7 +229,7 @@ function groupDrawer(group, { reload, onClose = null }) {
     const userList = h("div", { class: "check-list" }, h("span", { class: "muted" }, t("Loading users…")));
     const userBox = h("div", { class: `field ${sh.visibility === "selected" ? "" : "hidden"}` }, h("label", null, t("Allowed users")), userList);
     visSel.addEventListener("change", () => userBox.classList.toggle("hidden", visSel.value !== "selected"));
-    api.get("/api/users").then((r) => {
+    api.get("/api/users/directory").then((r) => {
       const users = (r.users || r).filter((u) => u.id !== me.id);
       clear(userList);
       if (!users.length) userList.append(h("span", { class: "muted" }, t("No other users yet — invite them under Settings → Users.")));
@@ -406,6 +406,7 @@ export default {
       if (!store.get("settings")) await actions.loadSettings().catch(() => {});
       groupDrawer({ name: t("Copy group {n}", { n: groups.length + 1 }), enabled: false, followers: [], symbols: [], feed: "auto", feed_loss_flatten_s: 30, copy_adds: true, copy_orders: true }, { reload: () => { load(); loadEvents(); }, onClose: null });
     } }, icon("plus"), t("Add copy group"));
+    if (!can(store.get("me"), "lead")) addBtn.classList.add("hidden");          // a User follows leaders; leading needs the Broadcaster role
 
     root.append(
       pageHead(t("Copy Trading"), t("Mirror one leader trade account onto any number of follower accounts, live: entries, adds, reductions, closes and reversals. Followers are sized by multiplier or a fixed number of contracts; a lost leader feed flattens them after a grace period."), [

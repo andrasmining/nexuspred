@@ -193,8 +193,9 @@ async def test_update_apply_is_admin_only(admin):
 
 
 async def test_discord_routes_require_feature(admin):
-    # The bootstrap admin's area has every feature on; an invited user's does not.
-    user = db.create_user("user@example.com", "password123", is_admin=False)
+    # The bootstrap admin's area has every feature on; another admin's does not.
+    # (alpha.93: the Discord listener is an admin tool — a User or Broadcaster gets 403 regardless.)
+    user = db.create_user("user@example.com", "password123", role="admin")
     area = db.user_primary_area(user["id"])
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:

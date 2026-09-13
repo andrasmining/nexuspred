@@ -8,12 +8,17 @@ import { t } from "../i18n.js";
 
 const ACTION_LABEL = {
   invite_create: t("Invite created"), invite_revoke: t("Invite revoked"), user_delete: t("User deleted"),
+  role_set: t("Role changed"), role_request: t("Role requested"), support_view: t("Support view"),
   feature_set: t("Feature changed"), password_reset: t("Password reset"), password_change: t("Password changed"),
   flatten_all: t("Flatten all"), subscribe: t("Subscribed"), unsubscribe: t("Unsubscribed"),
   webhook_share: t("Marketplace publish"), subscriber_remove: t("Subscriber removed"),
   login_ok: t("Signed in"), login_failed: t("Failed sign-in"), login_blocked: t("Rate limited"),
   agent_pairing_code: t("Agent pairing code"), agent_bundle: t("Agent download (preconfigured)"), agent_paired: t("Agent paired"), agent_pair_failed: t("Agent pairing failed"), agent_revoke: t("Agent revoked"),
 };
+
+const RANK = { user: 0, broadcaster: 1, admin: 2 };
+const ROLE_LABEL = { user: t("User"), broadcaster: t("Broadcaster"), admin: t("Admin") };
+const roleTag = (r) => tag(ROLE_LABEL[r] || r, r === "admin" ? "accent" : r === "broadcaster" ? "amber" : "");
 
 export default {
   title: t("Users"),
@@ -29,7 +34,7 @@ export default {
 
     // ---- invites
     const inviteEmail = h("input", { type: "email", placeholder: t("name@example.com"), autocomplete: "off" });
-    const inviteAdmin = h("input", { type: "checkbox", class: "switch" });
+    const inviteRole = h("select", { class: "input-sm" }, [["user", t("User")], ["broadcaster", t("Broadcaster")], ["admin", t("Admin")]].map(([v, l]) => h("option", { value: v }, l)));
     const inviteSend = h("input", { type: "checkbox", class: "switch" });
     const inviteLink = linkBox(t("Invite link — share it with the new user"));
     const inviteBtn = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
@@ -37,7 +42,7 @@ export default {
       try {
         const email = inviteEmail.value.trim();
         // `elevated`, not `is_admin`: some WAFs block bodies containing is_admin.
-        const r = await api.post("/api/users/invite", { elevated: inviteAdmin.checked, email, send_email: inviteSend.checked });
+        const r = await api.post("/api/users/invite", { role: inviteRole.value, email, send_email: inviteSend.checked });
         const url = r.url || `${window.location.origin}/register?code=${r.code || ""}`;
         inviteLink.show(url);
         copyText(url);
@@ -50,7 +55,7 @@ export default {
     const invites = dataTable({ empty: t("No open invites"), columns: [
       { label: t("Invite link"), render: (i) => h("code", { style: "font-size:11px" }, `${window.location.origin}/register?code=${i.code}`) },
       { label: t("For"), render: (i) => i.email || t("anyone") },
-      { label: t("Admin"), render: (i) => i.is_admin ? tag(t("admin"), "accent") : "—" },
+      { label: t("Role"), render: (i) => roleTag(i.role || (i.is_admin ? "admin" : "user")) },
       { label: t("Created"), render: (i) => fmtDateTime(i.created_at) },
       { label: "", render: (i) => h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => {
         try { await api.del(`/api/invites/${i.code}`); toast(t("Invite revoked")); loadInvites(); loadAudit(); } catch (e) { toast(e.message, "error"); }
@@ -61,7 +66,23 @@ export default {
     const resetLink = linkBox(t("Password-reset link"));
     const users = dataTable({ empty: t("No users"), columns: [
       { label: t("Email"), render: (u) => [u.email, u.id === me.id ? [" ", tag(t("you"))] : null] },
-      { label: t("Role"), render: (u) => u.is_admin ? tag(t("admin"), "accent") : t("user") },
+      { label: t("Role"), render: (u) => {
+        const role = u.role || (u.is_admin ? "admin" : "user");
+        const sel = h("select", { class: "input-sm", "aria-label": t("Role of {email}", { email: u.email }), disabled: u.id === 1 || u.id === me.id,
+          onChange: async (e) => {
+            const next = e.target.value;
+            const losing = RANK[role] >= 1 && RANK[next] < 1;
+            if (losing && !(await confirmDialog({ title: t("Withdraw the Broadcaster role from {email}?", { email: u.email }),
+              body: t("Their listings are unpublished, subscribers' subscriptions end (Stripe subscriptions are cancelled) and their copy groups are disabled. Nothing is deleted."), confirmText: t("Withdraw"), danger: true }))) { e.target.value = role; return; }
+            try { const r = await api.post(`/api/users/${u.id}/role`, { role: next }); toast(t("Role of {email} set to {role}", { email: u.email, role: ROLE_LABEL[next] }), "success"); if (r.effects && r.effects.listings) toast(t("{n} listing(s) unpublished", { n: r.effects.listings }), "warn"); loadUsers(); loadAudit(); }
+            catch (err) { e.target.value = role; toast(err.message, "error"); }
+          } },
+          [["user", t("User")], ["broadcaster", t("Broadcaster")], ["admin", t("Admin")]].map(([v, l]) => h("option", { value: v, selected: v === role }, l)));
+        return h("span", { style: "display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap" }, sel,
+          u.role_request ? h("button", { type: "button", class: "btn btn-primary btn-sm", title: t("Requested {when}", { when: fmtDateTime(u.role_requested_at) }), onClick: async () => {
+            try { await api.post(`/api/users/${u.id}/role`, { role: u.role_request }); toast(t("{email} is now a {role}", { email: u.email, role: ROLE_LABEL[u.role_request] }), "success"); loadUsers(); loadAudit(); } catch (err) { toast(err.message, "error"); }
+          } }, icon("check"), t("Approve {role}", { role: ROLE_LABEL[u.role_request] })) : null);
+      } },
       { label: t("Discord Signals"), render: (u) => h("input", { type: "checkbox", class: "switch", checked: (u.features || {}).discord_signals === true, title: t("Grant the Discord listener module"), onChange: async (e) => {
         try { await api.post(`/api/users/${u.id}/features`, { feature: "discord_signals", enabled: e.target.checked }); toast(t("Discord Signals {state} for {email}", { state: e.target.checked ? t("enabled") : t("disabled"), email: u.email }), "success"); loadAudit(); }
         catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
@@ -91,6 +112,9 @@ export default {
           if (!(await confirmDialog({ title: t("Reset two-factor setup for {email}?", { email: u.email }), body: t("Their authenticator secret and backup codes are deleted and every session ends. They sign in with the password and set up two-factor authentication again."), confirmText: t("Reset 2FA"), danger: true }))) return;
           try { await api.post(`/api/users/${u.id}/2fa/reset`); toast(t("Two-factor setup reset"), "success"); loadUsers(); loadAudit(); } catch (e) { toast(e.message, "error"); }
         } }, icon("key"), t("Reset 2FA")) : null,
+        u.id === me.id ? null : h("button", { type: "button", class: "btn btn-ghost btn-sm", title: t("Open this user's workspace read-only to help with a support question. Every read shows their data; nothing can be changed; the visit is logged."), onClick: async () => {
+          try { await api.post(`/api/users/${u.id}/support`); window.location.hash = "#/"; window.location.reload(); } catch (e) { toast(e.message, "error"); }
+        } }, icon("user"), t("Support view")),
         u.id === me.id ? null : h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => {
           if (!(await confirmDialog({ title: t("Delete {email}?", { email: u.email }), body: t("Their area and all its data (webhooks, tokens, logs) are removed. This cannot be undone."), confirmText: t("Delete user"), danger: true }))) return;
           try { await api.del(`/api/users/${u.id}`); toast(t("User deleted"), "success"); loadUsers(); loadAudit(); } catch (e) { toast(e.message, "error"); }
@@ -125,7 +149,7 @@ export default {
         h("div", { class: "grid grid-2" },
           h("div", { class: "field" }, h("label", null, t("Invitee email (optional)")), inviteEmail, h("div", { class: "field-hint" }, t("Pre-fills the sign-up form; leave empty for an open invite."))),
           h("div", null,
-            h("label", { class: "switch-row" }, h("span", null, t("New invite is admin"), h("small", null, t("They can manage users too."))), inviteAdmin),
+            h("div", { class: "field" }, h("label", null, t("Role of the new account")), inviteRole, h("div", { class: "field-hint" }, t("User consumes and runs own webhooks · Broadcaster also publishes on the marketplace · Admin operates the platform."))),
             h("label", { class: "switch-row" }, h("span", null, t("Email the invite link"), h("small", null, t("Requires SMTP under Settings → Alerts."))), inviteSend))),
         h("div", { class: "form-actions" }, inviteBtn), inviteLink.el),
       card({ title: t("Accounts"), hint: t("Toggle Discord Signals to grant a user the Discord listener module — its navigation, settings and live connection appear only for users you enable it for.") }, users.el, resetLink.el),

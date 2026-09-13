@@ -37,7 +37,8 @@ from .core import (  # noqa: F401
     mark_uninitialized,
     set_db_file,
 )
-from .users import (  # noqa: F401
+from .users import (
+    ROLES, set_role, request_role, clear_role_request, count_admins,  # noqa: F401
     hash_password,
     verify_password,
     _row_to_user,

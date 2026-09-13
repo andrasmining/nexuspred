@@ -4,7 +4,7 @@ import { maskAccount } from "../privacy.js";
 import { sizePill, suggestionChip, leaderSizeLine, sizedForTier, shareOf } from "../components/accountSize.js";
 import { icon } from "../icons.js";
 import { api } from "../api.js";
-import { store } from "../store.js";
+import { store, can } from "../store.js";
 import { actions } from "../actions.js";
 import { dataTable } from "../components/table.js";
 import { openDrawer, closeDrawer } from "../components/drawer.js";
@@ -242,6 +242,21 @@ export default {
     const status = h("p", { class: "hint" }, t("Loading…"));
     // --- discovery: search, sort, filters (client-side over the listing)
     let all = [];
+    // a User who wants to sell: one tap asks the admin for the Broadcaster role
+    const becomeBox = h("div");
+    const paintBecome = () => {
+      clear(becomeBox);
+      const me = store.get("me") || {};
+      if (can(me, "publish")) return;
+      const pending = me.role_request === "broadcaster";
+      becomeBox.append(h("div", { class: "callout", style: "margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center" },
+        h("div", { style: "flex:1;min-width:240px" }, h("strong", null, t("Offer your own signals?")), " ",
+          pending ? t("Your request for the Broadcaster role is waiting for an admin.") : t("The Broadcaster role lets you publish webhooks and copy groups on the marketplace and manage your subscribers.")),
+        pending
+          ? h("button", { type: "button", class: "btn btn-ghost btn-sm", onClick: async () => { try { await api.del("/api/me/role-request"); await actions.loadMe(); paintBecome(); toast(t("Request withdrawn")); } catch (e) { toast(e.message, "error"); } } }, t("Withdraw request"))
+          : h("button", { type: "button", class: "btn btn-primary btn-sm", onClick: async () => { try { await api.post("/api/me/role-request", { role: "broadcaster" }); await actions.loadMe(); paintBecome(); toast(t("Request sent — an admin will approve it"), "success"); } catch (e) { toast(e.message, "error"); } } }, icon("plus"), t("Become a Broadcaster"))));
+    };
+    paintBecome();
     const filters = { q: "", sort: "net_30d", kind: "", verified: false, tag: "" };
     const qIn = h("input", { type: "search", class: "input-sm", placeholder: t("Search title, publisher, tags…"), style: "min-width:220px", onInput: (e) => { filters.q = e.target.value.trim().toLowerCase(); paint(); } });
     const sortSel = h("select", { class: "input-sm", onChange: (e) => { filters.sort = e.target.value; paint(); } },
@@ -337,7 +352,7 @@ export default {
         h("button", { class: "btn", onClick: load }, icon("refresh"), t("Refresh")),
         h("button", { class: "btn btn-ghost", onClick: () => navigate("/subscriptions") }, t("Subscription journal"), icon("chevron")),
       ]),
-      bar, status, grid,
+      becomeBox, bar, status, grid,
     );
     if (!(store.get("tradeAccounts") || []).length) actions.loadTradeAccounts();
     load();

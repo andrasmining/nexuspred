@@ -698,7 +698,7 @@ all work even if it isn't installed (the tab shows "No library"). It's listed in
 
 ## Marketplace (share a webhook with other users)
 
-An admin can **publish** one of their webhooks; other users find it on the
+A Broadcaster (or admin) can **publish** one of their webhooks; other users find it on the
 **Marketplace** page and **subscribe** — choosing which of *their own* trade accounts
 (with a qty multiplier) the signal should trade, and switching the subscription on/off.
 
@@ -994,11 +994,39 @@ is shared between areas (shared areas are planned for a later release).
   **first admin** account. Any pre-existing single-user `data/settings.json` is
   migrated into that admin's area.
 - **Invite-only:** there is no open sign-up. An admin creates **invite links** under
-  **Settings → Users** (optionally granting admin, optionally emailed). Share the link;
-  the new user registers and gets their own area.
-- **Admin** can list users, grant the *Discord Signals* feature per user, create/revoke
-  invites, issue password-reset links, delete users (which removes their area and data),
-  and review the admin **audit log**.
+  **Settings → Users** (with the role the new account gets, optionally emailed). Share
+  the link; the new user registers and gets their own area.
+- **Admin** can list users, set roles, grant the *Discord Signals* feature per user,
+  create/revoke invites, issue password-reset links, delete users (which removes their
+  area and data), and review the admin **audit log**.
+
+### Roles (Admin / Broadcaster / User)
+
+Every account has exactly one role; each role includes everything below it.
+
+| | User | Broadcaster | Admin |
+|---|:---:|:---:|:---:|
+| Trade own accounts, own webhooks, automations, risk guard, journal, alerts, execution agents | ✓ | ✓ | ✓ |
+| Subscribe to marketplace signals, follow copy leaders, subscription journal | ✓ | ✓ | ✓ |
+| Publish webhooks and copy groups, manage subscribers, leader copy groups | – | ✓ | ✓ |
+| Simulator, scenarios, settings export/import | – | ✓ | ✓ |
+| Users & roles, invites, audit, payments config, news, updates, Discord listener, support view | – | – | ✓ |
+
+- **Migration:** every account that existed before the roles were introduced becomes an
+  **Admin** (it had the full feature set before). New invites default to **User**.
+- **Become a Broadcaster:** a User presses *Become a Broadcaster* on the Marketplace page;
+  the admins are notified (event log and alert e-mail) and approve it under
+  **Settings → Users** (*Approve Broadcaster*). The request can be withdrawn.
+- **Withdrawing the Broadcaster role** unpublishes every listing of that workspace
+  (subscriptions end, Stripe subscriptions are cancelled) and disables every copy group.
+  Nothing is deleted — the webhooks and groups stay, switched off. The first account
+  (id 1) stays Admin, and the last Admin cannot demote themself.
+- **Support view:** an admin opens a user's workspace read-only (*Support view* on the
+  Users page). Every page shows that user's data behind a banner; every write is refused
+  with 403 until *Leave support view*; entering and leaving are in the audit log; the
+  view expires after two hours.
+- The role gate sits in the request middleware (`ROUTE_POLICY` in `app/web.py`): an
+  endpoint above the caller's role answers 403 `<Role> role required`, whatever the page.
 
 Storage is a **SQLite** database at `<NEXUSPRED_DATA_DIR>/fluxbridge.db` (users, areas,
 memberships, invites). Passwords are salted **PBKDF2** hashes. The login session is a
@@ -1082,11 +1110,11 @@ the dashboard **Update** button works.
 | `POST` | `/webhook/{token}` | Receive a TradingView alert for a specific webhook (202 accepted, processed in the background) |
 | `GET`  | `/api/status` | Connection + trading status, trade accounts, active trades |
 | `GET/POST` | `/api/settings` | Read / update settings (secrets masked; only the keys you send change) |
-| `GET`  | `/api/settings/export` | The workspace configuration as a JSON file (no secrets) · `POST /api/settings/import` applies one |
+| `GET`  | `/api/settings/export` | The workspace configuration as a JSON file (no secrets) · `POST /api/settings/import` applies one (broadcaster) |
 | `GET`  | `/api/orders` `/api/signals` `/api/events` | Rolling logs |
 | `POST` | `/api/agent/pair` | Exchange a one-time pairing code for an agent token (unauthenticated, rate-limited) |
 | `GET`  | `/api/agent/jobs` | Agent long-poll for relay jobs (agent token) · `POST /api/agent/jobs/{id}/result` delivers the answer |
-| `GET`  | `/api/agents` | Paired agents with online state · `POST /api/agents/pairing-code`, `PUT`/`DELETE /api/agents/{id}`, `GET /api/agents/download.zip` (admin) |
+| `GET`  | `/api/agents` | Paired agents with online state · `POST /api/agents/pairing-code`, `PUT`/`DELETE /api/agents/{id}`, `GET /api/agents/download.zip` |
 | `GET`  | `/api/rollover` | Rollover warnings with proposed next contracts (`?refresh=1` re-checks) · `POST /api/rollover/apply {items:[{tv_symbol, contract}]}` confirms a roll |
 | `GET`  | `/api/risk` | Every trade account's risk rules and today's lock · `POST /api/risk/unlock {spec}` clears a lock; rules are saved with `POST /api/trade-accounts` (`risk` key) |
 | `GET/POST` | `/api/copy/groups` | Copy-trading groups with live status · `PUT`/`DELETE /api/copy/groups/{id}`, `POST …/{id}/enable|disable|resume|sync|flatten`, `GET /api/copy/status`, `GET /api/copy/events` |
@@ -1123,8 +1151,8 @@ the dashboard **Update** button works.
 | `PUT/DELETE` | `/api/webhooks/{id}` | Update / delete a webhook (name, strategy, qty, accounts, `trade_window`) · `PUT …/sharing` also takes `max_subscribers`, `approval`, `paused`, `tags` |
 | `POST` | `/api/webhooks/{id}/regenerate-token` | Rotate a webhook's secret token |
 | `POST` | `/api/webhooks/{id}/test` | Run a payload through the pipeline for this webhook (`?subscribers=true` also forwards it) |
-| `PUT`  | `/api/webhooks/{id}/sharing` | Publish / unpublish on the marketplace (admin): title, description, visibility, allowed users |
-| `GET/DELETE` | `/api/webhooks/{id}/subscribers[/{sub_id}]` | List / remove subscribers of a published webhook (admin) |
+| `PUT`  | `/api/webhooks/{id}/sharing` | Publish / unpublish on the marketplace (broadcaster): title, description, visibility, allowed users |
+| `GET/DELETE` | `/api/webhooks/{id}/subscribers[/{sub_id}]` | List / remove subscribers of a published webhook (broadcaster) |
 | `GET`  | `/api/marketplace` | Published webhooks visible to me (with my subscription, if any) |
 | `POST` | `/api/marketplace/{area}/{webhook_id}/subscribe` | Subscribe (routed accounts + enabled) |
 | `GET/PUT/DELETE` | `/api/subscriptions[/{id}]` | My subscriptions: list / update / unsubscribe |
@@ -1148,7 +1176,8 @@ the dashboard **Update** button works.
 | `POST` | `/api/discord/test` | Push a synthetic embed through the pipeline |
 | `GET`  | `/api/extension/token-extractor.zip` | Download the browser token-extractor extension |
 | `GET/POST` | `/setup` · `/login` · `/register` · `/reset` · `/logout` | User auth (first-admin setup, login, invited signup, password reset, logout) |
-| `GET`  | `/api/me` · `/api/users` · `/api/invites` · `/api/audit` | Current user / admin user management / admin audit log |
+| `GET`  | `/api/me` · `/api/users` · `/api/invites` · `/api/audit` | Current user (role, capabilities, support view) / admin user management / admin audit log |
+| `POST` | `/api/me/role-request` · `/api/users/{id}/role` · `/api/users/{id}/support` · `/api/support/exit` | Ask for the Broadcaster role (`DELETE` withdraws) / admin sets a role / admin enters a user's workspace read-only / leaves it · `GET /api/users/directory` (broadcaster): id + e-mail pick list for "selected users" listings |
 | `POST` | `/api/account/password` · `/api/users/{id}/reset` · `/api/users/{id}/features` | Change own password / admin reset link / feature grant |
 
 ---

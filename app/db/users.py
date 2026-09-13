@@ -31,9 +31,15 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
+ROLES = ("user", "broadcaster", "admin")
+
+
 def _row_to_user(row: sqlite3.Row) -> dict[str, Any]:
     keys = row.keys()
-    return {"id": row["id"], "email": row["email"], "is_admin": bool(row["is_admin"]),
+    role = str(row["role"] if "role" in keys and row["role"] in ROLES else ("admin" if row["is_admin"] else "user"))
+    return {"id": row["id"], "email": row["email"], "is_admin": role == "admin", "role": role,
+            "role_request": str(row["role_request"] or "") if "role_request" in keys else "",
+            "role_requested_at": str(row["role_requested_at"] or "") if "role_requested_at" in keys else "",
             "created_at": row["created_at"],
             "last_login_at": row["last_login_at"] if "last_login_at" in keys else None,
             "last_login_ip": row["last_login_ip"] if "last_login_ip" in keys else None,
@@ -96,7 +102,8 @@ def list_users() -> list[dict[str, Any]]:
 
 
 def create_user(email: str, password: str, is_admin: bool = False,
-                initial_settings: Optional[dict[str, Any]] = None, *, totp_required: bool = False) -> dict[str, Any]:
+                initial_settings: Optional[dict[str, Any]] = None, *, totp_required: bool = False,
+                role: Optional[str] = None) -> dict[str, Any]:
     """Create a user + their own area + an owner membership. Returns the user.
     ``totp_required`` (sign-up and first-run setup) forces two-factor enrolment
     before the dashboard can be used."""
@@ -111,9 +118,12 @@ def create_user(email: str, password: str, is_admin: bool = False,
     with _connect() as c:
         # First user is forced admin; area id of the very first user is DEFAULT_AREA_ID.
         first = c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"] == 0
+        r = role if role in ROLES else ("admin" if is_admin else "user")
+        if first:
+            r = "admin"
         cur = c.execute(
-            "INSERT INTO users(email,password_hash,is_admin,created_at,totp_required) VALUES(?,?,?,?,?)",
-            (email, hash_password(password), 1 if (is_admin or first) else 0, _now(), 1 if totp_required else 0),
+            "INSERT INTO users(email,password_hash,is_admin,role,created_at,totp_required) VALUES(?,?,?,?,?,?)",
+            (email, hash_password(password), 1 if r == "admin" else 0, r, _now(), 1 if totp_required else 0),
         )
         uid = cur.lastrowid
         if first:
@@ -179,9 +189,45 @@ async def authenticate_async(email: str, password: str) -> Optional[dict[str, An
     return await asyncio.to_thread(authenticate, email, password)
 
 
+def set_role(user_id: int, role: str) -> Optional[dict[str, Any]]:
+    """Change a user's role (admin / broadcaster / user); the legacy flag follows."""
+    if role not in ROLES:
+        raise ValueError(f"unknown role {role!r}")
+    init()
+    with _connect() as c:
+        c.execute("UPDATE users SET role=?, is_admin=?, role_request='', role_requested_at='' WHERE id=?",
+                  (role, 1 if role == "admin" else 0, user_id))
+    _users.pop(user_id, None)
+    return get_user(user_id)
+
+
+def request_role(user_id: int, role: str) -> None:
+    """A user asks for a higher role (the admin approves in the Users page)."""
+    if role not in ROLES:
+        raise ValueError(f"unknown role {role!r}")
+    init()
+    with _connect() as c:
+        c.execute("UPDATE users SET role_request=?, role_requested_at=? WHERE id=?", (role, _now(), user_id))
+    _users.pop(user_id, None)
+
+
+def clear_role_request(user_id: int) -> None:
+    init()
+    with _connect() as c:
+        c.execute("UPDATE users SET role_request='', role_requested_at='' WHERE id=?", (user_id,))
+    _users.pop(user_id, None)
+
+
+def count_admins() -> int:
+    init()
+    with _connect() as c:
+        return int(c.execute("SELECT COUNT(*) n FROM users WHERE role='admin'").fetchone()["n"])
+
+
 async def create_user_async(email: str, password: str, is_admin: bool = False,
-                            initial_settings: Optional[dict[str, Any]] = None, *, totp_required: bool = False) -> dict[str, Any]:
-    return await asyncio.to_thread(lambda: create_user(email, password, is_admin, initial_settings, totp_required=totp_required))
+                            initial_settings: Optional[dict[str, Any]] = None, *, totp_required: bool = False,
+                            role: Optional[str] = None) -> dict[str, Any]:
+    return await asyncio.to_thread(lambda: create_user(email, password, is_admin, initial_settings, totp_required=totp_required, role=role))
 
 
 async def set_password_async(user_id: int, new_password: str) -> None:
@@ -313,13 +359,14 @@ def user_features(user_id: int) -> dict[str, bool]:
     return get_area_features(aid) if aid else default_area_features()
 
 
-def create_invite(created_by: Optional[int], email: str = "", is_admin: bool = False) -> str:
+def create_invite(created_by: Optional[int], email: str = "", is_admin: bool = False, role: Optional[str] = None) -> str:
     init()
     code = secrets.token_urlsafe(16)
+    r = role if role in ROLES else ("admin" if is_admin else "user")
     with _connect() as c:
         c.execute(
-            "INSERT INTO invites(code,email,is_admin,created_by,created_at) VALUES(?,?,?,?,?)",
-            (code, (email or "").strip().lower(), 1 if is_admin else 0, created_by, _now()),
+            "INSERT INTO invites(code,email,is_admin,role,created_by,created_at) VALUES(?,?,?,?,?,?)",
+            (code, (email or "").strip().lower(), 1 if r == "admin" else 0, r, created_by, _now()),
         )
     return code
 
@@ -331,6 +378,7 @@ def get_invite(code: str) -> Optional[dict[str, Any]]:
         if not row:
             return None
         return {"code": row["code"], "email": row["email"], "is_admin": bool(row["is_admin"]),
+                "role": str(row["role"] if "role" in row.keys() and row["role"] in ROLES else ("admin" if row["is_admin"] else "user")),
                 "used_by": row["used_by"], "used_at": row["used_at"]}
 
 
@@ -339,6 +387,7 @@ def list_invites() -> list[dict[str, Any]]:
     with _connect() as c:
         rows = c.execute("SELECT * FROM invites ORDER BY created_at DESC").fetchall()
         return [{"code": r["code"], "email": r["email"], "is_admin": bool(r["is_admin"]),
+                 "role": str(r["role"] if "role" in r.keys() and r["role"] in ROLES else ("admin" if r["is_admin"] else "user")),
                  "used_by": r["used_by"], "used_at": r["used_at"], "created_at": r["created_at"]}
                 for r in rows]
 

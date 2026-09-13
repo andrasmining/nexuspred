@@ -141,7 +141,7 @@ export function renderTopbar(root, { navigate, onHamburger, onPrivacy }) {
     store.subscribe("me", (me) => {
       if (!me) return;
       avatar.textContent = (me.email || "?").slice(0, 2).toUpperCase();
-      who.replaceChildren(h("strong", null, me.email), me.is_admin ? t("Administrator") : t("User"));
+      who.replaceChildren(h("strong", null, me.email), { admin: t("Administrator"), broadcaster: t("Broadcaster"), user: t("User") }[me.role] || (me.is_admin ? t("Administrator") : t("User")));
     }, { immediate: true }),
   ];
   return () => unsubs.forEach((u) => u());

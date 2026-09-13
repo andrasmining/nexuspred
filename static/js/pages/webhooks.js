@@ -117,7 +117,7 @@ function webhookDrawer(wh, { navigate }) {
 
   // --- Sharing (admins)
   let sharingPane = null;
-  if (can(me, "admin")) {
+  if (can(me, "publish")) {
     const sh = sharingOf(w);
     const pubSw = h("input", { type: "checkbox", class: "switch", checked: sh.enabled });
     const titleInp = h("input", { value: sh.title, placeholder: w.name, maxlength: 80 });
@@ -126,7 +126,7 @@ function webhookDrawer(wh, { navigate }) {
     const userList = h("div", { class: "check-list" }, h("span", { class: "muted" }, t("Loading users…")));
     const userBox = h("div", { class: `field ${sh.visibility === "selected" ? "" : "hidden"}` }, h("label", null, t("Allowed users")), userList);
     visSel.addEventListener("change", () => userBox.classList.toggle("hidden", visSel.value !== "selected"));
-    api.get("/api/users").then((r) => {
+    api.get("/api/users/directory").then((r) => {
       const users = (r.users || r).filter((u) => u.id !== me.id);
       clear(userList);
       if (!users.length) userList.append(h("span", { class: "muted" }, t("No other users yet — invite them under Settings → Users.")));

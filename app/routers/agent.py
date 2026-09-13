@@ -15,7 +15,7 @@ from fastapi.responses import Response
 
 from .. import config, context, db, http, relay
 from ..security import client_ip
-from ..web import BASE_DIR, base_url, require_admin
+from ..web import BASE_DIR, base_url, require_role
 
 # Windows build of the agent, produced by .github/workflows/agent-exe.yml and
 # published to a rolling GitHub release; bundled into the preconfigured download.
@@ -128,7 +128,7 @@ async def api_agents(request: Request) -> list[dict[str, Any]]:
 @router.post("/api/agents/pairing-code")
 async def api_agent_pairing_code(request: Request) -> dict[str, Any]:
     """Admin: a one-time code (valid 15 min) to pair a new agent."""
-    user = require_admin(request)
+    user = require_role(request, "user")
     body = await request.json()
     name = str((body or {}).get("name") or "").strip()[:60] or "agent"
     code = db.create_agent_pairing(context.get_area(), name)
@@ -138,7 +138,7 @@ async def api_agent_pairing_code(request: Request) -> dict[str, Any]:
 
 @router.delete("/api/agents/{agent_id}")
 async def api_agent_revoke(agent_id: int, request: Request) -> dict[str, Any]:
-    user = require_admin(request)
+    user = require_role(request, "user")
     agent = db.get_agent(context.get_area(), agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -153,7 +153,7 @@ async def api_agent_revoke(agent_id: int, request: Request) -> dict[str, Any]:
 
 @router.put("/api/agents/{agent_id}")
 async def api_agent_rename(agent_id: int, request: Request) -> dict[str, Any]:
-    require_admin(request)
+    require_role(request, "user")
     body = await request.json()
     name = str((body or {}).get("name") or "").strip()[:60]
     if not name:
@@ -189,7 +189,7 @@ async def api_agent_bundle(request: Request) -> Response:
     """Admin: a **preconfigured** agent — the zip already holds ``agent.json``
     with this bridge's URL and a freshly issued token, plus the Windows .exe
     when the release build is reachable. Unzip, start, done — nothing to type."""
-    user = require_admin(request)
+    user = require_role(request, "user")
     body = await request.json()
     name = str((body or {}).get("name") or "").strip()[:60] or "agent"
     token, agent = db.create_agent(context.get_area(), name, version="", ip="")
@@ -211,7 +211,7 @@ _ZIP: Optional[bytes] = None
 @router.get("/api/agents/download.zip")
 async def api_agent_download(request: Request) -> Response:
     """The agent script + start files as a zip (the files ship with the code)."""
-    require_admin(request)
+    require_role(request, "user")
     global _ZIP
     if _ZIP is None:
         _ZIP = _zip(_agent_files(), "fluxbridge-agent")

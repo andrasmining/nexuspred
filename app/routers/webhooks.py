@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from .. import config, context, db, marketplace, payments, security, signals, sizing, state, track_record, trade_window
 from ..tradovate import TradovateError
-from ..web import require_admin
+from ..web import require_role
 
 router = APIRouter(tags=["webhooks"])
 
@@ -202,7 +202,7 @@ async def api_delete_webhook(webhook_id: str) -> dict[str, Any]:
 async def api_update_sharing(webhook_id: str, request: Request) -> dict[str, Any]:
     """Publish / unpublish a webhook on the marketplace (admins only). Existing
     subscriptions are kept but paused while it's unpublished."""
-    user = require_admin(request)
+    user = require_role(request, "broadcaster")
     body = await request.json()
     edited: dict[str, Any] = {}
 
@@ -230,7 +230,7 @@ async def api_update_sharing(webhook_id: str, request: Request) -> dict[str, Any
 
 @router.get("/api/webhooks/{webhook_id}/subscribers")
 async def api_list_subscribers(webhook_id: str, request: Request) -> list[dict[str, Any]]:
-    require_admin(request)
+    require_role(request, "broadcaster")
     _webhook_or_404(webhook_id)
     # The subscriber's routing (account specs, sizing) is theirs: the publisher
     # gets who, since when and how many enabled accounts — like copy groups.
@@ -242,7 +242,7 @@ async def api_list_subscribers(webhook_id: str, request: Request) -> list[dict[s
 @router.put("/api/webhooks/{webhook_id}/subscribers/{sub_id}")
 async def api_set_subscriber_status(webhook_id: str, sub_id: int, request: Request) -> dict[str, Any]:
     """Publisher approves (pending → active), pauses or resumes one subscriber."""
-    user = require_admin(request)
+    user = require_role(request, "broadcaster")
     _webhook_or_404(webhook_id)
     body = await request.json()
     status = str(body.get("status") or "")
@@ -264,7 +264,7 @@ async def api_set_subscriber_status(webhook_id: str, sub_id: int, request: Reque
 @router.delete("/api/webhooks/{webhook_id}/subscribers/{sub_id}")
 async def api_remove_subscriber(webhook_id: str, sub_id: int, request: Request) -> dict[str, Any]:
     """Publisher removes a subscriber ("kick")."""
-    user = require_admin(request)
+    user = require_role(request, "broadcaster")
     _webhook_or_404(webhook_id)
     removed = db.delete_subscription(sub_id, publisher_area_id=context.get_area())
     if not removed or removed["webhook_id"] != webhook_id:

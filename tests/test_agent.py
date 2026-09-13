@@ -54,13 +54,15 @@ async def test_pairing_flow_and_admin_endpoints(client, anon_client):
     assert {"agent_pairing_code", "agent_paired", "agent_pair_failed", "agent_revoke"} <= set(actions)
 
 
-async def test_non_admin_cannot_manage_agents(admin, anon_client):
+async def test_every_role_manages_its_own_agents(admin, anon_client):
+    """alpha.93: execution agents belong to the workspace, not to the admin role — a
+    User with a prop-firm account that wants its own IP pairs an agent too."""
     from app import auth
     user = db.create_user("u@example.com", "password123", is_admin=False)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as c:
         c.cookies.set(auth.COOKIE, auth.make_session(user["id"]))
-        assert (await c.post("/api/agents/pairing-code", json={})).status_code == 403
-        assert (await c.get("/api/agents/download.zip")).status_code == 403
+        assert (await c.post("/api/agents/pairing-code", json={})).status_code == 200
+        assert (await c.get("/api/agents/download.zip")).status_code == 200
 
 
 async def test_relay_round_trip_through_tradovate_session(client, anon_client):

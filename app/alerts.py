@@ -460,3 +460,14 @@ def _register() -> None:
 
 
 _register()
+
+
+async def notify_admins(title: str, message: str) -> None:
+    """A short note to every admin's alert e-mail (best effort)."""
+    from . import db
+    for u in db.list_users():
+        if u.get("role") == "admin" or u.get("is_admin"):
+            try:
+                await send_email_to(u["email"], f"Fluxbridge: {title}", message)
+            except Exception:  # noqa: BLE001
+                pass

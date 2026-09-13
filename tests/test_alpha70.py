@@ -178,7 +178,7 @@ async def test_import_round_trip_keeps_tokens_and_known_routing(client, admin, w
 async def test_import_regenerates_tokens_clashing_with_another_area(client, admin, webhook_factory):
     wh = webhook_factory("Main")
     doc = (await client.get("/api/settings/export")).json()
-    u2 = db.create_user("two@example.com", "password123")
+    u2 = db.create_user("two@example.com", "password123", role="broadcaster")      # settings import is a producer's tool
     a2 = db.user_primary_area(u2["id"])
     from app import auth
     from tests.conftest import _make_client, enrolled

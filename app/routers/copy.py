@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import config, context, copy, db, history, marketplace, payments, state
-from ..web import require_admin
+from ..web import require_role
 from .accounts import trade_accounts_overview
 
 router = APIRouter(prefix="/api/copy", tags=["copy"])
@@ -71,7 +71,7 @@ async def api_following() -> list[dict[str, Any]]:
 @router.put("/groups/{group_id}/sharing")
 async def api_group_sharing(group_id: str, request: Request) -> dict[str, Any]:
     """Publish / unpublish a copy group on the marketplace (admins only)."""
-    user = require_admin(request)
+    user = require_role(request, "broadcaster")
     body = await request.json()
     groups, i = _group_or_404(group_id)
     g = dict(groups[i])
@@ -99,7 +99,7 @@ async def api_group_sharing(group_id: str, request: Request) -> dict[str, Any]:
 
 @router.get("/groups/{group_id}/subscribers")
 async def api_group_subscribers(group_id: str, request: Request) -> list[dict[str, Any]]:
-    require_admin(request)
+    require_role(request, "broadcaster")
     _group_or_404(group_id)
     return [{"id": s["id"], "email": s["email"], "enabled": s["enabled"], "status": s.get("status", "active"), "created_at": s["created_at"],
              "accounts": len([a for a in s.get("accounts") or [] if isinstance(a, dict) and a.get("enabled", True)])}
@@ -110,7 +110,7 @@ async def api_group_subscribers(group_id: str, request: Request) -> list[dict[st
 async def api_group_subscriber_status(group_id: str, sub_id: int, request: Request) -> dict[str, Any]:
     """Publisher approves, pauses or resumes one follower; a paused follower's
     accounts leave the mirror (positions stay, twin orders are cancelled)."""
-    user = require_admin(request)
+    user = require_role(request, "broadcaster")
     _group_or_404(group_id)
     body = await request.json()
     status = str(body.get("status") or "")
@@ -135,7 +135,7 @@ async def api_group_subscriber_status(group_id: str, sub_id: int, request: Reque
 @router.delete("/groups/{group_id}/subscribers/{sub_id}")
 async def api_group_remove_subscriber(group_id: str, sub_id: int, request: Request) -> dict[str, Any]:
     """Publisher removes a follower ("kick"); the follower keeps their positions."""
-    user = require_admin(request)
+    user = require_role(request, "broadcaster")
     _group_or_404(group_id)
     removed = db.delete_subscription(sub_id, publisher_area_id=context.get_area())
     if not removed or removed["webhook_id"] != f"copy:{group_id}":
@@ -151,6 +151,7 @@ async def api_group_remove_subscriber(group_id: str, sub_id: int, request: Reque
 
 @router.post("/groups")
 async def api_create_group(request: Request) -> dict[str, Any]:
+    require_role(request, "broadcaster")
     body = await request.json()
     groups = copy.load_groups()
     if len(groups) >= 50:
@@ -170,6 +171,7 @@ async def api_create_group(request: Request) -> dict[str, Any]:
 
 @router.put("/groups/{group_id}")
 async def api_update_group(group_id: str, request: Request) -> dict[str, Any]:
+    require_role(request, "broadcaster")
     body = await request.json()
     groups, i = _group_or_404(group_id)
     try:

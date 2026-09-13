@@ -2,6 +2,7 @@
    live stream and the reconcile polling. Build-free ES modules. */
 import { $, h, clear, toast, closeDialogs, everyVisible } from "./ui.js";
 import { store, can } from "./store.js";
+import { api } from "./api.js";
 import { actions } from "./actions.js";
 import { connectStream } from "./stream.js";
 import { parseHash, matchRoute, navigate as go } from "./router.js";
@@ -37,6 +38,18 @@ function navigate(path, opts = {}) {
 function paintSidebar() {
   const r = store.get("route");
   renderSidebar(sidebarEl, { me: store.get("me"), path: r ? r.path : "/", collapsed, onToggleCollapse: setCollapsed, navigate, version: VERSION });
+}
+
+/* ------------------------------------------------------------- support view */
+let supportBanner = null;
+function paintSupportBanner() {
+  const me = store.get("me");
+  if (supportBanner) { supportBanner.remove(); supportBanner = null; }
+  if (!me || !me.support) return;
+  supportBanner = h("div", { class: "support-banner", role: "status" },
+    h("strong", null, t("Support view")), " ", t("You are looking at the workspace of {email}. Everything is read-only; nothing you do here changes their data.", { email: me.support.email }),
+    h("button", { type: "button", class: "btn btn-sm", onClick: async () => { try { await api.post("/api/support/exit"); window.location.hash = "#/settings/users"; window.location.reload(); } catch (e) { toast(e.message, "error"); } } }, t("Leave support view")));
+  shell.prepend(supportBanner);
 }
 
 /* ------------------------------------------------------------- routing */
@@ -94,6 +107,7 @@ async function boot() {
     view.append(h("div", { class: "callout danger" }, t("Could not load your account: "), e.message));
     return;
   }
+  paintSupportBanner();
   // Data the shell and most pages need right away.
   await Promise.all([actions.loadSettings().catch(() => null), actions.refreshStatus(), actions.loadWebhooks(), actions.loadTradeAccounts()]);
   window.addEventListener("hashchange", render);

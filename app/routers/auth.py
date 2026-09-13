@@ -246,7 +246,8 @@ async def register_submit(request: Request):
         return RedirectResponse(back + "short", status_code=302)
     if db.get_user_by_email(email):
         return RedirectResponse(back + "exists", status_code=302)
-    user = await db.create_user_async(email, pw, is_admin=invite.get("is_admin", False), totp_required=True)
+    user = await db.create_user_async(email, pw, is_admin=invite.get("is_admin", False), totp_required=True,
+                                      role=invite.get("role") or ("admin" if invite.get("is_admin") else "user"))
     if not db.consume_invite(code, user["id"]):
         # Another registration won the single-use invite after our initial read.
         # Do not leave behind a fully-created user/workspace that never actually

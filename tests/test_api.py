@@ -55,8 +55,8 @@ async def test_setup_flow_creates_admin_and_migrates(anon_client):
     enrolled(1)
 
     me = (await anon_client.get("/api/me")).json()
-    assert me == {"id": 1, "email": "boss@example.com", "is_admin": True, "features": {"discord_signals": True},
-                  "totp_enabled": True, "totp_required": True}
+    assert me["id"] == 1 and me["email"] == "boss@example.com" and me["is_admin"] is True and me["role"] == "admin"
+    assert me["features"] == {"discord_signals": True} and me["capabilities"]["publish"] is True and me["support"] is None
     whs = (await anon_client.get("/api/webhooks")).json()
     assert len(whs) == 1 and whs[0]["name"] == "Default" and whs[0]["strategy"] == "bracket"
     assert (await anon_client.get("/setup")).headers["location"] == "/login"

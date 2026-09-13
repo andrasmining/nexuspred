@@ -466,12 +466,23 @@ def init() -> None:
                 """
             )
             # --- migrations for databases created before a column existed ---
+            invite_cols = {r["name"] for r in c.execute("PRAGMA table_info(invites)").fetchall()}
+            if "role" not in invite_cols:
+                c.execute("ALTER TABLE invites ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+                c.execute("UPDATE invites SET role='admin' WHERE is_admin=1")
             user_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
             if "last_login_at" not in user_cols:
                 c.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
                 c.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT")
             if "session_salt" not in user_cols:
                 c.execute("ALTER TABLE users ADD COLUMN session_salt TEXT NOT NULL DEFAULT ''")
+            if "role" not in user_cols:
+                # alpha.93: three roles. Every account that existed before the roles
+                # had the full feature set, so it keeps it — as admin (the owner's call).
+                c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+                c.execute("ALTER TABLE users ADD COLUMN role_request TEXT NOT NULL DEFAULT ''")
+                c.execute("ALTER TABLE users ADD COLUMN role_requested_at TEXT NOT NULL DEFAULT ''")
+                c.execute("UPDATE users SET role='admin', is_admin=1")
             if "totp_secret" not in user_cols:
                 # two-factor authentication (app/mfa.py): encrypted secret, enrolment
                 # state, replay counter, salt of the backup-code hashes

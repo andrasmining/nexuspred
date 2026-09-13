@@ -30,14 +30,14 @@ export const NAV = [
       { path: "/settings/account", label: t("Account") },
       { path: "/settings/users", label: t("Users"), gate: "admin" },
       { path: "/settings/payments", label: t("Payments"), gate: "admin" },
-      { path: "/settings/agents", label: t("Execution Agents"), gate: "admin" },
+      { path: "/settings/agents", label: t("Execution Agents") },
       { path: "/settings/news", label: t("News & Calendar"), gate: "admin" },
       { path: "/settings/updates", label: t("Updates"), gate: "admin" },
     ] },
   ] },
   { group: t("Tools"), items: [
-    { path: "/tools", label: t("Tools"), icon: "tools" },
-    { path: "/simulator", label: t("Simulator"), icon: "flask" },
+    { path: "/tools", label: t("Tools"), icon: "tools", gate: "simulator" },
+    { path: "/simulator", label: t("Simulator"), icon: "flask", gate: "simulator" },
   ] },
   { group: t("Help"), items: [
     { path: "/guide", label: t("Setup Guide"), icon: "book" },

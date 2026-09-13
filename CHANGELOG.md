@@ -4,6 +4,30 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.93
+- **Three roles: Admin / Broadcaster / User.** Every account has one role; each includes the one below.
+  A *User* trades its own accounts and webhooks, subscribes and follows on the marketplace, runs
+  automations, risk guards, journal, alerts and execution agents. A *Broadcaster* additionally
+  publishes webhooks and copy groups, manages subscribers, leads copy groups and has the simulator,
+  scenarios and settings export/import. An *Admin* operates the platform: users and roles, invites,
+  audit, payments, news, updates, Discord listener, support view. The gate lives in the request
+  middleware (`ROUTE_POLICY`): an endpoint above the caller's role answers 403 whatever the page does,
+  and `/api/me` carries the role and its capabilities so the navigation and the pages hide what the
+  role cannot do (no Users / Simulator / Discord for a User, no Sharing tab, no "add group").
+- **Existing accounts become Admins** (they had everything before). Invites carry the role of the
+  new account (default User); the first account stays Admin; the last Admin cannot demote themself.
+- **Become a Broadcaster.** One tap on the Marketplace page asks the admins (event log and alert
+  e-mail); Settings → Users shows *Approve Broadcaster* next to the request. Withdrawing the role
+  unpublishes every listing (subscriptions end, Stripe subscriptions are cancelled) and disables every
+  copy group — nothing is deleted.
+- **Support view.** An admin opens a user's workspace read-only from the Users page: every page shows
+  that user's data behind a banner, every write is refused until *Leave support view*, entering and
+  leaving are audited, the view expires after two hours.
+- **Directory for listings.** `GET /api/users/directory` gives a Broadcaster the id + e-mail pick list
+  for "only selected users" listings; the full user table stays admin-only.
+- Fixes found on the way: the Users page threw on a stale reference after the invite form lost its
+  admin checkbox; the role-request endpoint referenced a constant under the wrong module.
+
 ## 5.0.0-alpha.92
 - **Account size everywhere it helps.** The size pill (alpha.91) now also sits next to every account
   in the Trade Accounts table, in the Overview's P&L rows and in the order ticket's account list.

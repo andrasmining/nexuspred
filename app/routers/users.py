@@ -9,7 +9,8 @@ from fastapi.responses import JSONResponse
 
 from .. import alerts, config, context, db, state
 from ..discord_signals import listener as discord_listener
-from ..web import base_url, require_admin, set_session_cookie
+from .. import roles, web
+from ..web import base_url, require_admin, require_role, set_session_cookie
 
 router = APIRouter(prefix="/api", tags=["users"])
 
@@ -24,15 +25,119 @@ def guard_admin_target(admin: dict[str, Any], target: dict[str, Any] | None, wha
 @router.get("/me")
 async def api_me(request: Request) -> dict[str, Any]:
     u = request.state.user
-    return {"id": u["id"], "email": u["email"], "is_admin": u["is_admin"],
+    support = getattr(request.state, "support", None)
+    return {"id": u["id"], "email": u["email"], "is_admin": u["is_admin"], "role": web.role_of(u),
+            "role_request": u.get("role_request") or "", "capabilities": web.capabilities(u),
             "features": db.user_features(u["id"]),
+            "support": {"area_id": support["area_id"], "email": support["email"]} if support else None,
             "totp_enabled": bool(u.get("totp_enabled")), "totp_required": bool(u.get("totp_required"))}
+
+
+@router.post("/me/role-request")
+async def api_role_request(request: Request) -> dict[str, Any]:
+    """A user asks to become a Broadcaster; an admin approves in Settings → Users."""
+    user = require_role(request, "user")
+    body = await request.json()
+    wanted = str(body.get("role") or "broadcaster")
+    if wanted != "broadcaster" or web.has_role(user, "broadcaster"):
+        raise HTTPException(status_code=400, detail="Only the Broadcaster role can be requested")
+    db.request_role(user["id"], "broadcaster")
+    db.log_action(user["id"], user["email"], "role_request", user["email"], "broadcaster")
+    state.log_event("info", f"{user['email']} asked for the Broadcaster role — approve it under Settings → Users")
+    with context.use_area(context.DEFAULT_AREA_ID):                       # the operator's workspace hears it too
+        state.log_event("info", f"{user['email']} asked for the Broadcaster role — approve it under Settings → Users")
+    try:
+        await alerts.notify_admins("Broadcaster request", f"{user['email']} asked for the Broadcaster role. Approve it under Settings → Users.")
+    except Exception:  # noqa: BLE001 - an alert channel must never fail the request
+        pass
+    return {"status": "requested", "role": "broadcaster"}
+
+
+@router.delete("/me/role-request")
+async def api_role_request_withdraw(request: Request) -> dict[str, Any]:
+    user = require_role(request, "user")
+    db.clear_role_request(user["id"])
+    return {"status": "withdrawn"}
+
+
+@router.post("/users/{user_id}/role")
+async def api_set_role(request: Request, user_id: int) -> dict[str, Any]:
+    """Admin sets a user's role. Losing Broadcaster unpublishes and disables
+    what only a Broadcaster may run (nothing is deleted)."""
+    admin = require_admin(request)
+    body = await request.json()
+    role = str(body.get("role") or "")
+    if role not in db.ROLES:
+        raise HTTPException(status_code=400, detail="role must be user, broadcaster or admin")
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    if user_id == 1 and role != "admin":
+        raise HTTPException(status_code=403, detail="The bootstrap admin stays admin")
+    if target["id"] == admin["id"] and role != "admin" and db.count_admins() <= 1:
+        raise HTTPException(status_code=400, detail="You are the last admin — promote someone else first")
+    guard_admin_target(admin, target, "change another administrator's role")
+    before = web.role_of(target)
+    if before == role:
+        db.clear_role_request(user_id)
+        return {"user_id": user_id, "role": role, "effects": {}}
+    effects: dict[str, int] = {}
+    if web.ROLE_RANK[before] >= web.ROLE_RANK["broadcaster"] and web.ROLE_RANK[role] < web.ROLE_RANK["broadcaster"]:
+        area = db.user_primary_area(user_id)
+        if area:
+            effects = await roles.demote_publisher(area)
+    db.set_role(user_id, role)
+    db.log_action(admin["id"], admin["email"], "role_set", target["email"], f"{before} → {role}"
+                  + (f" ({effects['listings']} listings unpublished, {effects['groups']} groups disabled)" if effects else ""))
+    state.log_event("info", f"Role of {target['email']} set to {role} by {admin['email']}")
+    return {"user_id": user_id, "role": role, "effects": effects}
+
+
+@router.post("/users/{user_id}/support")
+async def api_support_enter(request: Request, user_id: int) -> JSONResponse:
+    """Admin opens a user's workspace read-only (support view): every read shows
+    the user's data, every write is refused until the admin leaves the view."""
+    admin = require_admin(request)
+    if user_id == admin["id"]:
+        raise HTTPException(status_code=400, detail="That is your own workspace")
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="No such user")
+    guard_admin_target(admin, target, "look into another administrator's workspace")
+    area = db.user_primary_area(user_id)
+    if not area:
+        raise HTTPException(status_code=404, detail="User has no workspace")
+    db.log_action(admin["id"], admin["email"], "support_view", target["email"], "entered (read-only)")
+    state.log_event("info", f"{admin['email']} opened the support view of {target['email']} (read-only)")
+    resp = JSONResponse({"status": "support", "area_id": area, "email": target["email"]})
+    resp.set_cookie(web.SUPPORT_COOKIE, web.make_support_cookie(admin["id"], area, target["email"]), max_age=web.SUPPORT_TTL,
+                    httponly=True, secure=web.secure(request), samesite="lax", path="/")
+    return resp
+
+
+@router.post("/support/exit")
+async def api_support_exit(request: Request) -> JSONResponse:
+    user = request.state.user
+    support = getattr(request.state, "support", None)
+    if support:
+        db.log_action(user["id"], user["email"], "support_view", support.get("email", ""), "left")
+    resp = JSONResponse({"status": "ok"})
+    resp.delete_cookie(web.SUPPORT_COOKIE, path="/")
+    return resp
 
 
 @router.get("/users")
 async def api_users(request: Request) -> dict[str, Any]:
     require_admin(request)
     return {"users": db.list_users(), "features": db.FEATURES}
+
+
+@router.get("/users/directory")
+async def api_users_directory(request: Request) -> dict[str, Any]:
+    """Who a listing can be limited to ("only selected users"): id and e-mail,
+    nothing else — the Broadcaster's pick list, not the admin's user table."""
+    me = require_role(request, "broadcaster")
+    return {"users": [{"id": u["id"], "email": u["email"]} for u in db.list_users() if u["id"] != me["id"]]}
 
 
 @router.post("/users/{user_id}/features")
@@ -71,10 +176,13 @@ async def api_create_invite(request: Request) -> dict[str, Any]:
     elevate = body.get("elevated")
     if elevate is None:
         elevate = body.get("is_admin")
+    role = str(body.get("role") or ("admin" if elevate else "user"))
+    if role not in db.ROLES:
+        raise HTTPException(status_code=400, detail="role must be user, broadcaster or admin")
     email = str(body.get("email", "")).strip()
-    code = db.create_invite(admin["id"], email=email, is_admin=bool(elevate))
+    code = db.create_invite(admin["id"], email=email, role=role)
     db.log_action(admin["id"], admin["email"], "invite_create", email or "anyone",
-                  "admin invite" if elevate else "")
+                  f"{role} invite" if role != "user" else "")
     url = f"{base_url(request)}/register?code={code}"
     emailed = False
     if email and "@" in email and bool(body.get("send_email")):
@@ -82,7 +190,7 @@ async def api_create_invite(request: Request) -> dict[str, Any]:
             email, "You're invited to Fluxbridge",
             f"You've been invited to Fluxbridge. Create your account here:\n\n{url}\n\n"
             "This link is single-use. If you didn't expect this, you can ignore it.")
-    return {"code": code, "url": url, "emailed": emailed, "smtp_configured": alerts.smtp_configured()}
+    return {"code": code, "url": url, "role": role, "emailed": emailed, "smtp_configured": alerts.smtp_configured()}
 
 
 @router.get("/invites")

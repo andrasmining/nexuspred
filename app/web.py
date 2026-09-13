@@ -2,6 +2,8 @@
 the admin gate, and the paths reachable without a login."""
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 from typing import Any
 
@@ -83,8 +85,111 @@ def require_feature(request: Request, feature: str) -> None:
         raise HTTPException(status_code=403, detail=f"Feature '{feature}' is not enabled for your account")
 
 
-def require_admin(request: Request) -> dict[str, Any]:
+# --------------------------------------------------------------------- roles
+# Three roles, one per user, platform-wide, each including the one below it:
+#   user         consumes — own broker logins, own webhooks, subscribes, follows, protects
+#   broadcaster  produces and sells — publishes listings, runs copy groups as leader, simulator
+#   admin        operates — users and roles, payments, news, updates, Discord, moderation, support view
+ROLE_RANK = {"user": 0, "broadcaster": 1, "admin": 2}
+ROLE_LABEL = {"user": "User", "broadcaster": "Broadcaster", "admin": "Admin"}
+
+
+def role_of(user: dict[str, Any] | None) -> str:
+    r = str((user or {}).get("role") or "")
+    if r in ROLE_RANK:
+        return r
+    return "admin" if (user or {}).get("is_admin") else "user"
+
+
+def has_role(user: dict[str, Any] | None, min_role: str) -> bool:
+    return ROLE_RANK[role_of(user)] >= ROLE_RANK[min_role]
+
+
+def require_role(request: Request, min_role: str) -> dict[str, Any]:
+    """403 unless the caller holds ``min_role`` or a higher one. Returns the user."""
     user = getattr(request.state, "user", None)
-    if not user or not user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin only")
+    if not user or not has_role(user, min_role):
+        raise HTTPException(status_code=403, detail=f"{ROLE_LABEL[min_role]} role required")
+    if getattr(request.state, "support", False) and request.method not in ("GET", "HEAD"):
+        raise HTTPException(status_code=403, detail="Support view is read-only")
     return user
+
+
+def require_admin(request: Request) -> dict[str, Any]:
+    return require_role(request, "admin")
+
+
+def capabilities(user: dict[str, Any] | None) -> dict[str, bool]:
+    """What the dashboard may show; the server re-checks every call regardless."""
+    r = role_of(user)
+    bc, ad = has_role(user, "broadcaster"), has_role(user, "admin")
+    return {"role": r, "trade": True, "webhooks": True, "subscribe": True, "follow": True, "agents": True,
+            "publish": bc, "lead": bc, "simulator": bc, "settings_io": bc,
+            "admin": ad, "users": ad, "payments_config": ad, "news": ad, "updates": ad, "discord": ad, "support": ad}
+
+
+# Route → minimum role, checked by the gate middleware for every request, so a
+# forgotten per-route check can never open a producer or operator endpoint to a
+# consumer. Entries: (methods or None for all, prefix, min role). First match wins.
+ROUTE_POLICY: list[tuple[tuple[str, ...] | None, str, str]] = [
+    (("PUT", "POST", "DELETE"), "/api/payments/config", "admin"),
+    (None, "/api/users", "admin"),
+    (None, "/api/invites", "admin"),
+    (None, "/api/audit", "admin"),
+    (None, "/api/update/", "admin"),
+    (("PUT", "POST", "DELETE"), "/api/news/", "admin"),
+    (None, "/api/discord/", "admin"),
+    (None, "/api/support/enter", "admin"),
+    (("PUT", "POST", "DELETE"), "/api/webhooks", "user"),           # own webhooks: every role (sharing / subscribers: see the exact rules)
+    (None, "/api/simulator", "broadcaster"),
+    (None, "/api/simulate", "broadcaster"),
+    (None, "/api/scenarios", "broadcaster"),
+    (None, "/api/settings/export", "broadcaster"),
+    (None, "/api/settings/import", "broadcaster"),
+]
+# finer rules that must beat the prefixes above
+ROUTE_POLICY_EXACT: list[tuple[tuple[str, ...] | None, "re.Pattern[str]", str]] = [
+    (None, re.compile(r"^/api/webhooks/[^/]+/(sharing|subscribers)(/|$)"), "broadcaster"),   # publish and manage subscribers
+    (None, re.compile(r"^/api/copy/groups/[^/]+/(sharing|subscribers)(/|$)"), "broadcaster"),
+    (("POST", "PUT", "DELETE"), re.compile(r"^/api/copy/groups(/|$)"), "broadcaster"),        # groups as a leader; following is a subscription
+    (("GET",), re.compile(r"^/api/users/directory$"), "broadcaster"),                        # the "selected users" pick list
+    (None, re.compile(r"^/api/me(/|$)"), "user"),
+]
+
+
+SUPPORT_COOKIE = "fb_support"
+SUPPORT_TTL = 2 * 3600
+
+
+def make_support_cookie(admin_id: int, area_id: int, email: str) -> str:
+    import json, time
+    body = auth._b64e(json.dumps({"kind": "support", "adm": int(admin_id), "area": int(area_id), "email": email,
+                                  "exp": int(time.time()) + SUPPORT_TTL}).encode())
+    return f"{body}.{auth._sign(body)}"
+
+
+def read_support_cookie(cookie: str | None, admin_id: int) -> dict[str, Any] | None:
+    """The support view an admin entered, or None (bound to the admin, two hours)."""
+    import hmac, json, time
+    if not cookie or "." not in cookie:
+        return None
+    body, _, sig = cookie.partition(".")
+    try:
+        if not hmac.compare_digest(sig, auth._sign(body)):
+            return None
+        payload = json.loads(auth._b64d(body))
+        if payload.get("kind") != "support" or int(payload.get("adm", 0)) != int(admin_id) or int(payload.get("exp", 0)) < time.time():
+            return None
+        return {"area_id": int(payload["area"]), "email": str(payload.get("email") or "")}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def min_role_for(method: str, path: str) -> str | None:
+    for methods, pat, role in ROUTE_POLICY_EXACT:
+        if (methods is None or method in methods) and pat.match(path):
+            return role
+    for methods, prefix, role in ROUTE_POLICY:
+        if (methods is None or method in methods) and (path == prefix or path.startswith(prefix)):
+            return role
+    return None

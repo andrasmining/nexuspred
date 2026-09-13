@@ -55,9 +55,14 @@ export const store = createStore({
 });
 
 /** Feature / role gates used by navigation and pages. */
+const RANK = { user: 0, broadcaster: 1, admin: 2 };
+export function roleOf(me) { return me && RANK[me.role] !== undefined ? me.role : (me && me.is_admin ? "admin" : "user"); }
 export function can(me, what) {
   if (!me) return false;
-  if (what === "admin") return !!me.is_admin;
-  if (what === "discord") return (me.features || {}).discord_signals !== false;
+  const caps = me.capabilities || {};
+  if (what in caps) return !!caps[what] && (what !== "discord" || (me.features || {}).discord_signals !== false);
+  if (what === "admin") return roleOf(me) === "admin";
+  if (what === "broadcaster") return RANK[roleOf(me)] >= 1;
+  if (what === "discord") return roleOf(me) === "admin" && (me.features || {}).discord_signals !== false;
   return true;
 }

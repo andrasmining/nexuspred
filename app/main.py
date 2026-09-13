@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth, automations, config, context, copy, crypto, db, drawdown, health, history, http, journal, metrics, news, pnl, push, security, signals, state, watchdog  # noqa: F401 - automations / metrics subscribe to the event bus on import
 from .discord_signals.routes import router as discord_router
 from .routers import ROUTERS
+from . import web
 from .web import BASE_DIR, is_auth_exempt, mfa_setup_allowed, wants_html
 
 _loop_tasks: list[asyncio.Task] = []
@@ -240,8 +241,21 @@ class GateMiddleware:
         if not area_id:
             # a workspace is a tenancy boundary: a login without one never lands in another
             return JSONResponse({"detail": "No workspace membership"}, status_code=403)
+        support = None
+        if web.has_role(user, "admin"):
+            # an admin looking into a user's workspace (support view): read-only,
+            # the target's area for every read, nothing else
+            support = web.read_support_cookie(request.cookies.get(web.SUPPORT_COOKIE), user["id"])
+            if support:
+                if request.method not in ("GET", "HEAD") and path != "/api/support/exit":
+                    return JSONResponse({"detail": "Support view is read-only — leave it to make changes"}, status_code=403)
+                area_id = support["area_id"]
+        need = web.min_role_for(request.method, path)
+        if need and not web.has_role(user, need):
+            return JSONResponse({"detail": f"{web.ROLE_LABEL[need]} role required"}, status_code=403)
         scope["state"]["user"] = user
         scope["state"]["area_id"] = area_id
+        scope["state"]["support"] = support
         return None
 
 
