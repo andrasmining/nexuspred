@@ -932,6 +932,16 @@ Every open position has a **Close** button: the contract's working orders are ca
 first, then the position is liquidated; the bridge stops managing that trade on that
 account. Both actions are written to the admin audit log.
 
+Since alpha.100 the ticket, Close and the emergency flatten go through an **execution
+service** (`app/execution`, see `docs/COMMERCIAL-FOUNDATION.md`): the caller must be a member
+of the workspace (the support view cannot trade), and every manual order is recorded in a
+command ledger before it reaches the broker. A client that sends an `Idempotency-Key` header
+gets the recorded acknowledgement back on a retry instead of a second order; the same key with
+a different instruction is refused with 409. The response carries `X-Execution-Command-Id`,
+and `GET /api/execution/commands/{id}` shows a command's outcome (*accepted* means the broker
+acknowledged it, not that it filled). Commands interrupted by a restart are marked *unknown*
+and never replayed.
+
 The **Exposure** card sums the open positions across all accounts per symbol root: long /
 short / net contracts, number of accounts, notional at the average entry price
 (contracts × price × value per point) and each root's share. It flags a root that is long
@@ -1225,6 +1235,7 @@ the dashboard **Update** button works.
 | `POST` | `/api/flatten-all` | 🆘 Cancel every working order and flatten every position on all accounts (ignores the trading switch) |
 | `POST` | `/api/orders/manual` | Order ticket: `{lid, spec, symbol, action, qty, order_type, price?, stop_price?}` — Trading switch and risk lock apply |
 | `POST` | `/api/positions/close` | Cancel one contract's working orders and close the position at market (`{lid, spec, symbol}`) |
+| `GET`  | `/api/execution/commands/{id}` | Outcome of one manual command from the ledger (`claimed`, `dispatching`, `accepted`, `rejected`, `unknown`) |
 | `GET`  | `/api/exposure` | Open positions (with their login) + per-symbol / per-account exposure summary and warnings |
 | `GET/PUT` | `/api/automations` | Rules (`{rules: [...]}`), recent firings, the event and action catalogue |
 | `GET`  | `/metrics` | Prometheus text format; `Authorization: Bearer $NEXUSPRED_METRICS_TOKEN` (404 when unset) |

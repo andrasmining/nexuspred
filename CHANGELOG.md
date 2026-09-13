@@ -4,6 +4,32 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.100
+Two community contributions by andrasmining merged, plus a CI fix.
+- **Execution-service boundary (PR #25).** Dashboard manual orders, position close and the emergency
+  flatten go through `app/execution` with an explicit actor and workspace-membership check; platform
+  admins do not implicitly trade in another workspace (the support view and the support grant stay
+  read-only for orders). Manual orders are written to a durable command ledger (`execution_commands`)
+  before dispatch: an optional `Idempotency-Key` header makes a retried request replay the recorded
+  acknowledgement instead of sending a second order, the same key with a different instruction is a
+  conflict, and `GET /api/execution/commands/{id}` shows a command's outcome. Interrupted commands are
+  marked *unknown* at startup and never replayed. Response bodies and broker calls are unchanged; the
+  `commercial_entitlements` table (manual trading per workspace) has no UI yet. See
+  `docs/COMMERCIAL-FOUNDATION.md`.
+- **Copy flatten never trades blind (PR #24).** A feed-loss flatten whose follower position cannot be
+  read sends no close and records the contract as unresolved, instead of closing from cached memory
+  and possibly opening the opposite position.
+- **Account ids are broker-local (PR #24).** Balances and size tiers on the Trade Accounts page, the
+  public copy listing and the copy track record bind the P&L row to account id *and* spec; an ambiguous
+  match shows no balance rather than a foreign account's.
+- **Broadcaster demotion keeps billing identity (PR #24).** If Stripe cannot confirm every cancellation
+  the listings are unpublished, the subscriber rows are kept for a retry and the role change answers
+  502 instead of orphaning a live subscription.
+- **Support cookie re-checked per request (PR #24).** The support view drops when its target workspace
+  or user changed underneath it, and a non-bootstrap admin cannot keep viewing a user who became admin.
+- **CI.** The inbox tests of alpha.97–99 wait for the inbox writer thread instead of sleeping, which
+  made them flaky on slow runners.
+
 ## 5.0.0-alpha.99
 Package 5 of the operations roadmap: professional operations.
 - **Escalation with acknowledgement.** With *Escalate critical alerts* on, a critical alert (risk guard,

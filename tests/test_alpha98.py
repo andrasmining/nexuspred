@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app import broadcaster, config, context, db, mailer, releases
+from app import alerts, broadcaster, config, context, db, mailer, releases
 from app import copy as cp
 from tests.test_alpha93 import _client, trio  # noqa: F401 - the three-role fixture
 from tests.test_alpha95 import sent  # noqa: F401 - platform mailer with a faked transport
@@ -27,7 +27,9 @@ def listing(trio):
 
 
 async def _settle():
-    await asyncio.sleep(0.05)
+    """Let scheduled inbox writes reach the single writer thread, then wait for it."""
+    await asyncio.sleep(0.01)
+    await asyncio.to_thread(alerts.drain_inbox)
 
 
 # ================================================================ announcements

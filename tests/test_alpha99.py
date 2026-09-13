@@ -18,7 +18,9 @@ from tests.test_alpha97 import channels  # noqa: F401 - every alert channel fake
 
 
 async def _settle():
-    await asyncio.sleep(0.05)
+    """Let scheduled inbox writes reach the single writer thread, then wait for it."""
+    await asyncio.sleep(0.01)
+    await asyncio.to_thread(alerts.drain_inbox)
 
 
 # ================================================================ escalation
