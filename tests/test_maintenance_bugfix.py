@@ -1,7 +1,7 @@
 """Regression tests for must-have maintenance fixes on top of current upstream."""
 from __future__ import annotations
 
-from app import config, context, db, payments, state, track_record
+from app import config, context, db, payments, state, track_record, web
 from app import copy as cp
 from app.routers.accounts import trade_accounts_overview
 from tests.test_alpha88 import mixed  # noqa: F401 - pytest fixture
@@ -93,8 +93,8 @@ async def test_broadcaster_demotion_retains_failed_stripe_subscription_for_retry
         wh["sharing"] = {"enabled": True, "mode": "public", "price_cents": 1000}
         config.save_settings({"webhooks": [wh]})
     sub = db.upsert_subscription(subscriber_area, publisher_area, wh["id"], [], user_id=subscriber["id"])
-    pay = db.upsert_payment(subscriber_area, publisher_area, wh["id"],
-                            stripe_subscription="sub_still_live", status="active", price_cents=1000, currency="usd")
+    db.upsert_payment(subscriber_area, publisher_area, wh["id"],
+                      stripe_subscription="sub_still_live", status="active", price_cents=1000, currency="usd")
 
     async def cancellation_fails(_publisher_area, _key, *, area_id=None):
         return 0
@@ -121,3 +121,19 @@ async def test_broadcaster_demotion_retains_failed_stripe_subscription_for_retry
     assert db.get_user(broadcaster["id"])["role"] == "user"
     assert db.list_subscriptions(subscriber_area) == []
     assert db.get_payment(subscriber_area, publisher_area, wh["id"])["status"] == "canceled"
+
+
+def test_support_cookie_rechecks_target_after_role_change(trio):
+    """A support cookie must not remain an authorization lease after its target
+    becomes another admin, whose workspace a non-bootstrap admin may not inspect."""
+    bootstrap, helper, target = trio
+    db.set_role(helper["id"], "admin")
+    target_area = db.user_primary_area(target["id"])
+    cookie = web.make_support_cookie(helper["id"], target_area, target["email"])
+    assert web.read_support_cookie(cookie, helper["id"])["area_id"] == target_area
+
+    db.set_role(target["id"], "admin")
+    assert web.read_support_cookie(cookie, helper["id"]) is None
+    # The bootstrap admin is explicitly allowed to support other admins.
+    root_cookie = web.make_support_cookie(bootstrap["id"], target_area, target["email"])
+    assert web.read_support_cookie(root_cookie, bootstrap["id"])["area_id"] == target_area

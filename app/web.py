@@ -168,7 +168,13 @@ def make_support_cookie(admin_id: int, area_id: int, email: str) -> str:
 
 
 def read_support_cookie(cookie: str | None, admin_id: int) -> dict[str, Any] | None:
-    """The support view an admin entered, or None (bound to the admin, two hours)."""
+    """The support view an admin entered, or None (bound to the admin, two hours).
+
+    The signed cookie is an authenticated *request* to view a workspace, not a
+    two-hour authorization lease. Re-check the target on every request so a
+    deleted/reassigned workspace or a user promoted to Admin cannot remain
+    visible through a stale support cookie.
+    """
     import hmac, json, time
     if not cookie or "." not in cookie:
         return None
@@ -179,7 +185,15 @@ def read_support_cookie(cookie: str | None, admin_id: int) -> dict[str, Any] | N
         payload = json.loads(auth._b64d(body))
         if payload.get("kind") != "support" or int(payload.get("adm", 0)) != int(admin_id) or int(payload.get("exp", 0)) < time.time():
             return None
-        return {"area_id": int(payload["area"]), "email": str(payload.get("email") or "")}
+        area_id = int(payload["area"])
+        email = str(payload.get("email") or "")
+        from . import db
+        target = db.get_user_by_email(email)
+        if not target or db.user_primary_area(target["id"]) != area_id or int(target["id"]) == int(admin_id):
+            return None
+        if has_role(target, "admin") and int(admin_id) != 1:
+            return None
+        return {"area_id": area_id, "email": email}
     except Exception:  # noqa: BLE001
         return None
 
