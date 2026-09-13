@@ -122,12 +122,16 @@ async def test_mail_offsite_attaches_the_encrypted_snapshot(admin, monkeypatch):
     monkeypatch.setattr(mailer, "_smtp_send", lambda cfg, to, subj, html, text, att="": sent.append((to, subj, att)))
     backups.save_config({"offsite": "mail"})
     entry = await backups.run("manual")
-    assert entry["offsite"] == "mail:1 admin(s)"
-    row = db.outbox_list()[0]
-    assert row["kind"] == "backup" and row["attachment"].endswith(".db.enc") and Path(row["attachment"]).exists()
+    assert entry["offsite"] == "" and entry["offsite_pending"] == "mail:1 pending"
+    assert len(entry["offsite_mail_ids"]) == 1
+    row = db.outbox_get(entry["offsite_mail_ids"][0])
+    assert row and row["kind"] == "backup" and row["attachment"].endswith(".db.enc") and Path(row["attachment"]).exists()
     await mailer.deliver_pending()
     assert sent and sent[0][0] == "admin@example.com" and sent[0][2].endswith(".db.enc")
     assert not Path(row["attachment"]).exists()                                      # released after the send
+    assert backups.reconcile_mail_offsite() == []
+    stored = next(r for r in backups.list_backups() if r["name"] == entry["name"])
+    assert stored["offsite"] == "mail:1 delivered" and not stored["offsite_pending"] and not stored["offsite_error"]
     # too big for mail → error + alarm, snapshot still there
     backups.save_config({"mail_max_mb": 1})
     monkeypatch.setattr(backups, "encrypt_file", lambda src, dst: dst.write_bytes(b"x" * (2 << 20)))
