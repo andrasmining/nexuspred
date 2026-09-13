@@ -306,7 +306,7 @@ async def test_copy_flatten_confirms_flat_followers_and_baselines_the_contract(a
 async def test_copy_flatten_lists_a_follower_the_broker_still_shows_open(admin, monkeypatch):
     r, ex = await _runner(monkeypatch, [{"accountId": 2, "contractId": 5, "netPos": 1}])
     assert await r.flatten_followers(reason="feed lost") == 1           # one close, never a second one
-    assert r.flatten_unresolved == ["F MNQ: broker still shows +1 after the close"]
+    assert r.unresolved_for() == ["F MNQ: broker still shows +1 after the close"]
     assert 5 in r.baseline and r.follower_pos[("F", 5)] == 0 and "MNQ" in r.follower_err["F"]
     assert len(ex.of("place")) == 1
 

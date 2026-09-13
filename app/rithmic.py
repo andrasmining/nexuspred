@@ -117,7 +117,10 @@ def resolve_gateway(value: str, environment: str = "demo") -> str:
 
 
 SYSTEMS_TTL_S = 3600.0
+SYSTEMS_CACHE_MAX = 32
+SYSTEMS_CONCURRENCY = 4
 _systems_cache: dict[str, tuple[float, list[str]]] = {}     # gateway URL → (monotonic, names)
+_systems_sem: asyncio.Semaphore | None = None               # at most SYSTEMS_CONCURRENCY gateway sockets at once
 
 
 async def _ws_connect(url: str) -> Any:
@@ -135,10 +138,22 @@ async def list_systems(gateway: str, *, environment: str = "demo", fresh: bool =
     per gateway for ``SYSTEMS_TTL_S``. Raises ``TradovateError`` when the
     gateway cannot be reached or answers with an error."""
     import time as _time
+    global _systems_sem
     url = resolve_gateway(gateway, environment)
     hit = _systems_cache.get(url)
     if hit and not fresh and _time.monotonic() - hit[0] < SYSTEMS_TTL_S:
         return list(hit[1])
+    if _systems_sem is None:
+        _systems_sem = asyncio.Semaphore(SYSTEMS_CONCURRENCY)
+    async with _systems_sem:                                 # a burst of requests never opens a burst of sockets
+        hit = _systems_cache.get(url)
+        if hit and not fresh and _time.monotonic() - hit[0] < SYSTEMS_TTL_S:
+            return list(hit[1])
+        return await _fetch_systems(url, timeout)
+
+
+async def _fetch_systems(url: str, timeout: float) -> list[str]:
+    import time as _time
     try:
         from async_rithmic.protocol_buffers import base_pb2, request_rithmic_system_info_pb2, response_rithmic_system_info_pb2
     except ImportError as exc:  # pragma: no cover - environment without the package
@@ -186,8 +201,10 @@ async def list_systems(gateway: str, *, environment: str = "demo", fresh: bool =
             await ws.close()
         except Exception:  # noqa: BLE001
             pass
-    _systems_cache[url] = (_time.monotonic(), names)
-    return list(names)
+    while len(_systems_cache) >= SYSTEMS_CACHE_MAX:
+        _systems_cache.pop(next(iter(_systems_cache)))     # bounded: the oldest entry goes
+    _systems_cache[url] = (_time.monotonic(), names[:200])
+    return list(names[:200])
 
 
 def gateway_allowed(url: str) -> bool:
@@ -198,7 +215,16 @@ def gateway_allowed(url: str) -> bool:
     except ValueError:
         return False
     host = (parts.hostname or "").lower()
-    return parts.scheme == "wss" and (host == "rithmic.com" or host.endswith(".rithmic.com"))
+    if parts.scheme != "wss" or not (host == "rithmic.com" or host.endswith(".rithmic.com")):
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    # the gateways listen on 443 and nothing else; no userinfo, path, query or
+    # fragment — a URL is a host, not a probe
+    return port in (None, 443) and not parts.username and not parts.password \
+        and parts.path in ("", "/") and not parts.query and not parts.fragment
 
 
 def _disconnect_later(client: Any) -> None:

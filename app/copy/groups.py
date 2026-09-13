@@ -284,6 +284,7 @@ def following_status(area_id: int) -> list[dict[str, Any]]:
                     "publisher_email": db.area_owner_email(sub["publisher_area_id"]) or "", "symbols": list((g or {}).get("symbols") or []),
                     "running": bool(st and st["running"]), "feed_ok": bool(st and st["feed_ok"]), "paused": bool(st and st["paused"]),
                     "pause_reason": (st or {}).get("pause_reason", ""), "latency_ms": (st or {}).get("latency_ms"),
+                    "flatten_unresolved": r.unresolved_for(area_id, mine) if r else [],
                     "leader_positions": (st or {}).get("leader_positions", []),
                     "followers": [f for f in (st or {}).get("followers", []) if f.get("area_id") == area_id and f["spec"] in mine]})
     return out

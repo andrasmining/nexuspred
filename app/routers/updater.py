@@ -20,7 +20,8 @@ router = APIRouter(prefix="/api/update", tags=["updater"])
 
 
 @router.get("/check")
-async def api_update_check() -> dict[str, Any]:
+async def api_update_check(request: Request) -> dict[str, Any]:
+    require_admin(request)                      # an outbound GitHub call is an admin's to trigger
     return await updater.check_for_update()
 
 

@@ -42,19 +42,26 @@ def trade_accounts_overview() -> list[dict[str, Any]]:
 
 
 # =============================================================== Token accounts
+_SYSTEMS_LIMIT = security.RateLimiter(12, 60)          # gateway lookups per user and minute (a cache hit costs nothing at Rithmic)
+
+
 @router.get("/rithmic/systems")
-async def api_rithmic_systems(gateway: str = "", environment: str = "demo", fresh: bool = False) -> dict[str, Any]:
+async def api_rithmic_systems(request: Request, gateway: str = "", environment: str = "demo", fresh: bool = False) -> dict[str, Any]:
     """The system names a Rithmic gateway serves — the dropdown on the Broker
     Accounts page. ``gateway`` is a key (chicago / europe / paper / test), a
-    Rithmic wss:// URL or empty (the environment's default)."""
+    Rithmic wss:// URL or empty (the environment's default). Rate-limited per
+    user: every lookup is a socket to Rithmic from the bridge's shared address."""
     try:
         url = rithmic.resolve_gateway(gateway, environment)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not _SYSTEMS_LIMIT.hit(str(request.state.user.get("id"))):
+        raise HTTPException(status_code=429, detail="Too many gateway lookups — try again in a minute", headers={"Retry-After": "60"})
     try:
         systems = await rithmic.list_systems(gateway, environment=environment, fresh=fresh)
     except tradovate.TradovateError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        state.log_event("warn", f"Rithmic system list: {exc}")
+        raise HTTPException(status_code=502, detail="Rithmic gateway not reachable or it refused the system list — type the system name") from exc
     return {"gateway": url, "systems": systems}
 
 

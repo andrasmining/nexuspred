@@ -65,6 +65,11 @@ async def sync_area(area_id: int) -> None:
                 continue
             external = external_followers(area_id, key[1], group=g)
             if json.dumps(external, sort_keys=True) != r.fingerprint[1]:
+                # accounts that left (unsubscribed, kicked, removed from the listing's
+                # user list, paused by payment) get their copied orders cancelled first
+                gone = _enabled_specs(r.external) - _enabled_specs(external)
+                if gone:
+                    await release_followers(area_id, key[1], gone)
                 await r.refresh_followers(external)
         for gid, g in groups.items():
             if g.get("enabled") and (area_id, gid) not in _runners:

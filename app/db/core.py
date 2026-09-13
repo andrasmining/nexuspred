@@ -421,6 +421,9 @@ def init() -> None:
                 c.execute("ALTER TABLE subscriptions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
             if "controls" not in sub_cols:
                 c.execute("ALTER TABLE subscriptions ADD COLUMN controls TEXT NOT NULL DEFAULT '{}'")
+            if "user_id" not in sub_cols:
+                # alpha.84: the user who subscribed (the principal the listing's ACL is checked against)
+                c.execute("ALTER TABLE subscriptions ADD COLUMN user_id INTEGER")
             c.execute("""CREATE TABLE IF NOT EXISTS payments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     area_id INTEGER NOT NULL,

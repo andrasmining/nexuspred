@@ -108,8 +108,19 @@ def _pip_install() -> tuple[bool, str]:
     return _run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], timeout=PIP_TIMEOUT_S)
 
 
+_apply_lock = asyncio.Lock()
+
+
 async def apply_update() -> dict[str, Any]:
-    """Pull the latest code from GitHub and schedule a restart."""
+    """Pull the latest code from GitHub and schedule a restart. One at a time:
+    two concurrent runs would reset the checkout under each other's pip."""
+    if _apply_lock.locked():
+        return {"success": False, "message": "An update is already running — wait for it to finish."}
+    async with _apply_lock:
+        return await _apply_update()
+
+
+async def _apply_update() -> dict[str, Any]:
     # On managed hosts like Render, deploys are driven by git push, not by us.
     if os.environ.get("RENDER") or os.environ.get("NEXUSPRED_MANAGED_HOST"):
         return {

@@ -24,8 +24,10 @@ def _row_to_sub(r: sqlite3.Row) -> dict[str, Any]:
            "webhook_id": r["webhook_id"], "enabled": bool(r["enabled"]), "accounts": accounts,
            "status": (r["status"] if "status" in r.keys() else "active") or "active", "controls": controls if isinstance(controls, dict) else {},
            "created_at": r["created_at"], "updated_at": r["updated_at"]}
-    if "user_id" in r.keys():
-        out["user_id"] = r["user_id"]                  # the subscriber (owner of the subscribing workspace)
+    keys = r.keys()
+    uid = r["sub_user_id"] if "sub_user_id" in keys else (r["user_id"] if "user_id" in keys else None)
+    if uid is not None:
+        out["user_id"] = uid                           # the subscribing user (fan-out rows: falls back to the workspace owner)
     return out
 
 
@@ -34,10 +36,13 @@ SUB_STATUSES = ("active", "pending", "paused", "unpaid")
 
 def upsert_subscription(area_id: int, publisher_area_id: int, webhook_id: str,
                         accounts: list[dict[str, Any]], enabled: bool = True, *,
-                        controls: Optional[dict[str, Any]] = None, status: Optional[str] = None) -> dict[str, Any]:
+                        controls: Optional[dict[str, Any]] = None, status: Optional[str] = None,
+                        user_id: Optional[int] = None) -> dict[str, Any]:
     """Create or update the subscriber area's subscription to a published webhook.
     ``status`` applies to a *new* row only (an existing row keeps what the
-    publisher set); ``controls`` replaces the subscriber's controls when given."""
+    publisher set); ``controls`` replaces the subscriber's controls when given;
+    ``user_id`` is the subscribing user (the principal a "selected users"
+    listing is checked against at every fan-out)."""
     init()
     now = _now()
     with _connect() as c:
@@ -45,14 +50,14 @@ def upsert_subscription(area_id: int, publisher_area_id: int, webhook_id: str,
                         (area_id, publisher_area_id, webhook_id)).fetchone()
         if row is None:
             c.execute(
-                "INSERT INTO subscriptions(area_id,publisher_area_id,webhook_id,enabled,accounts,created_at,updated_at,status,controls) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO subscriptions(area_id,publisher_area_id,webhook_id,enabled,accounts,created_at,updated_at,status,controls,user_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (area_id, publisher_area_id, webhook_id, 1 if enabled else 0, json.dumps(accounts), now, now,
-                 status if status in SUB_STATUSES else "active", json.dumps(controls or {})))
+                 status if status in SUB_STATUSES else "active", json.dumps(controls or {}), user_id))
         else:
-            c.execute("UPDATE subscriptions SET enabled=?, accounts=?, updated_at=?, controls=? WHERE id=?",
+            c.execute("UPDATE subscriptions SET enabled=?, accounts=?, updated_at=?, controls=?, user_id=COALESCE(?, user_id) WHERE id=?",
                       (1 if enabled else 0, json.dumps(accounts), now,
-                       json.dumps(controls) if controls is not None else (row["controls"] if "controls" in row.keys() else "{}"), row["id"]))
+                       json.dumps(controls) if controls is not None else (row["controls"] if "controls" in row.keys() else "{}"), user_id, row["id"]))
         row = c.execute("SELECT * FROM subscriptions WHERE area_id=? AND publisher_area_id=? AND webhook_id=?",
                         (area_id, publisher_area_id, webhook_id)).fetchone()
     _subs_changed()
@@ -145,7 +150,12 @@ def list_subscribers(publisher_area_id: int, webhook_id: str) -> list[dict[str, 
             "JOIN areas a ON a.id = s.area_id JOIN users u ON u.id = a.owner_user_id "
             "WHERE s.publisher_area_id=? AND s.webhook_id=? ORDER BY s.id",
             (publisher_area_id, webhook_id)).fetchall()
-    return [{**_row_to_sub(r), "email": r["email"]} for r in rows]
+    out = []
+    for r in rows:
+        sub = _row_to_sub(r)
+        sub.pop("user_id", None)                       # the publisher sees the subscriber's email, not their user id
+        out.append({**sub, "email": r["email"]})
+    return out
 
 
 def subscriber_counts(publisher_area_id: int) -> dict[str, int]:
@@ -174,7 +184,7 @@ def active_subscriptions(publisher_area_id: int, webhook_id: str) -> list[dict[s
     with _connect() as c:
         # the subscriber's user id rides along (one join, cached with the row): the
         # fan-out re-checks a "selected users" listing without any read of its own
-        rows = c.execute("SELECT s.*, a.owner_user_id AS user_id FROM subscriptions s LEFT JOIN areas a ON a.id = s.area_id "
+        rows = c.execute("SELECT s.*, COALESCE(s.user_id, a.owner_user_id) AS sub_user_id FROM subscriptions s LEFT JOIN areas a ON a.id = s.area_id "
                          "WHERE s.publisher_area_id=? AND s.webhook_id=? AND s.enabled=1 AND s.status='active' ORDER BY s.id",
                          key).fetchall()
     subs = [_row_to_sub(r) for r in rows]

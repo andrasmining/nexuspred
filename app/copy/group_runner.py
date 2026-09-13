@@ -91,7 +91,7 @@ class GroupRunner:
         self.last_latency_ms: Optional[int] = None
         self.paused = False
         self.pause_reason = ""
-        self.flatten_unresolved: list[str] = []       # follower/contract pairs the last feed-loss flatten could not confirm flat
+        self.flatten_unresolved: list[dict[str, Any]] = []   # follower/contract pairs the last feed-loss flatten could not confirm flat (see unresolved_for)
         self.error = ""
         self.leader_net: dict[int, int] = {}          # contract_id → net
         self.unit: dict[int, int] = {}                # contract_id → leader size at open
@@ -885,9 +885,10 @@ class GroupRunner:
             else:
                 n = await self.flatten_followers(reason=f"feed lost for {int(lost_for)} s")
                 if self.flatten_unresolved:
-                    detail = "; ".join(self.flatten_unresolved[:4]) + (f" (+{len(self.flatten_unresolved) - 4} more)" if len(self.flatten_unresolved) > 4 else "")
-                    self.pause_reason = (f"feed lost for {int(lost_for)} s — followers flattened ({n} order(s)) but not all confirmed flat: {detail}; "
-                                         "check the follower accounts before resuming")
+                    # no account names here: the reason is shown to the publisher and to every subscriber
+                    self.pause_reason = (f"feed lost for {int(lost_for)} s — followers flattened ({n} order(s)) but "
+                                         f"{len(self.flatten_unresolved)} follower/contract pair(s) not confirmed flat; "
+                                         "check the follower accounts (status → unresolved) before resuming")
                 else:
                     self.pause_reason = f"feed lost for {int(lost_for)} s — followers flattened ({n} order(s), confirmed flat); resume when the leader feed is back"
                 self.paused = True
@@ -912,13 +913,20 @@ class GroupRunner:
         contracts = {cid for cid, n in self.leader_net.items() if cid not in self.baseline}
         contracts |= {k[1] for k in self.orders.touched if k[1]} | {t["contract_id"] for t in self.orders.twins.values()}
         closed: list[tuple[dict[str, Any], Any, int, int]] = []      # (follower, executor, contract, qty closed) to verify
-        unresolved: list[str] = []
+        unresolved: list[dict[str, Any]] = []
+
+        def note(f: dict[str, Any], cid: int, detail: str) -> None:
+            # structured, rendered per viewer (unresolved_for): a subscriber's account
+            # name must reach neither the publisher nor another subscriber
+            unresolved.append({"spec": str(f["spec"]), "external": bool(f.get("external")), "sub_id": f.get("sub_id"),
+                               "area_id": self._area_of(f), "symbol": self.contract_names.get(cid, str(cid)), "detail": detail})
 
         async def one_follower(f: dict[str, Any]) -> int:
             ex = self._executor(f)
             if ex is None:
-                unresolved.extend(f"{f['spec']} {self.contract_names.get(cid, str(cid))}: login disabled or account gone"
-                                  for cid in contracts if self.follower_pos.get((f["spec"], cid), 0))
+                for cid in contracts:
+                    if self.follower_pos.get((f["spec"], cid), 0):
+                        note(f, cid, "login disabled or account gone")
                 return 0
             n = 0
             for cid in contracts:
@@ -937,7 +945,7 @@ class GroupRunner:
                         except asyncio.CancelledError:
                             raise
                         except Exception as exc:  # noqa: BLE001 - keep going with the other contracts; never re-send a maybe-live close
-                            unresolved.append(f"{f['spec']} {name}: close failed ({exc})")
+                            note(f, cid, f"close failed ({exc})")
                             self._record("reject", follower=f["spec"], symbol=name, detail=f"flatten ({reason}): {exc}")
                             continue
                     if isinstance(res, dict) and res.get("status") == "submitted":
@@ -947,7 +955,7 @@ class GroupRunner:
                         closed.append((f, ex, cid, have))
                         self._record("flatten", follower=f["spec"], symbol=name, detail=f"{reason}: closed {have:+d}")
                     else:
-                        unresolved.append(f"{f['spec']} {name}: close not accepted ({res})")
+                        note(f, cid, f"close not accepted ({res})")
                         self._record("reject", follower=f["spec"], symbol=name, detail=f"flatten ({reason}): not accepted ({res})")
             return n
 
@@ -964,10 +972,11 @@ class GroupRunner:
             if self.leader_net.get(cid):
                 self.baseline.add(cid)
                 self._persist(cid)
+        by_spec = {str(f["spec"]): f for f in self.followers}
         for (spec, _), twin in self.orders.twins.items():
             cid = int(twin.get("contract_id") or 0)
             if cid in contracts:
-                unresolved.append(f"{spec} {self.contract_names.get(cid, str(cid))}: a copied order is still working")
+                note(by_spec.get(spec, {"spec": spec}), cid, "a copied order is still working")
         if closed:
             # one settle wait for all, then every follower's position list at once
             await asyncio.sleep(FLATTEN_VERIFY_DELAY_S)
@@ -979,15 +988,32 @@ class GroupRunner:
                 if net == 0:
                     continue
                 if isinstance(net, BaseException) or net is None:
-                    unresolved.append(f"{f['spec']} {name}: position could not be re-read after the close of {have:+d}")
+                    note(f, cid, f"position could not be re-read after the close of {have:+d}")
                 else:
                     # reported, not written back: the close was accepted and a fill can
                     # lag the read — the mirror's memory (flat) stays, the operator looks
-                    unresolved.append(f"{f['spec']} {name}: broker still shows {int(net):+d} after the close")
+                    note(f, cid, f"broker still shows {int(net):+d} after the close")
                     self.follower_err[f["spec"]] = f"still {int(net):+d} {name} after the feed-loss flatten"
                     self.follower_err_at[f["spec"]] = time.monotonic()
-        self.flatten_unresolved = list(dict.fromkeys(unresolved))
+        seen: set[tuple[str, str, str]] = set()
+        self.flatten_unresolved = [e for e in unresolved if (e["spec"], e["symbol"], e["detail"]) not in seen and not seen.add((e["spec"], e["symbol"], e["detail"]))]
         return sent
+
+    def unresolved_for(self, area_id: Optional[int] = None, specs: Optional[set[str]] = None) -> list[str]:
+        """The unresolved pairs as text for one viewer: the publisher (no
+        arguments) sees own followers by name and marketplace followers as
+        ``subscriber #id``; a subscriber (``area_id`` + their ``specs``) sees
+        only their own accounts."""
+        out = []
+        for e in self.flatten_unresolved:
+            if area_id is not None:
+                if e.get("area_id") != area_id or (specs is not None and e["spec"] not in specs):
+                    continue
+                who = e["spec"]
+            else:
+                who = f"subscriber #{e.get('sub_id') or '?'}" if e.get("external") else e["spec"]
+            out.append(f"{who} {e['symbol']}: {e['detail']}")
+        return out
 
     async def sync_now(self) -> int:
         """Copy the leader's current positions right away (drops the baseline)."""
@@ -1022,7 +1048,7 @@ class GroupRunner:
                 "ws_ok": self.ws_ok, "ws_error": self.ws_error,
                 "poll_interval": self.poll_interval, "throttled": time.monotonic() < self.throttled_until,
                 "paused": self.paused, "pause_reason": self.pause_reason, "error": self.error,
-                "flatten_unresolved": list(self.flatten_unresolved),
+                "flatten_unresolved": self.unresolved_for(),
                 "last_event_ts": self.last_event_ts, "latency_ms": self.last_latency_ms,
                 "diag": {**self.diag, "leader_account_id": self.leader_account_id, "baseline": sorted(self.contract_names.get(c, str(c)) for c in self.baseline)},
                 "orders_enabled": self.orders.enabled, "orders_error": self.orders.error,

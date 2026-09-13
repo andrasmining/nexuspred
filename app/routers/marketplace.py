@@ -147,7 +147,7 @@ async def api_subscribe_copy(request: Request, publisher_area_id: int, group_id:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     enabled = bool(body.get("enabled", True))
     status = _admission(publisher_area_id, f"copy:{group_id}", sh, area)
-    sub = db.upsert_subscription(area, publisher_area_id, f"copy:{group_id}", accounts, enabled, status=status)
+    sub = db.upsert_subscription(area, publisher_area_id, f"copy:{group_id}", accounts, enabled, status=status, user_id=int(user["id"]))
     title = sh.get("title") or g.get("name", "")
     db.log_action(user["id"], user["email"], "subscribe", title, f"copy · {len([a for a in accounts if a.get('enabled')])} account(s), {'on' if enabled else 'off'}")
     state.log_event("info", f"Following copy group '{title}' on {len(accounts)} account(s)")
@@ -174,7 +174,7 @@ async def api_subscribe(request: Request, publisher_area_id: int, webhook_id: st
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     status = _admission(publisher_area_id, webhook_id, sh, area)
-    sub = db.upsert_subscription(area, publisher_area_id, webhook_id, accounts, enabled, controls=controls, status=status)
+    sub = db.upsert_subscription(area, publisher_area_id, webhook_id, accounts, enabled, controls=controls, status=status, user_id=int(user["id"]))
     title = sh.get("title") or wh.get("name", "")
     db.log_action(user["id"], user["email"], "subscribe", title,
                   f"{len([a for a in accounts if a.get('enabled')])} account(s), {'on' if enabled else 'off'}")
