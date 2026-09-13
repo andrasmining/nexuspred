@@ -6,8 +6,7 @@ from typing import Any, Optional
 from .. import context, db, state
 from . import feed as leader_feed
 from .groups import _runners, external_followers, load_groups, masked_status
-from .group_runner import GroupRunner
-
+from .safety_runner import GroupRunner
 
 
 
@@ -60,7 +59,7 @@ async def sync_area(area_id: int) -> None:
                 continue
             g = groups.get(key[1])
             if g is None or not g.get("enabled") or json.dumps(g, sort_keys=True) != r.fingerprint[0]:
-                _runners.pop(key, None)                # gone from the table before the await: no second starter
+                _runners.pop(key, None)
                 await r.stop()
                 continue
             external = external_followers(area_id, key[1], group=g)
