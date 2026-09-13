@@ -62,7 +62,8 @@ def _schedule(coro: Awaitable[Any], kind: str) -> None:
     except RuntimeError:
         coro.close() if hasattr(coro, "close") else None       # no loop (a sync test): nothing to run it on
         return
-    task = loop.create_task(coro)  # type: ignore[arg-type]
+    from . import broker
+    task = loop.create_task(coro, context=broker.detached_context())  # type: ignore[arg-type]   # a handler never inherits a close's urgent lane
     _bg.add(task)
 
     def done(t: asyncio.Task) -> None:

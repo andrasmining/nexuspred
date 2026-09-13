@@ -139,7 +139,7 @@ async def test_set_sl_tp_rolls_back_the_replacement_target_when_the_old_one_will
             if order_id == 5:
                 raise TradovateError("cancel refused")
             return await super().cancel_order(order_id)
-    ex = OldSticks("A", positions=[{"symbol": "MNQ", "netPos": 2}])
+    ex = OldSticks("A", positions=[{"symbol": "MNQ", "netPos": 2}], working=[{"id": 5, "symbol": "MNQ"}])   # the old target really is still working
     am = _tracked(stop_id=None, tps=[5])
     r = await manage.handle_set_sl_tp({"target_price": 120.0}, "MNQ", "MNQ", [ex], am, "", WH)
     new_id = ex.of("place")[-1]["order_id"]
@@ -157,7 +157,7 @@ async def test_trail_active_retires_the_stop_when_the_last_target_filled(live):
     r = await signals.process({"action": "trail_active", "symbol": "MNQ1!", "event": "tp2_hit"}, w)
     assert r["status"] == "ok" and r["accounts"] == 1
     assert a.of("cancel")[-1] == {"order_id": sl_id} and not any(m["order_id"] == sl_id and m["qty"] == 0 for m in a.of("modify"))
-    assert active("wh_tr82:MNQ")["accounts"]["A"]["sl_order_id"] is None
+    assert "wh_tr82:MNQ" not in active()                              # flat with no stop left: the trade is over
 
 
 async def test_entry_partial_failure_stays_ok_and_names_the_failed_account(live):

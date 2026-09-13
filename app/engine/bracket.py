@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import config, events, state
 from ..tradovate import TradovateError
-from .common import _collect_entries, _lock, _opposite, _place_stop_with_retry, _price, _resize_stop, _signal_qty, SignalError, _tp_index_from_event, _trade_key
+from .common import _collect_entries, _entry_result, _lock, _opposite, _place_stop_with_retry, _price, _resize_stop, _retire_extra_stops, _signal_qty, SignalError, _tp_index_from_event, _trade_key, _untrack_if_flat
 from ..sizing import account_qty
 
 
@@ -76,6 +76,7 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
 
         info = {
             "name": ex.name, "contract": contract, "entry_qty": entry_qty,
+            **({"unprotected": True} if sl_price is not None and sl is None else {}),   # the stop failed and the close after it failed too
             "tp_qty": tp_qty, "qty": entry_qty, "entry_price": entry_price,
             "sl_order_id": sl_id, "sl_type": sl_type,
             "sl_stop": sl_price,
@@ -87,7 +88,6 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     results = await asyncio.gather(*(place_for(ex) for ex in executors), return_exceptions=True)
 
     acct_state, orders, summary, contract = _collect_entries(executors, results, tag=tag, label="Entry", fallback_contract=target, qty_key="entry_qty")
-    failed = [ex.name for ex, res in zip(executors, results) if isinstance(res, Exception)]
 
     if acct_state:
         key = _trade_key(webhook["id"], root)
@@ -98,21 +98,13 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
                 "accounts": acct_state, "ts": time.time(),
             }
 
-    state.log_event(
-        "error" if failed else "info",
-        f"{tag}[{webhook.get('name', '?')}] Entry {action.upper()} {contract} "
-        f"placed on {len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}"
-        + (f"; failed: {', '.join(failed)}" if failed else ""),
-    )
     if acct_state and not tag:
         events.emit("trade.executed", webhook=webhook.get("name", "?"), action=action, contract=contract, accounts=list(acct_state), settings=s)
     # a failed account is isolated (and, after a failed stop, closed again by the
     # engine): the entry stays "ok" for the others; the names travel in ``failed``
-    out = {"status": "ok", "action": action, "contract": contract,
-           "accounts": summary, "orders": orders, "simulated": tag != ""}
-    if failed:
-        out["failed"] = failed
-    return out
+    return _entry_result({"status": "ok", "action": action, "contract": contract, "accounts": summary, "orders": orders, "simulated": tag != ""},
+                         executors, results, acct_state, tag=tag,
+                         line=f"{tag}[{webhook.get('name', '?')}] Entry {action.upper()} {contract} placed on {len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}")
 
 
 def _remaining_qty(info: dict[str, Any], tp_index: int | None) -> int:
@@ -170,14 +162,17 @@ async def handle_move_sl(payload, root, executors, active_map, tag, webhook, *, 
                 raise
             info["sl_order_id"] = None
             info["qty"] = 0
+            await _retire_extra_stops(ex, info, tag)
             return None
         await _resize_stop(ex, info, qty, stop)
         info["sl_stop"] = stop
+        await _retire_extra_stops(ex, info, tag)
         return stop
 
     results = await asyncio.gather(
         *(move_account(ex) for ex in executors), return_exceptions=True
     )
+    _untrack_if_flat(active_map, key)                  # every target filled and the stops retired: the trade is over
     stops = [r for r in results if isinstance(r, (int, float))]
     moved = len(stops)
     last_stop = stops[-1] if stops else None
@@ -226,13 +221,16 @@ async def handle_trail_active(payload, root, executors, active_map, tag, webhook
                 raise
             info["sl_order_id"] = None
             info["qty"] = 0
+            await _retire_extra_stops(ex, info, tag)
             return True
         await _resize_stop(ex, info, qty, info.get("sl_stop"))
+        await _retire_extra_stops(ex, info, tag)
         return True
 
     results = await asyncio.gather(
         *(resize_account(ex) for ex in executors), return_exceptions=True
     )
+    _untrack_if_flat(active_map, key)
     resized = sum(1 for r in results if r is True)
     failed = [ex.name for ex, r in zip(executors, results) if isinstance(r, Exception)]
     for ex, r in zip(executors, results):

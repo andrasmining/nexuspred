@@ -96,12 +96,17 @@ async def copy_loop() -> None:
             for aid in db.all_area_ids():
                 with context.use_area(aid):
                     await sync_area(aid)
-            for r in list(_runners.values()):
+            async def guard(r: GroupRunner) -> None:
                 try:
                     with context.use_area(r.area_id):
                         await r.watchdog()
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     r.error = f"watchdog: {exc}"[:200]
+            # every group's watchdog at once: one group's feed-loss flatten (and its
+            # verification wait) never delays another group's
+            await asyncio.gather(*(guard(r) for r in list(_runners.values())))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the loop must survive anything, but not silently

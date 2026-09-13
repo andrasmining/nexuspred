@@ -42,7 +42,7 @@ import threading
 import time
 from typing import Any
 
-from . import config, context, events, news, state, trade_window
+from . import broker, config, context, events, news, state, trade_window
 from .engine import bracket, manage, simple, ts_hunter
 from .engine.common import (  # noqa: F401 - re-exported for callers/tests
     SignalError,
@@ -149,8 +149,9 @@ _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn(coro: Any) -> asyncio.Task:
-    """Run a coroutine in the background; the current context (area) is inherited."""
-    task = asyncio.get_running_loop().create_task(coro)
+    """Run a coroutine in the background; the current context (area) is inherited
+    — except the urgent read lane, which belongs to the close that set it."""
+    task = asyncio.get_running_loop().create_task(coro, context=broker.detached_context())
     _bg_tasks.add(task)
     task.add_done_callback(_bg_done)
     return task
@@ -310,6 +311,8 @@ def _note_subscription_outcome(webhook: dict[str, Any], exc: Exception | None, r
             return None
         if result.get("status") == "error":
             why = str(result.get("reason") or result.get("detail") or "error")[:160]
+        elif result.get("unprotected"):
+            why = f"position without a confirmed stop on {', '.join(map(str, result['unprotected']))}"[:160]
         elif str(result.get("action") or "") in ("buy", "sell", "signal") and isinstance(result.get("accounts"), list) and not result["accounts"]:
             why = "no account executed the entry"      # management actions report a count, never a list
     if not why:

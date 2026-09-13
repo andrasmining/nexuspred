@@ -15,7 +15,8 @@ from typing import Any
 
 from .. import config, events, state
 from ..tradovate import TradovateError
-from .common import _close_contract, _collect_entries, _lock, _opposite, OrdersLeftWorking, _place_stop_with_retry, _price, _resize_stop, _signal_qty, SignalError, _untrack_after_close
+from .common import _close_contract, _collect_entries, _const, _entry_result, _lock, _opposite, OrdersLeftWorking, _place_stop_with_retry, _price, _resize_stop, _signal_qty, SignalError, _untrack_after_close
+from .. import broker
 from ..sizing import account_qty
 
 
@@ -66,6 +67,7 @@ async def handle_entry(payload, side, root, target, trade_id, executors, active_
         info = {
             "name": ex.name, "contract": contract, "qty": qty, "entry_qty": qty,
             "remaining_qty": qty, "sl_order_id": sl_id, "sl_type": sl_type,
+            **({"unprotected": True} if sl_price is not None and sl_id is None else {}),   # the stop failed and the close after it failed too
             "sl_stop": sl_price,
             "entry_price": entry_price_ref,
             "tp_order_ids": [],
@@ -75,7 +77,6 @@ async def handle_entry(payload, side, root, target, trade_id, executors, active_
     results = await asyncio.gather(*(place_for(ex) for ex in executors), return_exceptions=True)
 
     acct_state, orders, summary, contract = _collect_entries(executors, results, tag=tag, label="TS-Hunter entry", fallback_contract=target, qty_key="qty")
-    failed = [ex.name for ex, res in zip(executors, results) if isinstance(res, Exception)]
 
     if acct_state:
         with _lock:
@@ -85,21 +86,13 @@ async def handle_entry(payload, side, root, target, trade_id, executors, active_
                 "accounts": acct_state, "ts": time.time(),
             }
 
-    state.log_event(
-        "error" if failed else "info",
-        f"{tag}[{webhook.get('name', '?')}] TS-Hunter {side.upper()} {contract} "
-        f"(trade {trade_id}) on {len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}"
-        + (f"; failed: {', '.join(failed)}" if failed else ""),
-    )
     if acct_state and not tag:
         events.emit("trade.executed", webhook=webhook.get("name", "?"), action=side, contract=contract, accounts=list(acct_state), settings=s)
     # a failed account is isolated (and, after a failed stop, closed again by the
     # engine): the entry stays "ok" for the others; the names travel in ``failed``
-    out = {"status": "ok", "action": "signal", "contract": contract, "trade_id": trade_id,
-           "accounts": summary, "orders": orders, "simulated": tag != ""}
-    if failed:
-        out["failed"] = failed
-    return out
+    return _entry_result({"status": "ok", "action": "signal", "contract": contract, "trade_id": trade_id, "accounts": summary, "orders": orders, "simulated": tag != ""},
+                         executors, results, acct_state, tag=tag,
+                         line=f"{tag}[{webhook.get('name', '?')}] TS-Hunter {side.upper()} {contract} (trade {trade_id}) on {len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}")
 
 
 async def handle_partial_close(payload, trade_id, executors, active_map, tag):
@@ -232,6 +225,12 @@ async def handle_full_close(payload, trade_id, target, executors, active_map, ta
         errors: list[str] = []
         cancelled = 0
         sid = info.get("sl_order_id")
+        for extra in [oid for oid in (info.get("extra_stop_ids") or []) if oid]:
+            try:                                                      # a stop a repair left behind goes with the trade
+                await ex.cancel_order(extra)
+                cancelled += 1
+            except TradovateError as exc:
+                errors.append(f"cancel {extra}: {exc}")
         if sid:
             try:
                 await ex.cancel_order(sid)
@@ -259,7 +258,7 @@ async def handle_full_close(payload, trade_id, target, executors, active_map, ta
     tracked_now = {ex.name for ex, _ in targets}
     results, untracked = await asyncio.gather(
         asyncio.gather(*(close_account(ex, info) for ex, info in targets), return_exceptions=True),
-        _report_untracked(executors, tracked_now, tag, target, trade_id) if tracked else _nobody(),
+        _report_untracked(executors, tracked_now, tag, target, trade_id) if tracked else _const([]),
     )
     cancelled = sum(r for r in results if isinstance(r, int))
     failed = [ex.name for (ex, _), r in zip(targets, results) if isinstance(r, Exception)]
@@ -285,22 +284,24 @@ async def handle_full_close(payload, trade_id, target, executors, active_map, ta
             "failed": failed, "untracked": untracked, "simulated": tag != ""}
 
 
-async def _nobody() -> list[str]:
-    return []
-
-
 async def _report_untracked(executors, tracked_names, tag, target, trade_id) -> list[str]:
     """Accounts routed to the webhook but absent from the trade record that hold
     the contract: a lost entry answer, a manual position or another trade. An
     isolated full_close never closes them — it says so, once per close."""
     async def one(ex) -> bool:
-        contract = await ex.resolve_contract(target)
-        rows = await ex.positions()
+        with broker.urgent():                                     # alongside the closes: never behind the polls
+            contract = await ex.resolve_contract(target)
+            rows = await ex.positions()
         return any(str(p.get("symbol") or "") == contract and (p.get("netPos") or 0) for p in rows or [])
 
     extra = [ex for ex in executors if ex.name not in tracked_names]
     results = await asyncio.gather(*(one(ex) for ex in extra), return_exceptions=True)
     holding = [ex.name for ex, r in zip(extra, results) if r is True]
+    for ex, r in zip(extra, results):
+        if isinstance(r, asyncio.CancelledError):
+            raise r
+        if isinstance(r, BaseException):
+            state.log_event("warn", f"{tag}{ex.name}: could not be checked for an untracked {target} position after full_close of trade {trade_id}: {r}")
     if holding:
         state.log_event("warn", f"{tag}{', '.join(holding)} hold(s) {target} without a record of trade {trade_id} "
                                 "(lost entry answer, manual position or another trade) — left open by the isolated full_close")

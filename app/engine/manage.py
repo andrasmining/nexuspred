@@ -7,11 +7,7 @@ from typing import Any
 
 from .. import broker, config, state
 from ..tradovate import OrderOutcomeUnknown, TradovateError
-from .common import OrdersLeftWorking, _close_contract, _close_untracked, _lock, _order_still_working, _price, _trade_key, _untrack_after_close
-
-
-async def _nothing() -> tuple[list[str], list[str]]:
-    return [], []
+from .common import OrdersLeftWorking, _close_contract, _close_untracked, _const, _lock, _order_still_working, _price, _trade_key, _untrack_after_close
 
 
 async def handle_close_all(root, target, executors, active_map, tag, webhook):
@@ -34,7 +30,7 @@ async def handle_close_all(root, target, executors, active_map, tag, webhook):
     # they hold the contract) run at the same time: nothing waits for a read
     results, (extra_closed, extra_failed) = await asyncio.gather(
         asyncio.gather(*(close_account(ex) for ex in targets), return_exceptions=True),
-        _close_untracked(executors, {ex.name for ex in targets}, tag, target) if tracked_names else _nothing(),
+        _close_untracked(executors, {ex.name for ex in targets}, tag, target) if tracked_names else _const(([], [])),
     )
     cancelled = sum(r for r in results if isinstance(r, int))
     failed = [ex.name for ex, r in zip(targets, results) if isinstance(r, Exception)]
@@ -133,11 +129,13 @@ async def handle_set_sl_tp(payload, root, target, executors, active_map, tag, we
         info["sl_stop"] = new_sl
         info["sl_type"] = sl_type
         if old:
-            try:
-                await ex.cancel_order(old)
-            except TradovateError as exc:
-                errors.append(f"old stop {old} not cancelled: {exc}")
-                state.log_event("error", f"{tag}{ex.name}: old stop {old} could not be cancelled after the new one was placed: {exc} — two stops may be working, cancel it by hand")
+            # the usual reason a modify was rejected is a stale id (the old stop is
+            # gone): a refused cancel is confirmed against the broker before it counts
+            # as an error, and a stop that really is still working stays in the record
+            # (``extra_stop_ids``) so the next stop change and the close retire it
+            if not await cancel_or_confirm_gone(ex, old, "old stop", errors):
+                info["extra_stop_ids"] = [*[x for x in (info.get("extra_stop_ids") or []) if x != old], old]
+                state.log_event("error", f"{tag}{ex.name}: old stop {old} may still be working next to the new one — kept in the record; cancel it by hand if it is")
         return True
 
     async def cancel_or_confirm_gone(ex, oid, what, errors) -> bool:
@@ -156,6 +154,10 @@ async def handle_set_sl_tp(payload, root, target, executors, active_map, tag, we
             state.log_event("error", f"{tag}{ex.name}: cancel of {what} {oid} lost its answer and the order is {detail}: {exc}")
             return False
         except TradovateError as exc:
+            still = await _order_still_working(ex, oid)
+            if still is False:
+                state.log_event("info", f"{tag}{ex.name}: cancel of {what} {oid} was refused but the broker no longer lists it (filled or already gone)")
+                return True
             errors.append(f"{what} {oid} not cancelled: {exc}")
             state.log_event("error", f"{tag}{ex.name}: {what} {oid} could not be cancelled: {exc}")
             return False
@@ -177,8 +179,9 @@ async def handle_set_sl_tp(payload, root, target, executors, active_map, tag, we
             state.log_event("error", f"{tag}set target for {ex.name} failed: {exc}" + (" (the previous target stays)" if old_tps else ""))
             return False
         new_id = o.get("order_id")
-        # retire the previous target only once the new one works
-        remaining_old = [oid for oid in old_tps if not await cancel_or_confirm_gone(ex, oid, "old target", errors)]
+        # retire the previous targets only once the new one works — all at once
+        gone = await asyncio.gather(*(cancel_or_confirm_gone(ex, oid, "old target", errors) for oid in old_tps))
+        remaining_old = [oid for oid, ok in zip(old_tps, gone) if not ok]
         if not remaining_old:
             info["tp_order_ids"] = [new_id] if new_id else []
             return True
@@ -195,11 +198,14 @@ async def handle_set_sl_tp(payload, root, target, executors, active_map, tag, we
         return False
 
     async def apply(ex):
+        with broker.urgent():                            # a protective change reads first (and confirms cancels): never behind the polls
+            return await apply_urgent(ex)
+
+    async def apply_urgent(ex):
         contract = await ex.resolve_contract(target)
         net = 0
         try:
-            with broker.urgent():                        # a protective change reads first: not behind the polls
-                rows = await ex.positions()
+            rows = await ex.positions()
             for p in rows:
                 if p.get("symbol") == contract:
                     net = int(p.get("netPos") or 0)

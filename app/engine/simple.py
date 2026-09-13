@@ -4,8 +4,8 @@ from __future__ import annotations
 import time
 
 import asyncio
-from .. import config, events, state
-from .common import _collect_entries, _lock, _price, _signal_qty, _trade_key
+from .. import config, events
+from .common import _collect_entries, _entry_result, _lock, _price, _signal_qty, _trade_key
 from ..sizing import account_qty
 
 
@@ -37,7 +37,6 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
     results = await asyncio.gather(*(place_for(ex) for ex in executors), return_exceptions=True)
 
     acct_state, orders, summary, contract = _collect_entries(executors, results, tag=tag, label="Entry", fallback_contract=target, qty_key="qty")
-    failed = [ex.name for ex, res in zip(executors, results) if isinstance(res, Exception)]
 
     if acct_state:
         key = _trade_key(webhook["id"], root)
@@ -48,18 +47,9 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
                 "accounts": acct_state, "ts": time.time(),
             }
 
-    state.log_event(
-        "error" if failed else "info",
-        f"{tag}[{webhook.get('name', '?')}] {action.upper()} {contract} on "
-        f"{len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}"
-        + (f"; failed: {', '.join(failed)}" if failed else ""),
-    )
     if acct_state and not tag:
         events.emit("trade.executed", webhook=webhook.get("name", "?"), action=action, contract=contract, accounts=list(acct_state), settings=s)
-    # a failed account is isolated (and, after a failed stop, closed again by the
-    # engine): the entry stays "ok" for the others; the names travel in ``failed``
-    out = {"status": "ok", "action": action, "contract": contract,
-           "accounts": summary, "orders": orders, "simulated": tag != ""}
-    if failed:
-        out["failed"] = failed
-    return out
+    # a failed account is isolated: the entry stays "ok" for the others; the names travel in ``failed``
+    return _entry_result({"status": "ok", "action": action, "contract": contract, "accounts": summary, "orders": orders, "simulated": tag != ""},
+                         executors, results, acct_state, tag=tag,
+                         line=f"{tag}[{webhook.get('name', '?')}] {action.upper()} {contract} on {len(acct_state)}/{len(executors)} account(s): {', '.join(acct_state)}")

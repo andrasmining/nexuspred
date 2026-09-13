@@ -434,6 +434,17 @@ class ProjectXSession(broker.BrokerSessionBase):
         rec = self._contracts.get(cid)
         return rec["name"] if rec else gateway_id
 
+    async def _position_row(self, p: Any, account_id: int) -> Optional[dict[str, Any]]:
+        """One gateway position as the bridge's row (``accountId``, ``contractId``, ``netPos`` …)."""
+        if not isinstance(p, dict) or not p.get("contractId"):
+            return None
+        gid = str(p["contractId"])
+        name = await self._contract_name(gid)
+        size = int(_num(p.get("size"), 0))
+        net = size if int(_num(p.get("type"), 1)) == 1 else -size
+        return {"accountId": account_id, "contractId": _int_id(gid), "netPos": net, "netPrice": _num(p.get("averagePrice"), None),
+                "symbol": name, "gateway_id": gid}
+
     async def positions_snapshot(self, *, cached: bool = False) -> list[dict[str, Any]]:
         """The login's open positions. ``cached`` (the P&L tick, which asks once
         per account) reuses a snapshot a few seconds old; the copy engine's
@@ -455,14 +466,9 @@ class ProjectXSession(broker.BrokerSessionBase):
                 self._account_failed(a.get("spec", str(a["id"])), "positions", exc, failed)
                 continue
             for p in data.get("positions") or []:
-                if not isinstance(p, dict) or not p.get("contractId"):
-                    continue
-                gid = str(p["contractId"])
-                name = await self._contract_name(gid)
-                size = int(_num(p.get("size"), 0))
-                net = size if int(_num(p.get("type"), 1)) == 1 else -size
-                out.append({"accountId": int(a["id"]), "contractId": _int_id(gid), "netPos": net, "netPrice": _num(p.get("averagePrice"), None),
-                            "symbol": name, "gateway_id": gid})
+                row = await self._position_row(p, int(a["id"]))
+                if row:
+                    out.append(row)
         if failed and len(failed) == len(self.accounts):
             raise TradovateError(f"[{self.name}] positions: every account failed ({failed[0]})")
         # every fresh fetch feeds the short cache (the P&L tick's per-account cash
@@ -694,8 +700,12 @@ class ProjectXSession(broker.BrokerSessionBase):
                         account_spec: str | None = None) -> list[dict[str, Any]]:
         _, aid = self._acct(account_spec, account_id)
         out = []
-        for p in await self.positions_snapshot():
-            if p["accountId"] == aid and p["netPos"]:
+        # one account, one request — never the whole login's snapshot (a five-account
+        # login flattening together would otherwise cost 25 reads instead of 5)
+        data = await self._post("/api/Position/searchOpen", {"accountId": int(aid)})
+        for raw in data.get("positions") or []:
+            p = await self._position_row(raw, int(aid))
+            if p and p["netPos"]:
                 info = await self.contract_info(p["contractId"])
                 out.append({"symbol": info.get("name") or p["symbol"], "account": account_name or self.name, "netPos": p["netPos"], "netPrice": p.get("netPrice")})
         return out

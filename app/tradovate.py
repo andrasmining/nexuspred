@@ -22,6 +22,7 @@ REQUEST_SPACING_S = 0.2   # minimum gap between two requests of one login (5/s)
 PRIORITY_SPACING_S = 0.06  # orders / cancels / liquidations: a small gap of their own, never behind polls
 PRIORITY_PENALTY_WAIT_S = 3.0  # a 429 penalty shorter than this is waited out for an order; longer → refused
 PRIORITY_PATHS = ("/order/placeorder", "/order/placeoco", "/order/modifyorder", "/order/cancelorder", "/order/liquidateposition")
+COALESCED_PATHS = ("/position/list", "/order/list")   # login-wide reads: concurrent callers share one request (see _coalesced)
 LIVE_BASE = "https://live.tradovateapi.com/v1"
 DEMO_BASE = "https://demo.tradovateapi.com/v1"
 
@@ -175,6 +176,7 @@ class TradovateSession:
         self.rate_limits = 0
         self._contract_id_cache: dict[str, tuple[int, datetime]] = {}
         self._contract_names: dict[int, str] = {}      # contract id -> name (positions view)
+        self._inflight: dict[tuple[str, bool], dict[str, Any]] = {}   # coalesced login-wide list reads (see _coalesced)
         self.fingerprint = _fingerprint(entry)
         if self._token_expires:
             state.set_session_status(self.name, token_expires=self._token_expires.isoformat())
@@ -230,7 +232,52 @@ class TradovateSession:
         """One paced request: at most one every ``REQUEST_SPACING_S`` per login,
         and nothing at all while a 429 penalty is running — every loop that
         uses this login shares that budget, so one busy loop cannot get the
-        whole login banned."""
+        whole login banned. Login-wide list reads asked for by several callers
+        at once are coalesced (``_coalesced``)."""
+        if method == "GET" and path in COALESCED_PATHS and not kwargs.get("params"):
+            return await self._coalesced(path, lambda on_send: self._request_paced(method, path, auth=auth, on_send=on_send, **kwargs))
+        return await self._request_paced(method, path, auth=auth, **kwargs)
+
+    async def _coalesced(self, path: str, fetch: Any) -> Any:
+        """``/position/list`` and ``/order/list`` are login-wide: five accounts of
+        one login flattening together need one read, not five. Callers that
+        arrive while a read waits for its lane share it (the request has not
+        left yet, so its data postdates their ask); a caller that arrives after
+        the request was sent — its own order may have gone out meanwhile — waits
+        for it and then joins one fresh read with everyone else who came late.
+        N concurrent callers cost at most two reads and nobody gets stale data.
+        The order lane and the poll lane coalesce separately."""
+        key = (path, broker.is_urgent())
+        cur = self._inflight.get(key)
+        if cur is None or cur.get("sent"):
+            if cur is not None:
+                try:
+                    await asyncio.shield(cur["fut"])     # the read in flight ends (its outcome is its callers')
+                except BaseException:  # noqa: BLE001
+                    pass
+                nxt = self._inflight.get(key)
+                if nxt is not None:
+                    return await asyncio.shield(nxt["fut"])   # a sibling started the fresh read: join it
+            entry = self._inflight[key] = {"fut": asyncio.get_running_loop().create_future(), "sent": False}
+
+            def on_send() -> None:
+                entry["sent"] = True
+            try:
+                await asyncio.sleep(0)                   # one loop step: callers started in the same tick join before the request leaves
+                result = await fetch(on_send)
+            except BaseException as exc:
+                self._inflight.pop(key, None)
+                if isinstance(exc, asyncio.CancelledError):
+                    entry["fut"].cancel()
+                else:
+                    entry["fut"].set_exception(exc)
+                raise
+            self._inflight.pop(key, None)
+            entry["fut"].set_result(result)
+            return result
+        return await asyncio.shield(cur["fut"])          # not sent yet: this caller's data will be fresh
+
+    async def _request_paced(self, method: str, path: str, *, auth: bool = True, on_send: Any = None, **kwargs: Any) -> Any:
         import time as _time
         if path.startswith(PRIORITY_PATHS) or broker.is_urgent():
             # orders, cancels, liquidations (and the reads of a close path, see
@@ -253,6 +300,8 @@ class TradovateSession:
                 if wait > 0:
                     await asyncio.sleep(min(wait, 120.0))
                 self._last_sent = _time.monotonic()
+        if on_send is not None:
+            on_send()
         try:
             return await self._request_raw(method, path, auth=auth, **kwargs)
         except RateLimited as exc:

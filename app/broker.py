@@ -17,6 +17,7 @@ Tradovate-specific report access (the journal importer) is explicitly marked
 from __future__ import annotations
 
 from contextlib import contextmanager
+import contextvars
 from contextvars import ContextVar
 from typing import Any, Iterator, Optional, Protocol, runtime_checkable
 
@@ -41,6 +42,15 @@ def urgent() -> Iterator[None]:
 
 def is_urgent() -> bool:
     return _urgent.get()
+
+
+def detached_context() -> contextvars.Context:
+    """A copy of the current context with the urgent lane switched off — for
+    background tasks started inside a close (alerts, automations, fan-out):
+    they inherit the tenant, never the close's lane."""
+    ctx = contextvars.copy_context()
+    ctx.run(_urgent.set, False)
+    return ctx
 
 BROKERS = ("tradovate", "rithmic", "projectx")   # implementations the bridge ships
 

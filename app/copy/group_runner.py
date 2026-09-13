@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
-from .. import config, context, db, events, history, news, risk, tradovate
+from .. import broker, config, context, db, events, history, news, risk, tradovate
 from . import feed as leader_feed
 from .orders import OrderMirror
 from ..engine.common import _base_root
@@ -780,7 +780,8 @@ class GroupRunner:
         if not int(getattr(ex, "id", 0) or 0):
             return None
         try:
-            raw = await ex.session.positions_snapshot()
+            with broker.urgent():                        # read right before a mirror order or after a flatten: the order lane
+                raw = await ex.session.positions_snapshot()
         except Exception:  # noqa: BLE001
             return None
         if not isinstance(raw, list):
