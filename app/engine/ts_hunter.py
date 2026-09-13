@@ -8,14 +8,13 @@ never collide and the Monitor's Active Trades table shows both kinds for free.
 """
 from __future__ import annotations
 
-import time
 
 import asyncio
 from typing import Any
 
 from .. import config, events, state
 from ..tradovate import OrderOutcomeUnknown, TradovateError
-from .common import _close_contract, _collect_entries, _const, _entry_result, _lock, _opposite, OrdersLeftWorking, _place_stop_with_retry, _price, _resize_stop, _signal_qty, SignalError, _untrack_after_close
+from .common import _close_contract, _collect_entries, _const, _entry_result, _lock, _opposite, OrdersLeftWorking, _place_stop_with_retry, _price, _resize_stop, _signal_qty, SignalError, _untrack_after_close, _track_entry
 from .. import broker
 from ..sizing import account_qty
 
@@ -78,16 +77,8 @@ async def handle_entry(payload, side, root, target, trade_id, executors, active_
 
     acct_state, orders, summary, contract = _collect_entries(executors, results, tag=tag, label="TS-Hunter entry", fallback_contract=target, qty_key="qty")
 
-    if acct_state:
-        with _lock:
-            active_map[trade_id] = {
-                "webhook_id": webhook["id"], "webhook_name": webhook.get("name", ""),
-                "root": root, "contract": contract, "side": side, "trade_id": trade_id,
-                "accounts": acct_state, "ts": time.time(),
-            }
-
-    if acct_state and not tag:
-        events.emit("trade.executed", webhook=webhook.get("name", "?"), action=side, contract=contract, accounts=list(acct_state), settings=s)
+    _track_entry(active_map, trade_id, {"side": side, "trade_id": trade_id}, acct_state,
+                 tag=tag, webhook=webhook, root=root, action=side, contract=contract, settings=s)
     # a failed account is isolated (and, after a failed stop, closed again by the
     # engine): the entry stays "ok" for the others; the names travel in ``failed``
     return _entry_result({"status": "ok", "action": "signal", "contract": contract, "trade_id": trade_id, "accounts": summary, "orders": orders, "simulated": tag != ""},

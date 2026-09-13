@@ -5,6 +5,7 @@ import asyncio
 import math
 import re
 import threading
+import time
 from typing import Any
 
 from .. import broker, events, state
@@ -132,6 +133,26 @@ def _signal_qty(raw: Any, default: Any, *, strict: bool) -> float:
     if not math.isfinite(q) or q <= 0 or q > QTY_HARD_CAP:
         raise SignalError(f"Webhook default qty must be between 1 and {QTY_HARD_CAP}")
     return q
+
+
+def _track_entry(active_map: dict[str, Any], key: str, record: dict[str, Any], acct_state: dict[str, dict[str, Any]],
+                 *, tag: str, webhook: dict[str, Any], root: str, action: str, contract: str, settings: Any) -> None:
+    """The tail every entry handler shares: write the trade record under the
+    lock (warning when it replaces a record that still lists protective orders,
+    which stay at the broker unmanaged), then the ``trade.executed`` event."""
+    if not acct_state:
+        return
+    with _lock:
+        prev = active_map.get(key)
+        if prev and any(a.get("sl_order_id") or a.get("tp_order_ids") for a in (prev.get("accounts") or {}).values()):
+            # a new entry over a record that still lists protective orders: those orders
+            # stay at the broker but are no longer moved with this trade — close_all
+            # cancels the contract's orders regardless
+            state.log_event("warn", f"{tag}[{webhook.get('name', '?')}] entry for {root} replaces a tracked trade whose stop / targets may still be working — they are not managed by the new trade")
+        active_map[key] = {"webhook_id": webhook["id"], "webhook_name": webhook.get("name", ""),
+                           "root": root, "contract": contract, **record, "accounts": acct_state, "ts": time.time()}
+    if not tag:
+        events.emit("trade.executed", webhook=webhook.get("name", "?"), action=action, contract=contract, accounts=list(acct_state), settings=settings)
 
 
 def _untrack_after_close(active_map: dict[str, Any], key: str, succeeded: list[str], failed: list[str]) -> None:

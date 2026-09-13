@@ -2,14 +2,13 @@
 ``move_sl`` (break-even / trailing) and ``trail_active`` (stop resize)."""
 from __future__ import annotations
 
-import time
 
 import asyncio
 from typing import Any
 
-from .. import config, events, state
+from .. import config, state
 from ..tradovate import TradovateError
-from .common import _collect_entries, _entry_result, _lock, _opposite, _place_stop_with_retry, _price, _resize_stop, _retire_extra_stops, _signal_qty, SignalError, _tp_index_from_event, _trade_key, _untrack_if_flat
+from .common import _collect_entries, _entry_result, _lock, _opposite, _place_stop_with_retry, _price, _resize_stop, _retire_extra_stops, _signal_qty, SignalError, _tp_index_from_event, _trade_key, _untrack_if_flat, _track_entry
 from ..sizing import account_qty
 
 
@@ -108,23 +107,8 @@ async def handle_entry(payload, action, root, target, executors, active_map, tag
 
     acct_state, orders, summary, contract = _collect_entries(executors, results, tag=tag, label="Entry", fallback_contract=target, qty_key="entry_qty")
 
-    if acct_state:
-        key = _trade_key(webhook["id"], root)
-        with _lock:
-            prev = active_map.get(key)
-            if prev and any(a.get("sl_order_id") or a.get("tp_order_ids") for a in (prev.get("accounts") or {}).values()):
-                # a new entry over a record that still lists protective orders: those orders
-                # stay at the broker but are no longer moved with this trade — close_all
-                # cancels the contract's orders regardless
-                state.log_event("warn", f"{tag}[{webhook.get('name', '?')}] entry for {root} replaces a tracked trade whose stop / targets may still be working — they are not managed by the new trade")
-            active_map[key] = {
-                "webhook_id": webhook["id"], "webhook_name": webhook.get("name", ""),
-                "root": root, "contract": contract, "side": action, "qty": base_qty,
-                "accounts": acct_state, "ts": time.time(),
-            }
-
-    if acct_state and not tag:
-        events.emit("trade.executed", webhook=webhook.get("name", "?"), action=action, contract=contract, accounts=list(acct_state), settings=s)
+    _track_entry(active_map, _trade_key(webhook["id"], root), {"side": action, "qty": base_qty}, acct_state,
+                 tag=tag, webhook=webhook, root=root, action=action, contract=contract, settings=s)
     # a failed account is isolated (and, after a failed stop, closed again by the
     # engine): the entry stays "ok" for the others; the names travel in ``failed``
     return _entry_result({"status": "ok", "action": action, "contract": contract, "accounts": summary, "orders": orders, "simulated": tag != ""},
