@@ -191,9 +191,12 @@ def test_a_broken_snapshot_never_replaces_the_live_database(area, tmp_path, monk
     bad = backups.backup_dir() / "fluxbridge-broken.db"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_bytes(b"SQLite format 3\x00" + b"\x00" * 200)          # opens, fails its integrity check
-    (backups.Path(config.DATA_DIR) / backups.RESTORE_FILE).write_text("fluxbridge-broken.db", encoding="utf-8")
+    marker = backups.Path(config.DATA_DIR) / backups.RESTORE_FILE
+    marker.write_text("fluxbridge-broken.db", encoding="utf-8")
 
-    assert backups.apply_pending_restore() is None
+    with pytest.raises(backups.sqlite3.DatabaseError):
+        backups.apply_pending_restore()
+    assert marker.exists(), "failed restore must retain retry intent"
     assert db.DB_FILE.read_bytes() == live_before, "the live database must be untouched"
 
 
