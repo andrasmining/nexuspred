@@ -5,10 +5,10 @@ pydantic==2.13.5
 jinja2==3.1.6
 python-multipart==0.0.32
 packaging>=26.3
-tzdata>=2024.1                # zoneinfo database on Windows (journal schedule / buckets)
+tzdata>=2026.3                # zoneinfo database on Windows (journal schedule / buckets)
 cryptography>=50.0.1       # Fernet: secrets encrypted at rest (app/crypto.py)
 # Web Push (VAPID) notifications to the installed dashboard app.
-pywebpush>=2.0.0
+pywebpush>=2.5.0
 # Optional: `pip install h2` enables HTTP/2 for the pooled Tradovate client
 # (app/http.py detects it; without it the pool uses HTTP/1.1 keep-alive).
 # Discord signal listener (self-bot). Imports as `discord`; the module imports
@@ -16,4 +16,4 @@ pywebpush>=2.0.0
 discord.py-self>=2.1.0
 websockets>=12,<16
 async_rithmic>=1.6,<2      # Rithmic broker adapter (app/rithmic.py); imported lazily
-segno>=1.6,<2
+segno>=1.6.6,<2
