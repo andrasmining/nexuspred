@@ -315,12 +315,17 @@ async def test_whats_new_shown_once_per_version(trio):
 def test_release_mail_goes_out_once_to_those_who_want_it(trio, sent):
     admin, bc, us = trio
     releases.save_prefs(bc["id"], {"updates": False})
-    n = releases.mail_release()
+    # Exercise release-mail behavior against a release that actually has notes.
+    # The running VERSION may legitimately be a metadata/dependency-only release
+    # with no CHANGELOG section, in which case mail_release intentionally returns 0.
+    version = "5.0.0-alpha.103"
+    assert releases.sections().get(version)
+    n = releases.mail_release(version)
     assert n == 2                                                                        # admin + user, not the broadcaster
     rows = [r for r in db.outbox_list() if r["kind"] == "release"]
     assert sorted(r["to"] for r in rows) == ["admin@example.com", "us@example.com"]
-    assert config.get_version() in rows[0]["subject"]
-    assert releases.mail_release() == 0                                                   # once per version
+    assert version in rows[0]["subject"]
+    assert releases.mail_release(version) == 0                                            # once per version
 
 
 async def test_mail_prefs_api_and_unsubscribe_link(trio, anon_client):

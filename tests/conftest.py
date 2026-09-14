@@ -92,6 +92,11 @@ def _reset_runtime() -> None:
     payments_mod.reset()
     mailer_mod.reset()
     backups_mod.reset()
+    # Recovery markers are intentionally durable in production, but tests share
+    # one temporary data directory across cases. Never let one restore test
+    # become the next test's startup instruction.
+    for marker in (backups_mod.RESTORE_FILE, backups_mod.RESTORE_STATE_FILE):
+        (_DATA / marker).unlink(missing_ok=True)
     readiness_mod.reset()
     alerts_mod.reset_digest()
     canary_mod.reset()
