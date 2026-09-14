@@ -8,7 +8,7 @@ packaging>=26.3
 tzdata>=2026.3                # zoneinfo database on Windows (journal schedule / buckets)
 cryptography>=50.0.1       # Fernet: secrets encrypted at rest (app/crypto.py)
 # Web Push (VAPID) notifications to the installed dashboard app.
-pywebpush>=2.0.0
+pywebpush>=2.5.0
 # Optional: `pip install h2` enables HTTP/2 for the pooled Tradovate client
 # (app/http.py detects it; without it the pool uses HTTP/1.1 keep-alive).
 # Discord signal listener (self-bot). Imports as `discord`; the module imports
