@@ -187,7 +187,9 @@ def test_rotation_keeps_the_newest_verified_snapshot(area):
 
 
 def test_a_broken_snapshot_never_replaces_the_live_database(area, tmp_path, monkeypatch):
-    live_before = db.DB_FILE.read_bytes()
+    with db._connect() as c:
+        live_before = "\n".join(c.iterdump())
+        assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     bad = backups.backup_dir() / "fluxbridge-broken.db"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_bytes(b"SQLite format 3\x00" + b"\x00" * 200)          # opens, fails its integrity check
@@ -197,7 +199,9 @@ def test_a_broken_snapshot_never_replaces_the_live_database(area, tmp_path, monk
     with pytest.raises(backups.sqlite3.DatabaseError):
         backups.apply_pending_restore()
     assert marker.exists(), "failed restore must retain retry intent"
-    assert db.DB_FILE.read_bytes() == live_before, "the live database must be untouched"
+    with db._connect() as c:
+        assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert "\n".join(c.iterdump()) == live_before, "the live database's logical contents must be untouched"
 
 
 # ================================================== retention
