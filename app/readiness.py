@@ -221,8 +221,16 @@ async def heartbeat_once() -> bool:
     cfg = heartbeat_config()
     if not cfg["url"]:
         return False
-    res = await check()
     url = cfg["url"]
+    # What the name resolves to *now*, not at save time: a short-TTL record can
+    # point an accepted host at the internal network after the fact.
+    problem = await asyncio.to_thread(security.check_outbound_url, url)
+    if problem:
+        _heartbeat_state.update({"last_at": datetime.now(timezone.utc).isoformat(), "ok": False,
+                                 "error": f"heartbeat URL rejected: {problem}"})
+        log.warning("platform heartbeat not sent: %s", problem)
+        return False
+    res = await check()
     if res["status"] == "down" and "hc-ping.com" in url:
         url = url.rstrip("/") + "/fail"                      # healthchecks.io: an explicit failure beats silence
     try:

@@ -144,6 +144,7 @@ async def api_set_quota(request: Request, user_id: int) -> dict[str, Any]:
     target = db.get_user(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="No such user")
+    guard_admin_target(admin, target, "change another administrator's quota")
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
@@ -223,6 +224,7 @@ async def api_users_directory(request: Request) -> dict[str, Any]:
 async def api_set_user_feature(request: Request, user_id: int) -> dict[str, Any]:
     """Admin toggles a feature entitlement (e.g. Discord Signals) for a user."""
     admin = require_admin(request)
+    guard_admin_target(admin, db.get_user(user_id), "change another administrator's feature entitlements")
     body = await request.json()
     feature = str(body.get("feature", ""))
     enabled = bool(body.get("enabled"))

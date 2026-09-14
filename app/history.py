@@ -28,7 +28,15 @@ log = logging.getLogger(__name__)
 RETENTION_DAYS = int(os.environ.get("NEXUSPRED_HISTORY_DAYS") or 90)
 HYDRATE_ROWS = 200  # matches state._MAX
 
-_q: "queue.Queue[Optional[tuple[str, int, dict[str, Any]]]]" = queue.Queue()
+# Bounded: a writer that cannot keep up must slow its producers down rather
+# than grow without limit in memory. A full queue drops the oldest pending row
+# and says so — the trade itself never waits on the history log.
+QUEUE_MAX = int(os.environ.get("NEXUSPRED_HISTORY_QUEUE") or 50000)
+STOP_POLL_S = 0.25          # how often an idle writer checks whether it should stop
+STOP_TIMEOUT_MIN_S = 5.0
+STOP_TIMEOUT_MAX_S = 60.0
+_q: "queue.Queue[Optional[tuple[str, int, dict[str, Any]]]]" = queue.Queue(maxsize=QUEUE_MAX)
+_dropped = 0
 _thread: Optional[threading.Thread] = None
 _running = False
 _idle = threading.Event()
@@ -58,7 +66,15 @@ def _run_one(item: Any) -> None:
 
 def _worker() -> None:
     while True:
-        item = _q.get()
+        try:
+            # A poll rather than a blocking get: the stop marker cannot be queued
+            # when the (bounded) queue is full, so the flag has to be reachable.
+            item = _q.get(timeout=STOP_POLL_S)
+        except queue.Empty:
+            if not _running:
+                _idle.set()
+                return
+            continue
         if item is None:
             _idle.set()
             return
@@ -91,6 +107,11 @@ def backlog() -> int:
     return _q.qsize()
 
 
+def dropped() -> int:
+    """Rows the writer could not take because the queue was full."""
+    return _dropped
+
+
 def start() -> None:
     """Start the background writer (idempotent)."""
     global _thread, _running
@@ -101,16 +122,31 @@ def start() -> None:
     _thread.start()
 
 
-def stop(timeout: float = 5.0) -> None:
-    """Drain the queue and stop the writer."""
+def stop(timeout: Optional[float] = None) -> None:
+    """Drain the queue and stop the writer.
+
+    A signal or order row that never lands is a gap in the trade record, so the
+    drain is given time proportional to what is actually queued (a batch writes
+    thousands of rows a second) instead of a flat few seconds. ``timeout=None``
+    computes it from :func:`backlog`; the wait is still bounded so a wedged disk
+    cannot hold the shutdown open forever. Rows left over are reported.
+    """
     global _thread, _running
     if not _running:
         return
     _running = False
-    _q.put(None)
+    left = backlog()
+    if timeout is None:
+        timeout = min(STOP_TIMEOUT_MAX_S, max(STOP_TIMEOUT_MIN_S, left / 500.0))
+    try:
+        _q.put_nowait(None)          # best effort: a full queue is drained first, then the flag stops the worker
+    except queue.Full:
+        pass
     if _thread is not None:
         _thread.join(timeout)
         _thread = None
+    if backlog():
+        log.error("shutdown: %s history row(s) were still queued after %.0f s and are lost", backlog(), timeout)
 
 
 def flush(timeout: float = 5.0) -> None:
@@ -135,9 +171,17 @@ def defer(fn: Any, *args: Any, **kwargs: Any) -> None:
 
 
 def _submit(kind: str, area_id: int, entry: dict[str, Any]) -> None:
+    global _dropped
     if _running:
         _idle.clear()
-        _q.put((kind, area_id, dict(entry)))
+        try:
+            _q.put_nowait((kind, area_id, dict(entry)))
+        except queue.Full:
+            # The order path never blocks on bookkeeping: the row is dropped and
+            # counted, and readiness reports the backlog that caused it.
+            _dropped += 1
+            if _dropped % 100 == 1:
+                log.error("history queue full (%s rows): %s row dropped, %s dropped in total", _q.qsize(), kind, _dropped)
     else:
         try:
             _write(kind, area_id, entry)

@@ -131,7 +131,8 @@ def test_min_role_for_matches_prefixes_and_methods():
     assert web.min_role_for("GET", "/api/update/status") == "admin"
     assert web.min_role_for("GET", "/api/users/directory") == "broadcaster"
     assert web.min_role_for("GET", "/api/users") == "admin"
-    assert web.min_role_for("GET", "/api/support/enter") == "admin"
+    assert web.min_role_for("POST", "/api/support/exit") == "admin"      # the real path; /api/support/enter never existed
+    assert web.min_role_for("POST", "/api/users/7/support") == "admin"    # entering a support view lives under /api/users
 
 
 async def test_user_leads_own_copy_groups_but_cannot_publish(trio):

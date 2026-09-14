@@ -15,6 +15,7 @@ the configured local time.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -92,19 +93,22 @@ async def _current_positions(area_id: int, sessions: list[Any],
     by the P&L poll (None for a login that failed) so it is not read twice."""
     current: dict[tuple[int, int], dict[str, Any]] = {}
     polled: set[int] = set()
-    for s in sessions:
+
+    # Logins are independent: read them together. A trade alert for the last
+    # login used to wait for every earlier login's round trip.
+    async def one_session(s: Any) -> None:
         ids = {int(a["id"]): (a.get("spec") or str(a["id"])) for a in s.accounts if a.get("id")}
         if not ids:
-            continue
+            return
         if positions is not None and s.name in positions:
             raw = positions[s.name]
             if raw is None:
-                continue
+                return
         else:
             try:
                 raw = await s.positions_snapshot()
             except Exception:  # noqa: BLE001 - an unreachable login must not look like "everything closed"
-                continue
+                return
         polled.update(ids)
         for p in raw if isinstance(raw, list) else []:
             aid = p.get("accountId")
@@ -116,6 +120,8 @@ async def _current_positions(area_id: int, sessions: list[Any],
                 "qty": net, "price": p.get("netPrice"), "account": ids[int(aid)],
                 "symbol": await _symbol(s, area_id, cid),
             }
+
+    await asyncio.gather(*(one_session(s) for s in sessions), return_exceptions=True)
     return current, polled
 
 

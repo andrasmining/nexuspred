@@ -530,19 +530,48 @@ its own. Who asks what:
 | Rollover | contract lookups | once a day |
 | Signals, risk guard, flatten | orders, cancels, liquidations | on demand |
 
-Orders, cancels and liquidations never queue behind the polls: they have a short lane of
-their own (a burst is spaced 60 ms apart), and a running 429 penalty longer than 3 s is
-refused at once rather than waited out. The **reads of a close** — the order list before a
-cancel, the position list before a flatten or a stop repair — take that lane too
-(`broker.urgent()`), so a kill switch or a close is never held behind a monitor's poll.
-ProjectX has the same order lane (100 ms spacing; the polls wait behind it, the 200/min
-budget holds).
+Orders, cancels and liquidations never queue behind the polls: they have a lane of their
+own, and a running 429 penalty longer than 3 s is refused at once rather than waited out.
+The **reads of a close** — the order list before a cancel, the position list before a
+flatten or a stop repair — take that lane too (`broker.urgent()`), so a kill switch or a
+close is never held behind a monitor's poll.
+
+**The order lane is a token bucket (alpha.102).** Orders decided in one moment — a copy
+group's followers, a bracket's legs, a kill switch's liquidations — leave in one moment
+instead of queueing one behind the other. The bucket holds `ORDER_BURST` tokens and refills
+at the sustained rate, so a burst that empties it falls back to exactly that rate: what the
+broker sees over any window longer than a moment is unchanged, only its distribution inside
+that moment is.
+
+| | Tradovate | ProjectX |
+|---|---|---|
+| Burst (orders at once) | 12 | 8 |
+| Sustained afterwards | 16.7 orders/s (60 ms) | 10 orders/s (100 ms) |
+| Environment override | `NEXUSPRED_TRADOVATE_ORDER_BURST` | `NEXUSPRED_PROJECTX_ORDER_BURST` |
+
+Before this, six copy followers on one login were filled 300 ms apart; now the spread is
+under a millisecond. **Nothing else in the platform fans out one item at a time either**
+(alpha.103): the news lock flattens every workspace at once, copy trading seeds, reconciles
+and reads its follower logins together, a follower's contracts close together, and the
+watchdog polls every login at once. A test parses every module and fails on a new serial
+broker loop; the only two exceptions are retry loops, named in its allowlist. Every 429 the broker does return is counted on the login's status
+(`rate_limits`, `last_rate_limit` in `/api/status`), so the burst can be raised or lowered
+against evidence.
+
+**What the 429 actually is.** Tradovate publishes no hard cap: its own FAQ states there is
+"no 'hard-cap' on request rate or data size limits" and that the thresholds are variable,
+enforced per second, per minute and per hour. When one is reached the answer carries
+`p-ticket` and `p-time` (the seconds to wait); `p-captcha` means an hour of manual
+cool-down. The bridge reads `p-time` (clamped 1–120 s), parks that login for it, waits out a
+penalty under 3 s for an order and refuses a longer one rather than sending a stop a minute
+late. Because the numbers are not published and can change, the burst defaults are
+deliberately modest and the counter above is the thing to tune against.
 
 ---
 ## Performance
 
-Measured on alpha.89/90 with a fake broker (20 ms per call) and the real request pacing; the
-scripts live outside the repo, the numbers are for orientation:
+Measured with a fake broker (20 ms per call) and the real request pacing; the scripts live
+outside the repo, the numbers are for orientation. Re-measured for alpha.101:
 
 | Path | Result |
 |---|---|
@@ -554,6 +583,10 @@ scripts live outside the repo, the numbers are for orientation:
 | Kill switch, 20 accounts on 20 logins | one account's time (325 ms) — logins are independent |
 | Kill switch, 20 accounts on **one** login | 2.6 s: 44 calls through the login's 60 ms order lane |
 | Risk guard, 10 accounts tripping at once | one flatten's time — together, not one after the other |
+| Webhook token lookup, on every signal | 7 µs (22 µs before alpha.101), 50 webhooks in the workspace |
+| Auth gate per request (role, quota, support window) | ~7 µs — not a bottleneck |
+| Manual order, the ledger writes around the broker call | 2.3 ms (2.9 ms before alpha.101) |
+| Start until `/healthz` answers | ~1.0 s |
 
 What is left is by choice, not by accident: Tradovate orders, cancels, liquidations and the
 reads of a close go through one lane per login spaced 60 ms apart (ProjectX 100 ms) so a burst
@@ -643,6 +676,13 @@ every N seconds carrying the deep-health result — the monitor reports when the
 - **Assisted support:** a user grants 24 hours of write access; every change is logged under the admin.
 - **Quotas per role** (5/3/2, 25/10/5, unlimited), per-user overrides on the Users page.
 - **Monthly roles report** and **admin broadcasts** with banner.
+
+### One process, by design
+
+Broker sessions, tracked trades, the copy runners, the history writer and every background loop
+are in-process state. A second worker would log in twice at the broker, mirror every copy trade
+twice and send every mail twice — silently. The bridge therefore refuses to start when
+`WEB_CONCURRENCY` (or `UVICORN_WORKERS` / `GUNICORN_WORKERS`) is above 1.
 
 ## Alerts
 

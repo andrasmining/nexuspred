@@ -140,7 +140,7 @@ ROUTE_POLICY: list[tuple[tuple[str, ...] | None, str, str]] = [
     (None, "/api/update/", "admin"),
     (("PUT", "POST", "DELETE"), "/api/news/", "admin"),
     (None, "/api/discord/", "admin"),
-    (None, "/api/support/enter", "admin"),
+    (None, "/api/support/exit", "admin"),
     (None, "/api/mail/", "admin"),
     (None, "/api/backups", "admin"),
     (None, "/api/platform/", "admin"),

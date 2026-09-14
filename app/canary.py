@@ -20,6 +20,13 @@ from . import config, context, db, state
 
 log = logging.getLogger("nexuspred.canary")
 
+# The canary rehearses in a book of its own. Running it in the operator's own
+# workspace put its synthetic bracket in the very simulator state the Simulator
+# page shows, where it overwrote a tracked scenario trade and mixed into the
+# same position book. A reserved id keeps both apart; its settings are passed
+# explicitly, so no workspace row is needed for it.
+CANARY_AREA = -1
+
 _results: deque[dict[str, Any]] = deque(maxlen=200)
 _state: Optional[str] = None            # "ok" | "slow" | "failed"
 LOOP_TICK_S = 30.0
@@ -30,16 +37,27 @@ def _webhook() -> dict[str, Any]:
     return {"id": "canary", "name": "canary", "strategy": "bracket", "enabled": True, "accounts": [], "default_qty": 1, "tp_qty": 1}
 
 
+def _settings() -> dict[str, Any]:
+    """The canary's own settings: never a workspace's, so nobody's symbol map,
+    trading window or risk state can change what the probe measures."""
+    s = dict(config.DEFAULT_SETTINGS)
+    s.update({"trading_enabled": True, "symbol_map": {"MNQ1!": "MNQZ6"}, "allowed_symbols": [], "webhooks": [], "token_accounts": []})
+    return s
+
+
 async def run_once() -> dict[str, Any]:
     """One canary round trip: open long, then close, in the simulator."""
     from . import platform, signals
     cfg = platform.get_config()
     started = time.perf_counter()
     res: dict[str, Any] = {"at": datetime.now(timezone.utc).isoformat(), "ok": False, "ms": None, "detail": ""}
-    with context.use_area(context.DEFAULT_AREA_ID):
+    wh, s = _webhook(), _settings()
+    with context.use_area(CANARY_AREA):
         try:
-            r1 = await signals.process({"action": "buy", "symbol": "MNQ1!", "qty": 1, "sl": 100, "tp": 100, "canary": True}, None, simulate=True, trusted=True)
-            r2 = await signals.process({"action": "close_all", "symbol": "MNQ1!", "canary": True}, None, simulate=True, trusted=True)
+            r1 = await signals.process({"action": "buy", "symbol": "MNQ1!", "qty": 1, "sl": 100, "tp": 100, "canary": True},
+                                       wh, simulate=True, trusted=True, settings=s)
+            r2 = await signals.process({"action": "close_all", "symbol": "MNQ1!", "canary": True},
+                                       wh, simulate=True, trusted=True, settings=s)
             ms = round((time.perf_counter() - started) * 1000, 1)
             ok = str(r1.get("status") or "ok") not in ("error",) and str(r2.get("status") or "ok") not in ("error",)
             res.update({"ok": ok, "ms": ms, "detail": f"{r1.get('status') or 'ok'} / {r2.get('status') or 'ok'}"})

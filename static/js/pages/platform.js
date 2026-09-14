@@ -38,6 +38,7 @@ function healthCard() {
 
 /* alpha.96: platform heartbeat — an outbound ping a monitor expects; when it stops, the monitor alerts. */
 function heartbeatCard() {
+  let alive = true;
   const url = h("input", { id: "hb-url", placeholder: "https://hc-ping.com/…", autocomplete: "off" });
   const interval = h("input", { id: "hb-interval", type: "number", min: 30, max: 3600, step: 10, value: 60, style: "max-width:140px" });
   const hint = h("span", { class: "save-hint" });
@@ -48,12 +49,14 @@ function heartbeatCard() {
     try { const r = await api.put("/api/platform/heartbeat", { url: url.value, interval: Number(interval.value) || 60 }); paintLast(r); hint.textContent = r.url ? (r.pinged ? t("Saved and pinged.") : t("Saved, but the first ping failed.")) : t("Saved (off)."); hint.className = `save-hint ${!r.url || r.pinged ? "ok" : "err"}`; }
     catch (e) { hint.textContent = e.message; hint.className = "save-hint err"; } finally { save.disabled = false; }
   } }, icon("check"), t("Save"));
-  api.get("/api/platform/heartbeat").then((r) => { url.value = r.url || ""; interval.value = r.interval || 60; paintLast(r); }).catch(() => null);
-  return card({ title: t("Platform heartbeat"), hint: t("Unlike the per-workspace watchdog under Settings → Alerts, this ping covers the whole bridge and carries the deep-health result: healthchecks.io gets /fail when the bridge is down, other monitors get ?status=.") },
+  api.get("/api/platform/heartbeat").then((r) => { if (!alive) return; url.value = r.url || ""; interval.value = r.interval || 60; paintLast(r); }).catch(() => null);
+  const el = card({ title: t("Platform heartbeat"), hint: t("Unlike the per-workspace watchdog under Settings → Alerts, this ping covers the whole bridge and carries the deep-health result: healthchecks.io gets /fail when the bridge is down, other monitors get ?status=.") },
     h("div", { class: "grid grid-2" },
       h("div", { class: "field" }, h("label", { for: "hb-url" }, t("Ping URL")), url, h("div", { class: "field-hint" }, t("Empty = off. GET every interval; anything below HTTP 400 counts as delivered."))),
       h("div", { class: "field" }, h("label", { for: "hb-interval" }, t("Interval (seconds)")), interval)),
     h("div", { class: "form-actions" }, save, hint), last);
+  el.cleanup = () => { alive = false; };
+  return el;
 }
 
 /* alpha.96: incidents shown on the public status page. */
@@ -63,11 +66,12 @@ function incidentsCard() {
   const status = h("select", { id: "inc-status" }, STATES().map(([v, l]) => h("option", { value: v }, l)));
   const body = h("textarea", { id: "inc-body", rows: 3, placeholder: t("What is affected, what you know, what you are doing."), maxlength: 2000, style: "font-family:inherit" });
   const list = h("div");
-  let editing = null;
+  let editing = null, alive = true;
   const hint = h("span", { class: "save-hint" });
   async function load() {
     try {
       const rows = await api.get("/api/incidents");
+      if (!alive) return;
       clear(list);
       if (!rows.length) { list.append(h("div", { class: "muted" }, t("No incidents. The status page says all systems operational."))); return; }
       rows.forEach((inc) => list.append(h("div", { class: "callout", style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between" },
@@ -79,7 +83,7 @@ function incidentsCard() {
             if (!(await confirmDialog({ title: t("Delete incident {title}?", { title: inc.title }), body: t("It disappears from the status page and its history is gone."), confirmText: t("Delete"), danger: true }))) return;
             try { await api.del(`/api/incidents/${inc.id}`); load(); } catch (e) { toast(e.message, "error"); }
           } }, icon("trash"), t("Delete"))))));
-    } catch (e) { clear(list); list.append(h("div", { class: "muted" }, e.message)); }
+    } catch (e) { if (!alive) return; clear(list); list.append(h("div", { class: "muted" }, e.message)); }
   }
   const save = h("button", { type: "button", class: "btn btn-primary", onClick: async () => {
     try {
@@ -90,13 +94,15 @@ function incidentsCard() {
   } }, icon("check"), t("Publish"));
   const cancel = h("button", { type: "button", class: "btn btn-ghost", onClick: () => { editing = null; title.value = ""; body.value = ""; hint.textContent = ""; } }, t("New incident"));
   load();
-  return card({ title: t("Incidents on the status page"), actions: [h("a", { class: "btn btn-ghost btn-sm", href: "/status", target: "_blank", rel: "noopener" }, icon("external"), t("Open status page"))] },
+  const el = card({ title: t("Incidents on the status page"), actions: [h("a", { class: "btn btn-ghost btn-sm", href: "/status", target: "_blank", rel: "noopener" }, icon("external"), t("Open status page"))] },
     list,
     h("div", { class: "grid grid-2", style: "margin-top:12px" },
       h("div", { class: "field" }, h("label", { for: "inc-title" }, t("Title")), title),
       h("div", { class: "field" }, h("label", { for: "inc-status" }, t("Status")), status)),
     h("div", { class: "field" }, h("label", { for: "inc-body" }, t("Update text")), body),
     h("div", { class: "form-actions" }, save, cancel, hint));
+  el.cleanup = () => { alive = false; };
+  return el;
 }
 
 export default {
@@ -200,6 +206,12 @@ export default {
     );
     api.get("/api/mail/config").then((c) => { if (alive) fill(c); }).catch((e) => { if (alive) toast(e.message, "error"); });
     loadLog();
-    return () => { alive = false; health.cleanup(); };
+    // Every card that owns a timer or a late fetch exposes .cleanup(); sweep them
+    // all on leaving the page, the same way Settings does.
+    return () => {
+      alive = false;
+      health.cleanup();
+      root.querySelectorAll(".card").forEach((c) => { if (c.cleanup) c.cleanup(); });
+    };
   },
 };

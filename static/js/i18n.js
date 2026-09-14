@@ -24,10 +24,18 @@ let pref = "auto";
 try { pref = localStorage.getItem(PREF_KEY) || "auto"; } catch (e) { /* ignore */ }
 let current = resolve(pref);
 apply(current);
-// The German dictionary (≈120 KB) is fetched only when German is the language:
-// the module graph waits for it here, so t() is synchronous everywhere else.
+// The German dictionary (≈120 KB) is fetched only when German is the language.
+// It is awaited in boot() rather than at module scope: a top-level await makes
+// the whole module graph fail to parse on older Safari, which would take the
+// entire dashboard down instead of just the translation.
 // A language change reloads the page (see adopt), which loads the other dictionary.
-const DICTS = { de: current === "de" ? (await import("./locales/de.js")).DE : null };
+const DICTS = { de: null };
+
+/** Load the active language's dictionary. Awaited once by boot() before the first render. */
+export async function ready() {
+  if (current !== "de" || DICTS.de) return;
+  try { DICTS.de = (await import("./locales/de.js")).DE; } catch (e) { DICTS.de = null; }
+}
 
 function apply(l) {
   try { document.documentElement.lang = l; } catch (e) { /* ignore */ }

@@ -29,7 +29,7 @@ async def api_manual_order(request: Request, response: Response) -> dict[str, An
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be a JSON object")
     try:
-        command = ManualOrder.from_payload(current_actor(user.get("id")), body, request.headers.get("Idempotency-Key"))
+        command = ManualOrder.from_payload(current_actor(user.get("id"), getattr(request.state, "support", None)), body, request.headers.get("Idempotency-Key"))
         result = await service.execution.place_manual_order(command)
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -50,7 +50,7 @@ async def api_close_position(request: Request) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Body must be a JSON object")
     try:
-        command = ClosePosition(current_actor(_user(request).get("id")), AccountTarget.from_payload(body),
+        command = ClosePosition(current_actor(_user(request).get("id"), getattr(request.state, "support", None)), AccountTarget.from_payload(body),
                                 str(body.get("symbol") or "").strip())
         return await service.execution.close_position(command)
     except WorkspaceAccessDenied as exc:
@@ -62,7 +62,7 @@ async def api_close_position(request: Request) -> dict[str, Any]:
 @router.get("/api/execution/commands/{command_id}")
 async def api_execution_status(request: Request, command_id: str) -> dict[str, Any]:
     try:
-        return await service.execution.status(current_actor(_user(request).get("id")), command_id)
+        return await service.execution.status(current_actor(_user(request).get("id"), getattr(request.state, "support", None)), command_id)
     except WorkspaceAccessDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ExecutionError as exc:

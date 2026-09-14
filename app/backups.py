@@ -23,6 +23,7 @@ never on the order path, and everything blocking is on a thread.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -40,6 +41,7 @@ from urllib.parse import quote
 from . import config, context, crypto, db, http, security, state
 
 log = logging.getLogger("nexuspred.backups")
+_snapshot_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="backup")
 
 META_KEY = "backups"
 INDEX_KEY = "backups:index"
@@ -211,7 +213,15 @@ def write_snapshot(path: str) -> None:
             dst.execute("DELETE FROM password_resets WHERE used_at IS NULL")
             dst.execute("DELETE FROM invites WHERE used_by IS NULL")
             dst.execute("DELETE FROM agent_pairings")
-        dst.execute("VACUUM")               # the deleted rows must not survive in free pages
+        # VACUUM rewrites the whole file: it needs the snapshot's size again in
+        # free space. On a full disk that fails halfway, so it is skipped (with a
+        # warning) rather than risking the snapshot that is otherwise complete.
+        need = Path(path).stat().st_size * 2 + (16 << 20)
+        free = free_bytes()
+        if free is not None and free < need:
+            log.warning("backup: skipping VACUUM, %.0f MB free but %.0f MB needed", free / 1e6, need / 1e6)
+        else:
+            dst.execute("VACUUM")           # the deleted rows must not survive in free pages
     finally:
         dst.close()
         src.close()
@@ -278,6 +288,11 @@ def rotate(rows: list[dict[str, Any]], cfg: Optional[dict[str, Any]] = None) -> 
     for role, n in keep.items():
         for r in [r for r in ordered if role in (r.get("roles") or ["daily"])][:n]:
             needed.add(r["name"])
+    # Recency alone would rotate away the last *verified* snapshot as soon as a
+    # few newer ones fail their integrity check — exactly when it is needed.
+    newest_verified = next((r for r in ordered if r.get("verified")), None)
+    if newest_verified:
+        needed.add(newest_verified["name"])
     for r in ordered:
         if r.get("pinned") or r.get("offsite_pending"):
             needed.add(r["name"])
@@ -428,6 +443,7 @@ async def push_offsite(entry: dict[str, Any]) -> tuple[str, list[int]]:
         return "", []
     enc = path.with_suffix(".db.enc")
     await asyncio.to_thread(encrypt_file, path, enc)
+    handed_over = False
     try:
         if cfg["offsite"] == "s3":
             data = await asyncio.to_thread(enc.read_bytes)
@@ -443,13 +459,14 @@ async def push_offsite(entry: dict[str, Any]) -> tuple[str, list[int]]:
                                                   "url": (config.PUBLIC_URL or "") + "/#/settings/backups"}, attachment=str(enc))
         if not n:
             raise RuntimeError("no admin has a mail route (platform mailer off)")
+        handed_over = True                  # queued outbox rows now own the attachment lifecycle
         ids = sorted(int(r["id"]) for r in db.outbox_list(limit=max(100, n * 4))
                      if int(r["id"]) > before_id and r.get("kind") == "backup" and r.get("attachment") == str(enc))
         if len(ids) != n:
             raise RuntimeError("queued backup mail could not be bound to its durable outbox rows")
         return "", ids
     finally:
-        if cfg["offsite"] != "mail":              # the mailer deletes a mail attachment after all deliveries settle
+        if not handed_over:
             try:
                 enc.unlink()
             except OSError:
@@ -476,7 +493,9 @@ async def run(reason: str = "scheduled") -> dict[str, Any]:
     _running = True
     try:
         try:
-            entry = await asyncio.to_thread(_make_snapshot_sync, reason)
+            # Its own thread: a snapshot of a large database runs for seconds and
+            # must never sit in front of an order-path write in the shared pool.
+            entry = await asyncio.get_running_loop().run_in_executor(_snapshot_pool, _make_snapshot_sync, reason)
         except Exception as exc:  # noqa: BLE001
             await _alarm("snapshot failed", f"{type(exc).__name__}: {exc}")
             raise
@@ -658,10 +677,11 @@ def apply_pending_restore() -> Optional[str]:
         check = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
         try:
             integrity = str(check.execute("PRAGMA integrity_check").fetchone()[0])
+            tables = int(check.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0])
         finally:
             check.close()
-        if integrity != "ok":
-            raise sqlite3.DatabaseError(f"restore snapshot integrity check: {integrity}")
+        if integrity != "ok" or tables == 0:
+            raise sqlite3.DatabaseError(f"restore snapshot integrity check: {integrity}, {tables} tables")
 
         # Preserve the current database through SQLite itself: copying only the
         # main file can omit committed rows that still live in the WAL. A retry

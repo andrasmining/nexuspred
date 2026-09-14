@@ -160,11 +160,12 @@ def mail_release(version: Optional[str] = None) -> int:
     v = version or config.get_version()
     if db.meta_get(MAILED_KEY) == v:
         return 0
-    db.meta_set(MAILED_KEY, v)
     if not sections().get(v):
+        db.meta_set(MAILED_KEY, v)                                # nothing to say about this version, ever
         return 0
     if not mailer.configured():
-        return 0                                                  # no platform route: never through a user's own SMTP
+        return 0                  # no platform route yet: try again next start, do not burn the version
+    db.meta_set(MAILED_KEY, v)
     n = 0
     for u in db.list_users():
         if not wants(u["id"], "updates"):

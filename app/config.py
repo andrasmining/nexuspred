@@ -458,15 +458,38 @@ HISTORY_SKIP = frozenset({"risk_state", "dd_state", "ui_language_seen", "rollove
 _fingerprints: dict[int, dict[str, int]] = {}
 
 
+def _stored_fingerprints(aid: int) -> dict[str, int] | None:
+    """The fingerprints of the newest stored settings version, or None."""
+    try:
+        from . import crypto, db
+        raw = db.last_settings_snapshot(aid)
+        if not raw:
+            return None
+        stored = crypto.decrypt_settings(json.loads(raw))
+        if not isinstance(stored, dict):
+            return None
+        return {k: hash(json.dumps(v, sort_keys=True, default=str)) for k, v in stored.items()}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("settings history baseline for area %s unavailable: %s", aid, exc)
+        return None
+
+
 def _record_version(aid: int, before: dict[str, Any] | None, current: dict[str, Any]) -> None:
     try:
         from . import context, crypto, db
         prints = {k: hash(json.dumps(v, sort_keys=True, default=str)) for k, v in current.items()}
         prev = _fingerprints.get(aid)
         if prev is None:
-            keys = ["initial"] if not db.list_settings_versions(aid, limit=1) else [k for k, h in prints.items() if h != prev.get(k)] if prev else []
-            if prev is None and db.list_settings_versions(aid, limit=1):
-                keys = list(current.keys())            # first save since start: everything may have changed
+            # First save since this process started. The fingerprints live in
+            # memory, so without a baseline every restart would record a version
+            # claiming every key changed. Rebuild it from the last stored
+            # snapshot instead, and only fall back to "everything" if that
+            # snapshot cannot be read.
+            if not db.list_settings_versions(aid, limit=1):
+                keys = ["initial"]
+            else:
+                prev = _stored_fingerprints(aid)
+                keys = [k for k, h in prints.items() if h != prev.get(k)] if prev is not None else list(current.keys())
         else:
             keys = [k for k, h in prints.items() if h != prev.get(k)]
         _fingerprints[aid] = prints
@@ -545,7 +568,9 @@ def find_webhook(token: str) -> tuple[int | None, dict[str, Any] | None]:
                         table[t] = (aid, wh)
             _webhook_index = idx = (key, table)
         hit = idx[1].get(token)
-    return (hit[0], copy.deepcopy(hit[1])) if hit else (None, None)
+    # Same pickle round trip the settings cache uses: deepcopy walks the tree in
+    # Python and this runs on every webhook POST.
+    return (hit[0], pickle.loads(pickle.dumps(hit[1], protocol=pickle.HIGHEST_PROTOCOL))) if hit else (None, None)  # noqa: S301 - our own bytes
 
 
 def migrate_legacy_webhook(area_id: int | None = None) -> None:

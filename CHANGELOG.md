@@ -4,6 +4,127 @@ All notable changes to nexuspred. Versions follow [SemVer](https://semver.org/).
 Bump `VERSION` on every release — the dashboard compares it against GitHub and
 shows the **Update** button when a newer version is available.
 
+## 5.0.0-alpha.103
+**Every fan-out across the platform now runs in parallel.** A static sweep of the whole
+codebase looked for the pattern alpha.102 removed from the order lane: a loop that awaits a
+broker call once per login, per follower or per contract, serialising work that is
+independent. Six places still did it; all six were changed, and a test now guards the rule.
+
+| Path | Was | Now |
+|---|---|---|
+| News lock across workspaces (`app/news.py`) | one workspace flattened after another | every workspace at once |
+| News lock, several active windows in one workspace | one full flatten per window, back to back | one flatten covers them all |
+| Copy: seeding follower logins (`app/copy/group_runner.py`) | one login's positions after another | every login at once |
+| Copy: drift reconcile across logins | one login after another | every login at once |
+| Copy: flatten, the contracts of one follower | one contract's close after another | all contracts together, still under the account's lock |
+| Copy: reading follower working orders (`app/copy/orders.py`) | one login after another | every login at once |
+| Watchdog trade alerts (`app/watch.py`) | one login's positions after another | every login at once |
+
+Measured with a 50 ms fake broker call and four independent parts: 200 ms → 50 ms on each of
+the reworked reads. The copy flatten of 10 followers on one login is 563 ms (was 1147 ms
+before alpha.102), of which 500 ms is the deliberate settle wait before the verification read.
+
+Already parallel and left alone: the webhook signal across routed accounts, the bracket's
+legs, the marketplace fan-out to subscribers, the emergency flatten across accounts, the
+risk guard. Deliberately sequential and documented as such: the two retry loops in
+`app/engine/common.py`, where attempt 2 exists only because attempt 1 failed.
+
+- `tests/test_alpha101.py` now parses every module and fails on a new serial broker loop,
+  with an explicit allowlist naming why each exception is one.
+
+## 5.0.0-alpha.102
+**Copy trading fans out in one burst.** Orders decided in one moment now leave in one moment.
+
+Followers of a copy group are dispatched together in code (`asyncio.gather`), but the order
+lane of a broker login used to enforce a fixed 60 ms gap between any two orders (ProjectX
+100 ms). Six followers on one login therefore filled 300 ms apart, the last one 300 ms after
+the first — visible as a staircase in the copy event log's latency column.
+
+The lane is now a token bucket: `ORDER_BURST` orders may leave at the same instant, the bucket
+refills at exactly the old rate, and a burst that empties it falls back to exactly the old
+spacing. The load a broker sees over any window longer than a moment is unchanged — only its
+distribution inside that moment is. Measured with a fake broker (20 ms per call):
+
+| Case (one login) | alpha.101 | alpha.102 |
+|---|---|---|
+| Mirror 10 followers | 625 ms | 41 ms |
+| Flatten 10 followers | 1147 ms | 563 ms |
+| Spread first → last order | 605 ms | under 1 ms |
+| Sustained rate, 300 orders | 16.7 orders/s | 16.7 orders/s |
+
+- Defaults: 12 orders for Tradovate, 8 for ProjectX. Override with
+  `NEXUSPRED_TRADOVATE_ORDER_BURST` / `NEXUSPRED_PROJECTX_ORDER_BURST`.
+- Every 429 is now recorded on the login's status (`rate_limits`, `last_rate_limit`), so the
+  burst size can be tuned against evidence rather than guesswork.
+- A spacing of 0 switches the lane off entirely instead of dividing by zero.
+
+## 5.0.0-alpha.101
+Review round 8: six reviews (red team, trade path, performance, new modules, frontend, operations)
+against alpha.100, every finding verified in the code before it was changed, each with a regression
+test in `tests/test_alpha101.py`.
+
+**Trading safety**
+- **A manual close now waits for an entry that is still running.** An entry holds its lock for the
+  whole handler but only becomes a *tracked* trade once every leg is placed. Until then the dashboard's
+  Close button derived its lock from the tracked map alone, took a different lock, and could cancel and
+  liquidate between the entry's fill and its protective stop. Running signals now register their lock
+  key, and the close waits for them.
+- **A copy order whose outcome is unknown is never sent again.** A timeout on a follower's placement was
+  recorded as a rejection, so the next reconcile pass (every 10 s) placed the order a second time while
+  the first may have been resting at the broker. It is now held back for an hour and shown as
+  "outcome unknown" on the copy page — the rule the position mirror and the engine already followed.
+- **Assisted support can trade again.** alpha.100's execution boundary required a workspace membership
+  row, which a support admin never has, so the write window a customer granted stopped working —
+  including the emergency flatten. The boundary now accepts the granted window, re-reads it on every
+  order, and still refuses an admin without one.
+
+**Security**
+- The platform heartbeat URL is checked again immediately before every ping, not only when it is saved:
+  a short-lived DNS record could otherwise point an accepted host into the internal network afterwards.
+- Changing another administrator's quota or feature entitlements is now reserved for the bootstrap
+  admin, like every other cross-admin action.
+- A mail subject can no longer contain a line break, which used to make every recipient's delivery fail.
+
+**Backups and restore**
+- A snapshot is integrity-checked immediately before it replaces the live database; a broken one is
+  refused and the live database is left untouched.
+- Rotation always keeps the newest *verified* snapshot, instead of dropping it as soon as newer
+  snapshots fail their check.
+- The encrypted off-site copy is deleted whenever no mail actually took it, so a failed off-site run
+  no longer leaves a full copy of the database on disk every day.
+- A snapshot is skipped rather than half-written when the disk cannot hold the rewrite it needs.
+
+**Operations**
+- The sign-in / admin-action log and settled manual commands are pruned daily; they were the two tables
+  that grew forever.
+- The history writer's queue is bounded: a stalled disk drops the oldest bookkeeping row and says so
+  instead of growing in memory, and the trade itself never waits on it. Shutdown gives the queue time
+  proportional to what is in it and reports anything lost.
+- A protective stop still in flight at shutdown gets a second grace period before the HTTP pool closes.
+- The bridge refuses to start with more than one worker configured, instead of silently logging in
+  twice at the broker and mirroring every copy trade twice.
+- The manual-command ledger waits as long as the rest of the app for the database lock.
+- The canary rehearses in a book of its own. It used to run in the operator's workspace, where it
+  shared the Simulator page's trade map and position book.
+- A version is only marked "release notes sent" once a mailer existed to send them.
+- The settings history no longer records a version claiming every key changed after each restart.
+
+**Performance** (same machine, before → after)
+- Webhook token lookup, on every signal: 22 µs → 7 µs (benchmark workspace: 50 webhooks, 66 KB of settings).
+- Manual order ledger, the writes around the broker call: 2.9 ms → 2.3 ms. The claim keeps its full
+  crash-safety; the two writes that only record what the broker already answered do not need it, since
+  a restart marks them for reconciliation rather than replaying them.
+- The settings cache is warmed for every workspace at startup, so the first signal after a deploy no
+  longer pays for a blocking database read and decrypt on the event loop.
+- A backup snapshot runs on its own thread and can no longer queue in front of an order-path write.
+
+**Frontend**
+- The Telegram link poller stops when the page is left instead of polling every 4 s for 15 minutes.
+- The German dictionary is no longer loaded with a top-level await, which broke the whole dashboard on
+  older Safari.
+- The platform page's cards are torn down on leaving, and late answers no longer paint into a page that
+  is gone.
+
 ## 5.0.0-alpha.100
 Two community contributions by andrasmining merged, plus a CI fix.
 - **Execution-service boundary (PR #25).** Dashboard manual orders, position close and the emergency

@@ -30,7 +30,11 @@ async def api_notifications_read(request: Request) -> dict[str, Any]:
     ids = body.get("ids") if isinstance(body, dict) else None
     if ids is not None and not isinstance(ids, list):
         raise HTTPException(status_code=400, detail="ids must be a list")
-    n = db.mark_read(context.get_area(), [int(i) for i in ids] if ids else None)
+    try:
+        wanted = [int(i) for i in ids] if ids else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ids must be numbers") from None
+    n = db.mark_read(context.get_area(), wanted)
     return {"marked": n, "unread": db.unread_count(context.get_area())}
 
 

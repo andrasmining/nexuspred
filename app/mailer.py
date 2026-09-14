@@ -393,6 +393,12 @@ def _read_attachment(path: str) -> tuple[str, bytes]:
         return os.path.basename(p), f.read()
 
 
+def _header_safe(value: str) -> str:
+    """One line, no control characters: a subject with a newline in it makes the
+    e-mail package refuse the whole message, so every recipient's row would fail."""
+    return " ".join(str(value or "").split())[:300]
+
+
 def _build(cfg_from: str, to_addr: str, subject: str, html_body: str, text_body: str, reply_to: str = "",
            attachment: str = "") -> MIMEMultipart:
     alt = MIMEMultipart("alternative")
@@ -408,7 +414,7 @@ def _build(cfg_from: str, to_addr: str, subject: str, html_body: str, text_body:
         msg.attach(part)
     else:
         msg = alt
-    msg["Subject"] = subject
+    msg["Subject"] = _header_safe(subject)
     msg["From"] = cfg_from
     msg["To"] = to_addr
     if reply_to:
