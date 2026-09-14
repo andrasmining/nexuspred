@@ -11,7 +11,7 @@
 | Canonical path | `docs/COMMERCIAL-FOUNDATION.md` — expanded in place to preserve existing links |
 | Product / repository | Fluxbridge / NexusPred; `tobiasgiger/nexuspred` |
 | Architectural and release owners | Tobias and the primary maintainer team; contributors propose and verify changes |
-| Design revision | 1.0; comprehensive master baseline, 2026-09-14 |
+| Design revision | 1.1; branch-only recovery evidence reconciliation, 2026-09-14 |
 | Repository reviewed | `680964a3d6e10f83eaa8ea79c252fa667b4f1b77`, `5.0.0-alpha.103` |
 | Foundation integration | PR #25 merged into upstream on 2026-09-13; current code includes subsequent maintainer changes |
 | Runtime deployment evidence | **UNKNOWN**: no authenticated deployment manifest, effective feature configuration or server acceptance report available for this baseline |
@@ -688,6 +688,8 @@ Every item needs evidence at a specific revision before its status changes. Exis
 - [ ] **OPS-16 | N | G2** — Produce an authenticated, sanitized deployment/capability manifest for read-only runtime verification. Acceptance: exact revision/schema/profile, observation time and no secrets.
 - [ ] **OPS-17 | N | G2** — Detect drift between approved deployment/profile and observed runtime; retain evidence freshness and alert the operator. Acceptance: W03, W17.
 
+**Branch-only recovery evidence (no checklist status change):** `andrasmining:chatgpt/full-bugfix` at `032113c261653257f7ed9b9c32d91a587c0044b9` contains a reviewed recovery candidate that makes pending database restore failure-atomic/fail-closed and distinguishes queued backup mail from confirmed off-site delivery. Exact-head CI run 34798499099 is green. This evidence is **not on upstream `main`**, is not proof of production deployment or a restore drill, and therefore does not change `OPS-04`, `OPS-07` or `OPS-08`. Evidence: R14.
+
 ### 17.12 Data lifecycle, analytics and migrations — persistence / privacy
 
 - [x] **DAT-01 | I | G0** — Existing journal imports, fills/trades/snapshots, P&L and CSV surfaces are implemented. Evidence: R08.
@@ -822,6 +824,8 @@ Every change affecting execution is reviewed for identity, routing, partial outc
 
 Initial master update (2026-09-14): expands the earlier foundation note; reflects merged PR #25 and alpha.101–103 changes; inventories all major product domains; introduces the gated backlog and deployment-evidence register. No runtime behavior is changed by this documentation contribution.
 
+Review update 1.1 (2026-09-14): reconciles the validated, still-unmerged recovery candidate on `andrasmining:chatgpt/full-bugfix` as branch-only evidence R14. No checklist status or checkmark changed; upstream implementation remains alpha.103 and staging/production deployment evidence remains UNKNOWN.
+
 Open owner decisions: actual legal operator/jurisdictions; first commercial feature/broker profile; whether the pilot includes third-party paid copying; approved billing/merchant model; acceptable measured recovery objectives; actual hosting/deployment evidence; named support/security owners; external certification plan. Record answers here with scope and evidence instead of assuming them from a user's timezone or a developer's test account.
 
 ## 19. Evidence map and external design references
@@ -845,6 +849,7 @@ Unless a different revision is stated, code references below mean upstream **`68
 | R11 | [`agent/`](../agent/), [`app/relay.py`](../app/relay.py), [`app/routers/agent.py`](../app/routers/agent.py), [`browser-extension/`](../browser-extension/), [`app/discord_signals/`](../app/discord_signals/), [`app/simulator.py`](../app/simulator.py): external execution, client tools and simulation. |
 | R12 | [`static/js/`](../static/js/), [`static/css/`](../static/css/), [`templates/`](../templates/), [`app/i18n.py`](../app/i18n.py), [`app/routers/`](../app/routers/): customer and operator surfaces. |
 | R13 | [Foundation PR #25](https://github.com/tobiasgiger/nexuspred/pull/25), [`CHANGELOG.md`](../CHANGELOG.md), [`README.md`](../README.md): historical integration and discovery context; verify current behavior in code. |
+| R14 | Branch-only recovery candidate: [`andrasmining/nexuspred@032113c`](https://github.com/andrasmining/nexuspred/commit/032113c261653257f7ed9b9c32d91a587c0044b9), [compare to reviewed alpha.103](https://github.com/tobiasgiger/nexuspred/compare/main...andrasmining:chatgpt/full-bugfix?expand=1), and [exact-head CI run 34798499099](https://github.com/andrasmining/nexuspred/actions/runs/34798499099). The candidate hardens restore failure atomicity/startup behavior and mail off-site delivery reconciliation. It is not merged into upstream and is not deployment, broker-demo or restore-drill evidence. |
 
 ### 19.2 External references
 
